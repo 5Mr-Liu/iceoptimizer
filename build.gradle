@@ -1,0 +1,285 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net/' }
+        maven { url = 'https://plugins.gradle.org/m2/' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'net.minecraftforge.gradle:ForgeGradle:3.+'
+        classpath 'com.github.jengelman.gradle.plugins:shadow:4.0.4'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'eclipse'
+apply plugin: 'idea'
+apply plugin: 'com.github.johnrengelman.shadow'
+
+version = project.mod_version
+group = project.mod_group
+archivesBaseName = 'ice-rlcraft-optimizer'
+
+sourceCompatibility = targetCompatibility = compileJava.sourceCompatibility = compileJava.targetCompatibility = '1.8'
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
+minecraft {
+    mappings channel: 'stable', version: '39-1.12'
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'info'
+            mods {
+                ice {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        server {
+            workingDirectory project.file('run-server')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'info'
+            mods {
+                ice {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    optimizerLibraries
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.12.2-14.23.5.2860'
+
+    // ForgeGradle may expose only the partial recomp JAR on Java 8/Windows.
+    // The mapped JAR beside it supplies unchanged vanilla classes to tests.
+    def mappedVersion = '1.12.2-14.23.5.2860_mapped_stable_39-1.12'
+    def mappedJar = new File(
+        gradle.gradleUserHomeDir,
+        "caches/forge_gradle/minecraft_user_repo/net/minecraftforge/forge/${mappedVersion}/forge-${mappedVersion}.jar"
+    )
+    compileOnly files(mappedJar)
+    runtimeOnly files(mappedJar)
+    testCompileOnly files(mappedJar)
+    testRuntimeOnly files(mappedJar)
+
+    optimizerLibraries 'org.agrona:agrona:1.17.1'
+    optimizerLibraries 'com.github.ben-manes.caffeine:caffeine:2.9.3'
+    optimizerLibraries 'org.lz4:lz4-java:1.8.0'
+    implementation configurations.optimizerLibraries
+
+    testImplementation 'junit:junit:4.13.2'
+}
+
+sourceSets {
+    hooks {
+        java.srcDir 'src/hooks/java'
+        resources.srcDir 'src/hooks/resources'
+        compileClasspath += configurations.compileClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+sourceSets.test.compileClasspath += sourceSets.hooks.output
+sourceSets.test.runtimeClasspath += sourceSets.hooks.output
+
+test {
+    [
+        foamfixJar: 'ice.foamfix.jar',
+        xaeroWorldMapJar: 'ice.xaero.worldmap.jar',
+        renderLibJar: 'ice.renderlib.jar',
+        srpJar: 'ice.srp.jar',
+        lycanitesJar: 'ice.lycanites.jar',
+        moBendsJar: 'ice.mobends.jar',
+        iceAndFireJar: 'ice.iceandfire.jar',
+        llibraryJar: 'ice.llibrary.jar',
+        oreLibJar: 'ice.orelib.jar',
+        betterFoliageJar: 'ice.betterfoliage.jar',
+        betterCavesJar: 'ice.bettercaves.jar',
+        qualityToolsJar: 'ice.qualitytools.jar',
+        quarkJar: 'ice.quark.jar',
+        betterFoliageRuntimeClass: 'ice.betterfoliage.runtimeClass',
+        dynamicTreesJar: 'ice.dynamictrees.jar',
+        otgJar: 'ice.otg.jar',
+        minecraftSrgJar: 'ice.minecraft.srg.jar',
+        dregoraDiscoveryDir: 'ice.dregora.discoveryDir',
+        dregoraModsDir: 'ice.dregora.modsDir',
+        dregoraSrpJar: 'ice.dregora.srp.jar',
+        dregoraLycanitesJar: 'ice.dregora.lycanites.jar',
+        dregoraRenderLibJar: 'ice.dregora.renderlib.jar',
+        dregoraFoliageJar: 'ice.dregora.foliage.jar',
+        dregoraIceAndFireJar: 'ice.dregora.iceandfire.jar'
+    ].each { projectProperty, systemPropertyName ->
+        if (project.hasProperty(projectProperty)) {
+            systemProperty systemPropertyName, file(project.property(projectProperty)).absolutePath
+        }
+    }
+}
+
+test.dependsOn hooksClasses
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'mcversion', '1.12.2'
+
+    filesMatching('mcmod-optimizer.info') {
+        expand 'version': project.version, 'mcversion': '1.12.2'
+    }
+}
+
+jar {
+    classifier = 'combined-dev'
+    destinationDir = file("$buildDir/devlibs")
+    manifest {
+        attributes([
+            'Specification-Title': project.mod_id,
+            'Specification-Vendor': project.mod_vendor,
+            'Specification-Version': '1',
+            'Implementation-Title': project.mod_name,
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': project.mod_vendor,
+            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+shadowJar {
+    baseName = 'ice-rlcraft-optimizer'
+    version = project.version
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    configurations = [project.configurations.optimizerLibraries]
+    relocate 'org.agrona', 'dev.rlcraft.ice.shadow.agrona'
+    relocate 'com.github.benmanes.caffeine', 'dev.rlcraft.ice.shadow.caffeine'
+    relocate 'net.jpountz', 'dev.rlcraft.ice.shadow.lz4'
+    rename { String fileName -> fileName == 'mcmod-optimizer.info' ? 'mcmod.info' : fileName }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    manifest {
+        attributes([
+            'Specification-Title': 'iceoptimizer',
+            'Specification-Vendor': project.mod_vendor,
+            'Specification-Version': '1',
+            'Implementation-Title': 'ICE RLCraft Optimizer',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': project.mod_vendor,
+            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+task optimizerCoreJar(type: Jar, dependsOn: hooksClasses) {
+    baseName = 'ice-rlcraft-optimizer-core'
+    version = project.version
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    from(sourceSets.hooks.output) {
+        include 'dev/rlcraft/ice/hooks/**'
+        include 'optimizer-targets.properties'
+    }
+    manifest {
+        attributes([
+            'FMLCorePlugin': 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin',
+            'FMLCorePluginContainsFMLMod': 'false',
+            'Implementation-Title': 'ICE RLCraft Optimizer Core',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': project.mod_vendor
+        ])
+    }
+}
+
+reobf {
+    shadowJar { }
+}
+
+def readJarEntries = { File archive ->
+    if (!archive.isFile()) throw new GradleException("Missing optimizer artifact: ${archive}")
+    def entries = new LinkedHashSet<String>()
+    def zip = new java.util.zip.ZipFile(archive)
+    try {
+        def enumeration = zip.entries()
+        while (enumeration.hasMoreElements()) entries.add(enumeration.nextElement().name)
+    } finally {
+        zip.close()
+    }
+    return entries
+}
+
+def readJarEntryText = { File archive, String entryName ->
+    def zip = new java.util.zip.ZipFile(archive)
+    try {
+        def entry = zip.getEntry(entryName)
+        if (entry == null) throw new GradleException("${archive.name} is missing ${entryName}")
+        def input = zip.getInputStream(entry)
+        try {
+            def output = new ByteArrayOutputStream()
+            byte[] buffer = new byte[4096]
+            int count
+            while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count)
+            return new String(output.toByteArray(), 'UTF-8')
+        } finally {
+            input.close()
+        }
+    } finally {
+        zip.close()
+    }
+}
+
+def readManifestAttribute = { File archive, String name ->
+    def jarFile = new java.util.jar.JarFile(archive)
+    try {
+        return jarFile.manifest.mainAttributes.getValue(name)
+    } finally {
+        jarFile.close()
+    }
+}
+
+def requireEntry = { Set<String> entries, String entry, String artifact ->
+    if (!entries.contains(entry)) throw new GradleException("${artifact} is missing ${entry}")
+}
+
+task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar]) {
+    doLast {
+        Set<String> optimizer = readJarEntries(shadowJar.archivePath)
+        Set<String> core = readJarEntries(optimizerCoreJar.archivePath)
+
+        requireEntry(optimizer, 'dev/rlcraft/ice/IceMod.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/OptimizerConfig.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/OptimizerRegistry.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/proxy/OptimizerServerProxy.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/server/ServerOptimizerRuntime.class', 'optimizer JAR')
+        requireEntry(optimizer, 'mcmod.info', 'optimizer JAR')
+
+        if (!readJarEntryText(shadowJar.archivePath, 'mcmod.info').contains('"modid": "iceoptimizer"')) {
+            throw new GradleException('optimizer JAR contains the wrong mcmod.info')
+        }
+        if (optimizer.any { it.contains('/profiler/') || it.contains('IceProfiler') || it == 'mcmod-optimizer.info' }) {
+            throw new GradleException('optimizer JAR contains private profiler or source metadata content')
+        }
+
+        requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerLoadingPlugin.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/hooks/IceClientOptimizerTransformer.class', 'optimizer core JAR')
+        requireEntry(core, 'optimizer-targets.properties', 'optimizer core JAR')
+        if (readManifestAttribute(optimizerCoreJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin') {
+            throw new GradleException('optimizer core JAR declares the wrong FMLCorePlugin')
+        }
+        if (core.any { it.contains('IceProfiler') || it.contains('ProbeProtocol') }) {
+            throw new GradleException('optimizer core JAR contains profiler hook classes')
+        }
+    }
+}
+
+build.dependsOn verifyOptimizerJars

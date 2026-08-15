@@ -1,0 +1,52 @@
+# Gradle / ForgeGradle
+.gradle/
+.gradle-sandbox-home/
+build/
+out/
+.forge-mdk/
+
+# IDE files
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Minecraft runtime data
+run/
+run-server/
+logs/
+crash-reports/
+saves/
+world/
+config/
+ice-optimizer/
+
+# Local profiling and diagnostic data
+docs/sessions/
+docs/sessions2/
+*.icecap
+*.hprof
+hs_err_pid*
+
+# Local archives and built artifacts
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.zip
+*.rar
+
+# Local configuration and credentials
+.env
+.env.*
+local.properties
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+
+# Temporary files
+.tmp-*
+*.tmp
+*.bak
+*~

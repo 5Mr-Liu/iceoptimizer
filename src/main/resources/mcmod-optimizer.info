@@ -1,0 +1,16 @@
+[
+  {
+    "modid": "iceoptimizer",
+    "name": "ICE RLCraft Optimizer",
+    "description": "Exact, fail-open client and dedicated-server hot-path optimization for Minecraft 1.12.2 RLCraft-family packs. Compatibility is validated per target class rather than by pack version or JAR hash; profiler features are intentionally absent.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "url": "",
+    "updateUrl": "",
+    "authorList": ["ICE Team"],
+    "credits": "RLCraft-specific performance work driven by measured hitch data.",
+    "logoFile": "",
+    "screenshots": [],
+    "dependencies": []
+  }
+]
