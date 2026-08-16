@@ -1,5 +1,10 @@
 package dev.rlcraft.ice.optimizer;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+
 /**
  * Independently switchable RLCraft optimizations. Every module retains a
  * fail-open path to the unmodified game implementation. The boolean flag
@@ -15,6 +20,8 @@ public enum OptimizationModule {
     VANILLA_CHUNK_DISPATCH("vanilla-chunk-dispatch", "原版区块工作线程与缓冲调度"),
     VANILLA_CHUNK_SORT("vanilla-chunk-sort", "原版透明区块原始类型排序"),
     VANILLA_CHUNK_VBO_UPLOAD("vanilla-chunk-vbo-upload", "原版区块 VBO GPU 复制流水线"),
+    OPTIFINE_DYNAMIC_LIGHTS("optifine-dynamic-lights", "OptiFine 动态光源不可变快照"),
+    RUSTIC_LATTICE_STATE("rustic-lattice-state", "Rustic 栅栏连接状态与包围盒缓存", true),
     VANILLA_SAVE_TICK_INDEX("vanilla-save-tick-index", "全量保存计划刻临时索引", true),
     LYCANITES_PATH_NODE_CACHE("lycanites-path-node-cache", "Lycanites 单次寻路缓存", true),
     LYCANITES_REGISTRY_LOOKUP("lycanites-registry-lookup", "Lycanites 注册表单次探测", true),
@@ -27,7 +34,7 @@ public enum OptimizationModule {
     MOBENDS_ENTITY_ANIMATION("mobends-entity-animation", "Mo' Bends 实体动画查询优化"),
     ICEANDFIRE_POSE_LOOKUP("iceandfire-pose-lookup", "Ice and Fire 姿态局部查询"),
     ICEANDFIRE_PARTICLE_SCRATCH("iceandfire-particle-scratch", "Ice and Fire 粒子参数复用", true),
-    FOAMFIX_TEXTURE_UPLOAD("foamfix-texture-upload", "FoamFix 纹理上传流水线"),
+    FOAMFIX_TEXTURE_UPLOAD("foamfix-texture-upload", "FoamFix / TextureUtil 纹理上传流水线"),
     XAERO_TEXTURE_UPLOAD("xaero-texture-upload", "Xaero 纹理上传合并"),
     XAERO_GPU_FENCE("xaero-gpu-fence", "Xaero GPU Fence"),
     RENDERLIB_VISIBILITY("renderlib-visibility", "RenderLib 方块实体合并"),
@@ -43,6 +50,27 @@ public enum OptimizationModule {
     OTG_BO4_LAYOUT("otg-bo4-layout", "OTG BO4 布局与方块数组复用", true),
     SKULL_PROFILE_ASYNC("skull-profile-async", "玩家头颅资料异步解析"),
     RENDER_SUBMISSION("render-submission", "有界渲染提交后端");
+
+    private static final Map<String, OptimizationModule> MODULES_BY_ID;
+    private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;
+
+    static {
+        OptimizationModule[] modules = values();
+        Map<String, OptimizationModule> byId =
+            new HashMap<String, OptimizationModule>(modules.length * 2);
+        Map<String, OptimizationModule> byEnumName =
+            new HashMap<String, OptimizationModule>(modules.length * 2);
+        for (OptimizationModule module : modules) {
+            OptimizationModule duplicateId = byId.put(module.id, module);
+            OptimizationModule duplicateName =
+                byEnumName.put(module.name().toUpperCase(Locale.ROOT), module);
+            if (duplicateId != null || duplicateName != null) {
+                throw new IllegalStateException("Duplicate optimization module identifier: " + module.id);
+            }
+        }
+        MODULES_BY_ID = Collections.unmodifiableMap(byId);
+        MODULES_BY_ENUM_NAME = Collections.unmodifiableMap(byEnumName);
+    }
 
     private final String id;
     private final String displayName;
@@ -76,9 +104,7 @@ public enum OptimizationModule {
 
     public static OptimizationModule byId(String id) {
         if (id == null) return null;
-        for (OptimizationModule module : values()) {
-            if (module.id.equals(id) || module.name().equalsIgnoreCase(id)) return module;
-        }
-        return null;
+        OptimizationModule module = MODULES_BY_ID.get(id);
+        return module != null ? module : MODULES_BY_ENUM_NAME.get(id.toUpperCase(Locale.ROOT));
     }
 }

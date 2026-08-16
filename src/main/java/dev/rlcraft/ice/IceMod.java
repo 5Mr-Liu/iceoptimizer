@@ -19,8 +19,8 @@ import org.apache.logging.log4j.Logger;
 public final class IceMod {
     public static final String MOD_ID = "iceoptimizer";
     public static final String NAME = "ICE RLCraft Optimizer";
-    public static final String VERSION = "0.9.0";
-    public static final String REMOTE_VERSION_RANGE = "[0.9.0]";
+    public static final String VERSION = "0.9.3";
+    public static final String REMOTE_VERSION_RANGE = "[0.9.3]";
     public static final Logger LOGGER = LogManager.getLogger(NAME);
 
     @SidedProxy(

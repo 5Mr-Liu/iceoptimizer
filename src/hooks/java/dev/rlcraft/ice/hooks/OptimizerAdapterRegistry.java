@@ -11,6 +11,14 @@ final class OptimizerAdapterRegistry {
     static {
         Map<String, OptimizerBytecodeAdapter> adapters = new HashMap<String, OptimizerBytecodeAdapter>();
         adapters.put("foamfix-pbo-upload", new FoamFixTextureUploadAdapter());
+        adapters.put("vanilla-texture-pbo-upload", new VanillaTextureUploadAdapter());
+        adapters.put("optifine-dynamic-lights", new OptifineDynamicLightsAdapter(
+            OptifineDynamicLightsAdapter.Part.LIGHTS));
+        adapters.put("optifine-dynamic-light-access", new OptifineDynamicLightsAdapter(
+            OptifineDynamicLightsAdapter.Part.LIGHT));
+        adapters.put("optifine-dynamic-map-access", new OptifineDynamicLightsAdapter(
+            OptifineDynamicLightsAdapter.Part.MAP));
+        adapters.put("rustic-lattice-cache", new RusticLatticeAdapter());
         adapters.put("xaero-texture-batch", new XaeroTextureUploadAdapter());
         adapters.put("renderlib-visibility-cache", new RenderLibTileEntityAdapter());
         adapters.put("srp-kirin-static-subtree", new SrpKirinStaticMeshAdapter());

@@ -26,6 +26,8 @@ final class OptimizerModuleSelection {
             case VANILLA_CHUNK_DISPATCH: return source.vanillaChunkDispatch;
             case VANILLA_CHUNK_SORT: return source.vanillaChunkSort;
             case VANILLA_CHUNK_VBO_UPLOAD: return source.vanillaChunkVboUpload;
+            case OPTIFINE_DYNAMIC_LIGHTS: return source.optifineDynamicLights;
+            case RUSTIC_LATTICE_STATE: return source.rusticLatticeStateCache;
             case VANILLA_SAVE_TICK_INDEX: return source.vanillaSaveTickIndex;
             case LYCANITES_PATH_NODE_CACHE: return source.lycanitesPathNodeCache;
             case LYCANITES_REGISTRY_LOOKUP: return source.lycanitesRegistryLookup;

@@ -12,10 +12,11 @@ import org.lwjgl.opengl.ARBSync;
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
+import org.lwjgl.opengl.GL32;
 import org.lwjgl.opengl.GLContext;
 import org.lwjgl.opengl.GLSync;
 
-/** Exact FoamFix upload replacement selected only by the reviewed class hash. */
+/** Fail-open PBO upload path shared by FoamFix's batch helper and vanilla TextureUtil. */
 public final class FoamFixUploadBridge {
     private static final String MODULE = "foamfix-texture-upload";
     private static final int PIXEL_UNPACK_BUFFER = 35052;
@@ -32,6 +33,74 @@ public final class FoamFixUploadBridge {
     private static boolean activated;
 
     private FoamFixUploadBridge() {
+    }
+
+    /**
+     * Generic TextureUtil entry used when FoamFix loaded its sprite subclass
+     * before ICE's late structural transformer became available.
+     */
+    public static boolean tryUploadLevel(int mipLevel, int[] data, int width, int height,
+                                         int originX, int originY, boolean linearFiltering,
+                                         boolean clamped, boolean mipFiltering) {
+        if (!OptimizerBridge.isEnabled(MODULE) || mipLevel < 0 || data == null
+            || width <= 0 || height <= 0) return false;
+        Minecraft minecraft = Minecraft.getMinecraft();
+        if (minecraft == null || minecraft.gameSettings == null || minecraft.gameSettings.anaglyph) return false;
+        long countLong = (long) width * (long) height;
+        if (countLong <= 0L || countLong > data.length || countLong > MAX_STAGING_BYTES / 4L) return false;
+        int count = (int) countLong;
+        int previousPbo = 0;
+        boolean bindingChanged = false;
+        try {
+            IntBuffer pixels = prepareSinglePixels(data, count);
+            if (pixels == null) return false;
+            setTextureParameters(linearFiltering, clamped, mipFiltering);
+            ContextCapabilities capabilities = GLContext.getCapabilities();
+            if (supportsPbo(capabilities)) {
+                previousPbo = GL11.glGetInteger(PIXEL_UNPACK_BUFFER_BINDING);
+                PboSlot slot = acquirePboSlot(capabilities);
+                if (slot != null) {
+                    GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
+                    bindingChanged = true;
+                    if (slot.ensureCapacity(count * 4)) {
+                        try {
+                            GL15.glBufferSubData(PIXEL_UNPACK_BUFFER, 0L, pixels);
+                            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
+                                width, height, 32993, 33639, 0L);
+                            slot.markSubmitted(capabilities);
+                        } catch (Throwable error) {
+                            slot.poison();
+                            throw error;
+                        }
+                    } else {
+                        GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, 0);
+                        GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
+                            width, height, 32993, 33639, pixels);
+                    }
+                } else {
+                    if (previousPbo != 0) {
+                        GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, 0);
+                        bindingChanged = true;
+                    }
+                    GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
+                        width, height, 32993, 33639, pixels);
+                }
+            } else {
+                GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
+                    width, height, 32993, 33639, pixels);
+            }
+            if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
+            activate();
+            OptimizerBridge.success(MODULE);
+            return true;
+        } catch (Throwable error) {
+            try {
+                if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
+            } catch (Throwable ignored) {
+            }
+            OptimizerBridge.failure(MODULE, error);
+            return false;
+        }
     }
 
     public static boolean tryUpload(int maxMips, int[][] data, int width, int height, int originX, int originY,
@@ -62,7 +131,7 @@ public final class FoamFixUploadBridge {
             ContextCapabilities capabilities = GLContext.getCapabilities();
             if (supportsPbo(capabilities)) {
                 previousPbo = GL11.glGetInteger(PIXEL_UNPACK_BUFFER_BINDING);
-                PboSlot slot = acquirePboSlot();
+                PboSlot slot = acquirePboSlot(capabilities);
                 if (slot != null) {
                     GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
                     bindingChanged = true;
@@ -70,7 +139,7 @@ public final class FoamFixUploadBridge {
                         try {
                             GL15.glBufferSubData(PIXEL_UNPACK_BUFFER, 0L, pixels);
                             uploadFromPbo(width, height, originX, originY, mips);
-                            slot.markSubmitted();
+                            slot.markSubmitted(capabilities);
                         } catch (Throwable error) {
                             slot.poison();
                             throw error;
@@ -90,10 +159,8 @@ public final class FoamFixUploadBridge {
                 uploadDirect(width, height, originX, originY, mips);
             }
             if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
-            if (!activated) {
-                activated = true;
-                OptimizerBridge.activate(MODULE, "FoamFix mip 参数合并与三槽 PBO 已启用");
-            }
+            activate();
+            OptimizerBridge.success(MODULE);
             return true;
         } catch (Throwable error) {
             try {
@@ -117,6 +184,22 @@ public final class FoamFixUploadBridge {
         }
         staging.flip();
         return staging;
+    }
+
+    private static IntBuffer prepareSinglePixels(int[] data, int count) {
+        ensureContext();
+        int requiredBytes = count * 4;
+        if (!ensureStagingCapacity(requiredBytes)) return null;
+        staging.clear();
+        staging.put(data, 0, count);
+        staging.flip();
+        return staging;
+    }
+
+    private static void activate() {
+        if (activated) return;
+        activated = true;
+        OptimizerBridge.activate(MODULE, "动画纹理上传已使用三槽 PBO；批量入口可用时同时合并 mip 参数");
     }
 
     private static boolean ensureStagingCapacity(int requiredBytes) {
@@ -178,12 +261,18 @@ public final class FoamFixUploadBridge {
     }
 
     private static boolean supportsPbo(ContextCapabilities capabilities) {
-        return capabilities.OpenGL15
-            && (capabilities.OpenGL21 || capabilities.GL_ARB_pixel_buffer_object)
-            && capabilities.GL_ARB_sync;
+        return capabilities != null && supportsPboForTest(capabilities.OpenGL15,
+            capabilities.OpenGL21, capabilities.GL_ARB_pixel_buffer_object,
+            capabilities.OpenGL32, capabilities.GL_ARB_sync);
     }
 
-    private static PboSlot acquirePboSlot() {
+    static boolean supportsPboForTest(boolean openGl15, boolean openGl21,
+                                      boolean arbPixelBufferObject,
+                                      boolean openGl32, boolean arbSync) {
+        return openGl15 && (openGl21 || arbPixelBufferObject) && (openGl32 || arbSync);
+    }
+
+    private static PboSlot acquirePboSlot(ContextCapabilities capabilities) {
         for (int checked = 0; checked < SLOT_COUNT; checked++) {
             int index = (slotCursor + checked) % SLOT_COUNT;
             PboSlot slot = SLOTS[index];
@@ -191,7 +280,7 @@ public final class FoamFixUploadBridge {
                 slot = new PboSlot();
                 SLOTS[index] = slot;
             }
-            if (slot.isReady()) {
+            if (slot.isReady(capabilities)) {
                 slotCursor = (index + 1) % SLOT_COUNT;
                 return slot;
             }
@@ -217,6 +306,23 @@ public final class FoamFixUploadBridge {
         return Math.min(MAX_STAGING_BYTES, Math.max(requiredBytes, target));
     }
 
+    private static int waitResult(ContextCapabilities capabilities, GLSync fence) {
+        return capabilities.OpenGL32
+            ? GL32.glClientWaitSync(fence, 0, 0L)
+            : ARBSync.glClientWaitSync(fence, 0, 0L);
+    }
+
+    private static GLSync fence(ContextCapabilities capabilities) {
+        return capabilities.OpenGL32
+            ? GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+            : ARBSync.glFenceSync(ARBSync.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
+
+    private static void deleteFence(ContextCapabilities capabilities, GLSync fence) {
+        if (capabilities.OpenGL32) GL32.glDeleteSync(fence);
+        else ARBSync.glDeleteSync(fence);
+    }
+
     private static final class PboSlot {
         private final int bufferId = GL15.glGenBuffers();
         private GLSync fence;
@@ -224,12 +330,12 @@ public final class FoamFixUploadBridge {
         private CacheBudget.Reservation reservation;
         private boolean poisoned;
 
-        private boolean isReady() {
+        private boolean isReady(ContextCapabilities capabilities) {
             if (poisoned) return false;
             if (fence == null) return true;
-            int result = ARBSync.glClientWaitSync(fence, 0, 0L);
+            int result = waitResult(capabilities, fence);
             if (result == ARBSync.GL_ALREADY_SIGNALED || result == ARBSync.GL_CONDITION_SATISFIED) {
-                ARBSync.glDeleteSync(fence);
+                deleteFence(capabilities, fence);
                 fence = null;
                 return true;
             }
@@ -258,8 +364,8 @@ public final class FoamFixUploadBridge {
             return true;
         }
 
-        private void markSubmitted() {
-            fence = ARBSync.glFenceSync(ARBSync.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        private void markSubmitted(ContextCapabilities capabilities) {
+            fence = fence(capabilities);
             if (fence == null) throw new IllegalStateException("无法创建 PBO 同步 Fence");
         }
 

@@ -5,7 +5,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkBufferAccessor;
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkDispatcherPolicyAccessor;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkVertexBufferAccessor;
+import dev.rlcraft.ice.optimizer.compat.optifine.DynamicLightAccessor;
+import dev.rlcraft.ice.optimizer.compat.optifine.DynamicLightsMapAccessor;
 import dev.rlcraft.ice.optimizer.compat.save.PendingTickAccessor;
 import dev.rlcraft.ice.optimizer.lock.ClassFingerprint;
 import java.lang.reflect.Method;
@@ -28,6 +31,12 @@ public class CoreTransformerIsolationTest {
         "dev.rlcraft.ice.optimizer.compat.chunk.ChunkBufferAccessor";
     private static final String CHUNK_VBO_ACCESSOR =
         "dev.rlcraft.ice.optimizer.compat.chunk.ChunkVertexBufferAccessor";
+    private static final String CHUNK_POLICY_ACCESSOR =
+        "dev.rlcraft.ice.optimizer.compat.chunk.ChunkDispatcherPolicyAccessor";
+    private static final String DYNAMIC_LIGHT_ACCESSOR =
+        "dev.rlcraft.ice.optimizer.compat.optifine.DynamicLightAccessor";
+    private static final String DYNAMIC_LIGHTS_MAP_ACCESSOR =
+        "dev.rlcraft.ice.optimizer.compat.optifine.DynamicLightsMapAccessor";
 
     @Test
     public void optimizerCoreInitializesWithoutTheMainRuntime() throws Exception {
@@ -38,6 +47,12 @@ public class CoreTransformerIsolationTest {
         assertEquals(earlyAbiClasses, ChunkBufferAccessor.class.getProtectionDomain()
             .getCodeSource().getLocation());
         assertEquals(earlyAbiClasses, ChunkVertexBufferAccessor.class.getProtectionDomain()
+            .getCodeSource().getLocation());
+        assertEquals(earlyAbiClasses, ChunkDispatcherPolicyAccessor.class.getProtectionDomain()
+            .getCodeSource().getLocation());
+        assertEquals(earlyAbiClasses, DynamicLightAccessor.class.getProtectionDomain()
+            .getCodeSource().getLocation());
+        assertEquals(earlyAbiClasses, DynamicLightsMapAccessor.class.getProtectionDomain()
             .getCodeSource().getLocation());
         URL targetResource = IceOptimizerTransformer.class
             .getResource("/optimizer-targets.properties");
@@ -61,10 +76,19 @@ public class CoreTransformerIsolationTest {
             assertEquals(4, accessor.getDeclaredMethods().length);
             Class<?> chunkBuffer = Class.forName(CHUNK_BUFFER_ACCESSOR, true, loader);
             Class<?> chunkVbo = Class.forName(CHUNK_VBO_ACCESSOR, true, loader);
+            Class<?> chunkPolicy = Class.forName(CHUNK_POLICY_ACCESSOR, true, loader);
+            Class<?> dynamicLight = Class.forName(DYNAMIC_LIGHT_ACCESSOR, true, loader);
+            Class<?> dynamicLightsMap = Class.forName(DYNAMIC_LIGHTS_MAP_ACCESSOR, true, loader);
             assertEquals(loader, chunkBuffer.getClassLoader());
             assertEquals(loader, chunkVbo.getClassLoader());
+            assertEquals(loader, chunkPolicy.getClassLoader());
+            assertEquals(loader, dynamicLight.getClassLoader());
+            assertEquals(loader, dynamicLightsMap.getClassLoader());
             assertEquals(4, chunkBuffer.getDeclaredMethods().length);
             assertEquals(5, chunkVbo.getDeclaredMethods().length);
+            assertEquals(2, chunkPolicy.getDeclaredMethods().length);
+            assertEquals(5, dynamicLight.getDeclaredMethods().length);
+            assertEquals(1, dynamicLightsMap.getDeclaredMethods().length);
 
             String target = "com.dhanantry.scapeandrunparasites.client.model.entity.pure.ModelEsor";
             byte[] unknown = emptyClass(target.replace('.', '/'));
@@ -143,7 +167,10 @@ public class CoreTransformerIsolationTest {
             if (name.startsWith("dev.rlcraft.ice.hooks.")
                 || PENDING_TICK_ACCESSOR.equals(name)
                 || CHUNK_BUFFER_ACCESSOR.equals(name)
-                || CHUNK_VBO_ACCESSOR.equals(name)) {
+                || CHUNK_VBO_ACCESSOR.equals(name)
+                || CHUNK_POLICY_ACCESSOR.equals(name)
+                || DYNAMIC_LIGHT_ACCESSOR.equals(name)
+                || DYNAMIC_LIGHTS_MAP_ACCESSOR.equals(name)) {
                 Class<?> loaded = findLoadedClass(name);
                 if (loaded == null) loaded = findClass(name);
                 if (resolve) resolveClass(loaded);

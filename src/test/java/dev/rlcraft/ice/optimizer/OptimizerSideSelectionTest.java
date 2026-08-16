@@ -13,6 +13,7 @@ public final class OptimizerSideSelectionTest {
         assertTrue(server.enabled(OptimizationModule.SRP_PATH_NODE_CACHE));
         assertTrue(server.enabled(OptimizationModule.SRP_TARGET_SEARCH));
         assertTrue(server.enabled(OptimizationModule.VANILLA_SAVE_TICK_INDEX));
+        assertTrue(server.enabled(OptimizationModule.RUSTIC_LATTICE_STATE));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_PATH_NODE_CACHE));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_REGISTRY_LOOKUP));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_SPAWN_SCAN));
@@ -29,6 +30,7 @@ public final class OptimizerSideSelectionTest {
         assertFalse(server.enabled(OptimizationModule.VANILLA_CHUNK_DISPATCH));
         assertFalse(server.enabled(OptimizationModule.VANILLA_CHUNK_SORT));
         assertFalse(server.enabled(OptimizationModule.VANILLA_CHUNK_VBO_UPLOAD));
+        assertFalse(server.enabled(OptimizationModule.OPTIFINE_DYNAMIC_LIGHTS));
         assertFalse(server.enabled(OptimizationModule.LYCANITES_OBJ_RENDER));
         assertFalse(server.enabled(OptimizationModule.MOBENDS_MODEL_RENDER));
         assertFalse(server.enabled(OptimizationModule.FOAMFIX_TEXTURE_UPLOAD));
@@ -50,6 +52,8 @@ public final class OptimizerSideSelectionTest {
         assertTrue(client.enabled(OptimizationModule.VANILLA_CHUNK_DISPATCH));
         assertTrue(client.enabled(OptimizationModule.VANILLA_CHUNK_SORT));
         assertTrue(client.enabled(OptimizationModule.VANILLA_CHUNK_VBO_UPLOAD));
+        assertTrue(client.enabled(OptimizationModule.OPTIFINE_DYNAMIC_LIGHTS));
+        assertTrue(client.enabled(OptimizationModule.RUSTIC_LATTICE_STATE));
         assertTrue(client.enabled(OptimizationModule.VANILLA_SAVE_TICK_INDEX));
         assertTrue(client.enabled(OptimizationModule.LYCANITES_SPAWN_SCAN));
         assertTrue(client.enabled(OptimizationModule.LYCANITES_OBJ_RENDER));

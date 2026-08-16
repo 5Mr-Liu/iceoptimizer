@@ -1,10 +1,14 @@
 package dev.rlcraft.ice.optimizer.compat.bettercaves;
 
+import dev.rlcraft.ice.optimizer.ModuleCircuitBreaker;
+import dev.rlcraft.ice.optimizer.OptimizationModule;
+import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 
 /** Runtime gate shared by the structurally validated Better Caves adapters. */
 public final class BetterCavesOptimizationBridge {
-    private static final String MODULE = "better-caves-noise";
+    private static final OptimizationModule MODULE = OptimizationModule.BETTER_CAVES_NOISE;
+    private static volatile ModuleCircuitBreaker moduleBreaker;
     private static volatile boolean activated;
     private static volatile int pipelineCapability;
 
@@ -13,8 +17,9 @@ public final class BetterCavesOptimizationBridge {
 
     public static boolean isEnabled() {
         try {
-            if (!OptimizerBridge.isEnabled(MODULE)) return false;
-            activateOnce();
+            ModuleCircuitBreaker breaker = breaker();
+            if (breaker == null || !breaker.isOperational()) return false;
+            activateOnce(breaker);
             return true;
         } catch (Throwable error) {
             fail(error);
@@ -68,11 +73,19 @@ public final class BetterCavesOptimizationBridge {
         return (int) mixed & 63;
     }
 
-    private static void activateOnce() {
+    private static ModuleCircuitBreaker breaker() {
+        ModuleCircuitBreaker known = moduleBreaker;
+        if (known != null) return known;
+        known = OptimizerRegistry.breaker(MODULE);
+        if (known != null) moduleBreaker = known;
+        return known;
+    }
+
+    private static void activateOnce(ModuleCircuitBreaker breaker) {
         if (activated) return;
         synchronized (BetterCavesOptimizationBridge.class) {
             if (activated) return;
-            OptimizerBridge.activate(MODULE,
+            breaker.activate(
                 "Better Caves 原始 double 噪声、连续列、单次插值和重复角点缓存已启用");
             activated = true;
         }
@@ -80,7 +93,9 @@ public final class BetterCavesOptimizationBridge {
 
     private static void fail(Throwable error) {
         try {
-            OptimizerBridge.failure(MODULE, error);
+            ModuleCircuitBreaker known = moduleBreaker;
+            if (known != null) known.recordFailure(error);
+            else OptimizerBridge.failure(MODULE.getId(), error);
         } catch (Throwable ignored) {
         }
     }

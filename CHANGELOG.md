@@ -1,5 +1,41 @@
 # Changelog / 更新日志
 
+## 0.9.3 — 2026-08-16
+
+### 中文
+
+- 普通 RLCraft 新采样确认稳定阶段约 248–313 FPS、GPU 用时约 1.66–2.14 ms，主要卡顿位于单人集成服务器的世界生成与保存链路，而不是持续 GPU 饱和。
+- 修复 ICE 自身的热路径回退：`OptimizationModule.byId` 不再为每次开关检查分配 `values()` 数组并逐项执行 `equals/equalsIgnoreCase`，改为启动期构建的 O(1) 精确 ID 表与兼容枚举名表。
+- Better Caves 的 `NoiseTuple`、`NoiseColumn`、`NoiseGen` 和 `CaveCarver` 共享门缓存稳定的 `ModuleCircuitBreaker` 引用。每次仍读取实时状态，配置关闭、结构不兼容或运行时熔断会立即回退原实现；没有缓存永久 boolean。
+- 新增字节码性能回归，禁止模块查询恢复线性扫描，也禁止 Better Caves 热路径重新调用字符串版 `OptimizerBridge.isEnabled`。这次不改变洞穴噪声、随机数、区块内容、保存顺序或画面结果。
+- 公开优化器工程使用普通 RLCraft 与 Dregora 真实目标 JAR、OptiFine G5、Rustic 1.1.7、Better Caves 2.0.4 和 Forge 1.12.2 SRG 执行 130 项测试：0 失败、0 错误，1 项仅因缺少可选运行期 Better Foliage 单类样本而跳过；重混淆、主/Core 分包和 bundle 校验通过。
+
+### English
+
+- New standard-RLCraft captures show roughly 248–313 FPS and 1.66–2.14 ms GPU time during stable play; the major stalls are integrated-server world generation and saves, not sustained GPU saturation.
+- Fixed an ICE regression in the hot gate: `OptimizationModule.byId` no longer allocates `values()` arrays and linearly runs `equals/equalsIgnoreCase` for every module check. Canonical IDs now use a startup-built O(1) table while legacy enum-name lookup remains compatible.
+- The shared Better Caves gate for `NoiseTuple`, `NoiseColumn`, `NoiseGen`, and `CaveCarver` caches the stable `ModuleCircuitBreaker` reference but reads its live state on every entry. Configuration changes, structural incompatibility, and runtime trips still fall back immediately; no permanent boolean is cached.
+- Added bytecode performance regressions that forbid reintroducing linear module scans or the string-based `OptimizerBridge.isEnabled` call in the Better Caves hot gate. Cave noise, RNG, chunk contents, save order, and rendering results are unchanged.
+- The public optimizer project ran 130 tests against real standard-RLCraft and Dregora targets, OptiFine G5, Rustic 1.1.7, Better Caves 2.0.4, and Forge 1.12.2 SRG: zero failures, zero errors, and one skip only for an optional runtime-transformed Better Foliage class fixture. Reobfuscation, main/Core separation, and bundle verification passed.
+
+## 0.9.2 — 2026-08-16
+
+### 中文
+
+- 新增 OptiFine 动态光不可变 primitive 快照；仍在原 50 ms 更新边界刷新，96 个以上光源自动使用 8 方块空间索引。距离、亮度、水下衰减和 Clear Water 语义保持一致。
+- 新增 Rustic 栅栏六方向状态与 64 个精确 AABB 复用；连接判定仍执行 Rustic 原方法，渲染、碰撞、粒子和寻路结果不变。
+- Fermium/NormalASM 环境不再整体跳过区块线程限制；ICE 在其最终 worker/builder 改写后只做硬件与堆内存自适应上限，不替换 Fermium 策略。
+- FoamFix 动画纹理 PBO 增加可靠的原版 `TextureUtil` 单级入口，并同时支持 OpenGL 3.2 核心 Sync 和 `GL_ARB_sync`。能力缺失、槽位忙、预算不足或异常时立即执行原上传。
+- 目标目录增至 61 个唯一类、62 个独立能力项；新增真实 OptiFine G5、Rustic 1.1.7、FoamFix 0.10.15、Forge SRG TextureUtil 与 Fermium 后置策略回归。
+
+### English
+
+- Added immutable primitive snapshots for OptiFine dynamic lights, refreshed on the original 50 ms boundary, with an exact 8-block spatial index above 96 lights. Distance, brightness, underwater attenuation, and Clear Water behavior are preserved.
+- Added Rustic lattice six-direction state reuse and 64 exact AABBs. Rustic's original connectivity checks still run, preserving rendering, collision, particles, and pathfinding.
+- Fermium/NormalASM no longer disables the dispatcher policy wholesale. ICE clamps only the final worker/builder values after Fermium has applied its own strategy, using hardware-and-heap tiers without replacing that strategy.
+- Added a reliable vanilla `TextureUtil` entry for FoamFix animated-texture PBO uploads and support for both OpenGL 3.2 core Sync and `GL_ARB_sync`. Missing capabilities, busy slots, budget rejection, or errors immediately use the original upload.
+- The catalog grows to 61 unique classes and 62 independent capability entries, with real OptiFine G5, Rustic 1.1.7, FoamFix 0.10.15, Forge SRG TextureUtil, and post-Fermium regression fixtures.
+
 ## 0.9.1 — 2026-08-16
 
 ### 中文

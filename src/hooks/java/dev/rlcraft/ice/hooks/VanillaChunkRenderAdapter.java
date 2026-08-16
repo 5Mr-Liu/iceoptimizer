@@ -33,6 +33,8 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         "dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor";
     static final String VBO_ACCESS =
         "dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor";
+    static final String POLICY_ACCESS =
+        "dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor";
     static final String POLICY_BRIDGE =
         "dev/rlcraft/ice/optimizer/compat/chunk/ChunkRenderPolicyBridge";
     static final String SORT_BRIDGE =
@@ -63,8 +65,6 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     private static final String VERTEX_FORMAT_OWNER =
         "net/minecraft/client/renderer/vertex/VertexFormat";
     private static final String DISPATCHER_BUILDER_COUNT = "field_188249_c";
-    private static final String NORMALASM_DISPATCH_POLICY =
-        "mirror/normalasm/common/priorities/mixins/client/ChunkRenderDispatcherMixin.class";
     private final Part part;
 
     VanillaChunkRenderAdapter(Part part) {
@@ -104,20 +104,17 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     }
 
     private static void transformDispatcherPolicy(ClassNode node) {
-        if (VanillaChunkRenderAdapter.class.getClassLoader()
-            .getResource(NORMALASM_DISPATCH_POLICY) != null) {
-            throw new OptimizerAdapterSkippedException(
-                "检测到 NormalASM/Fermium 的区块线程策略；避免重复改写同一构造器");
-        }
+        rejectInterface(node, POLICY_ACCESS);
         MethodNode constructor = requireMethod(node, "<init>", "(I)V");
-        FieldInsnNode builderAssignment = uniqueField(constructor, Opcodes.PUTFIELD,
+        FieldWrite builderWrite = uniqueFieldWrite(node, Opcodes.PUTFIELD,
             node.name, DISPATCHER_BUILDER_COUNT, "I");
         MethodInsnNode processors = uniqueCall(constructor, Opcodes.INVOKEVIRTUAL,
             "java/lang/Runtime", "availableProcessors", "()I");
-        if (!comesBefore(processors, builderAssignment)) {
+        if (builderWrite.method == constructor && !comesBefore(processors, builderWrite.instruction)) {
             throw new IllegalStateException("区块 worker 与构建器初始化顺序变化");
         }
-        VarInsnNode workerStore = nextStoreBefore(processors, builderAssignment);
+        VarInsnNode workerStore = nextStoreBefore(processors,
+            builderWrite.method == constructor ? builderWrite.instruction : null);
         if (workerStore == null) throw new IllegalStateException("区块 worker 计数局部变量变化");
         InsnList tuneWorkers = new InsnList();
         tuneWorkers.add(new VarInsnNode(Opcodes.ILOAD, workerStore.var));
@@ -126,11 +123,14 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         tuneWorkers.add(new VarInsnNode(Opcodes.ISTORE, workerStore.var));
         constructor.instructions.insert(workerStore, tuneWorkers);
 
-        InsnList tuneBuilders = new InsnList();
-        tuneBuilders.add(new VarInsnNode(Opcodes.ILOAD, workerStore.var));
-        tuneBuilders.add(new MethodInsnNode(Opcodes.INVOKESTATIC, POLICY_BRIDGE,
-            "tuneBuilderCount", "(II)I", false));
-        constructor.instructions.insertBefore(builderAssignment, tuneBuilders);
+        node.interfaces.add(POLICY_ACCESS);
+        addIntFieldAccessor(node, "ice$builderCount", DISPATCHER_BUILDER_COUNT);
+        addIntFieldSetter(node, "ice$setBuilderCount", DISPATCHER_BUILDER_COUNT);
+        InsnList clampBuilders = new InsnList();
+        clampBuilders.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        clampBuilders.add(new MethodInsnNode(Opcodes.INVOKESTATIC, POLICY_BRIDGE,
+            "clampBuilderCount", "(L" + POLICY_ACCESS + ";)V", false));
+        builderWrite.method.instructions.insert(builderWrite.instruction, clampBuilders);
     }
 
     private static void transformDispatcherUpload(ClassNode node) {
@@ -367,6 +367,26 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         return found;
     }
 
+    private static FieldWrite uniqueFieldWrite(ClassNode node, int opcode, String owner,
+                                               String name, String descriptor) {
+        FieldWrite found = null;
+        int count = 0;
+        for (MethodNode method : node.methods) {
+            for (AbstractInsnNode instruction : method.instructions.toArray()) {
+                if (!(instruction instanceof FieldInsnNode)) continue;
+                FieldInsnNode field = (FieldInsnNode) instruction;
+                if (field.getOpcode() == opcode && owner.equals(field.owner)
+                    && name.equals(field.name) && descriptor.equals(field.desc)) {
+                    found = new FieldWrite(method, field);
+                    count++;
+                }
+            }
+        }
+        if (count != 1) throw new IllegalStateException(node.name + " 字段写入数量变化："
+            + owner + '.' + name + descriptor + '=' + count);
+        return found;
+    }
+
     private static int countCalls(MethodNode method, String owner, String name, String descriptor) {
         int count = 0;
         for (AbstractInsnNode instruction : method.instructions.toArray()) {
@@ -454,6 +474,16 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         private SafeClassWriter(ClassReader reader, int flags) { super(reader, flags); }
         @Override protected String getCommonSuperClass(String left, String right) {
             return "java/lang/Object";
+        }
+    }
+
+    private static final class FieldWrite {
+        private final MethodNode method;
+        private final FieldInsnNode instruction;
+
+        private FieldWrite(MethodNode method, FieldInsnNode instruction) {
+            this.method = method;
+            this.instruction = instruction;
         }
     }
 }

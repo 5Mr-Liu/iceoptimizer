@@ -24,12 +24,12 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| 当前版本 | 0.9.1 |
+| 当前版本 | 0.9.3 |
 | 模组 ID | `iceoptimizer` |
 | 运行端 | 客户端与服务端 |
 | 已重点验证 | RLCraft 2.9.3、RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
 
-0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。0.9.1 进一步允许同一个目标类串联多个独立能力；每项只检查自己必需的字段、方法描述符和调用关系。未知 SHA、无关字段或无害指令距离变化不会拒绝补丁，一项结构不匹配也不会阻止同类中的后续能力。
+0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。0.9.1 允许同一个目标类串联多个独立能力；0.9.2 增加 OptiFine 动态光快照、Rustic 栅栏状态/AABB 复用、Fermium 后置线程限制和可靠的 TextureUtil PBO 入口；0.9.3 修复普通 RLCraft Better Caves 热循环中的模块开关线性查找回退。每项仍只检查自己必需的字段、方法描述符和调用关系。
 
 这并不代表任意修改版整合包都受到正式支持。出现问题时请先在上述已验证环境中复现。
 
@@ -38,14 +38,14 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 推荐从 [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) 下载完整安装包：
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.1.zip
+ice-rlcraft-optimizer-bundle-0.9.3.zip
 ```
 
 解压后把其中两个 JAR 一起放入实例的 `mods` 目录：
 
 ```text
-ice-rlcraft-optimizer-0.9.1.jar
-ice-rlcraft-optimizer-core-0.9.1.jar
+ice-rlcraft-optimizer-0.9.3.jar
+ice-rlcraft-optimizer-core-0.9.3.jar
 ```
 
 Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR，但版本必须完全一致。
@@ -78,9 +78,9 @@ Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR�
 - **原版区块渲染**：按逻辑处理器与 JVM 堆分档选择 1–16 个 Worker（且不超过原值），限制过量 Direct Buffer 构建器；线程策略、上传入口、透明排序和 VBO 访问独立安装。GPU copy 同时支持 OpenGL 核心接口与 `GL_ARB_copy_buffer` / `GL_ARB_sync` 扩展组合。
 - **原版世界保存**：仅在同步全量区块保存范围内建立计划刻临时索引，避免每个区块重复扫描世界级集合。
 - **Mo' Bends / Ice and Fire**：父链、四元数、姿态查询及低分配粒子参数路径。
-- **FoamFix / Xaero**：纹理上传暂存、PBO/Fence 和非阻塞 GPU 计时路径。
-- **RenderLib / OreLib / Better Foliage / Dynamic Trees**：方块实体合并、GL 状态快照、AO 暂存和连接数据复用。
-- **Better Caves**：原始类型噪声存储、深复制列缓存、插值临时对象收敛和连续阈值表。
+- **FoamFix / TextureUtil / Xaero**：动画纹理上传暂存、三槽 PBO/Fence、原版 TextureUtil 入口和非阻塞 GPU 计时路径。
+- **OptiFine / Rustic / RenderLib / OreLib / Better Foliage / Dynamic Trees**：动态光不可变快照与空间索引、栅栏状态/AABB 复用、方块实体合并、GL 状态快照、AO 暂存和连接数据复用。
+- **Better Caves**：原始类型噪声存储、深复制列缓存、插值临时对象收敛、连续阈值表，以及不再线性扫描模块目录的实时熔断门。
 - **Quality Tools / Quark**：稳定装备属性复用与掉落物同步状态的低分配实现。
 - **Open Terrain Generator / BO4**：冗余源文件回写抑制、低分配配置解析、方块数组和列偏移复用。
 - **玩家头颅**：将不完整资料的 Authlib 网络解析移出渲染线程，并使用有界缓存与队列。
@@ -148,12 +148,12 @@ This repository contains the optimizer only. It does not include performance rec
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| Current version | 0.9.1 |
+| Current version | 0.9.3 |
 | Mod ID | `iceoptimizer` |
 | Environment | Client and server |
 | Primary test targets | RLCraft 2.9.3 and RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
 
-Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Version 0.9.1 also allows multiple independent capabilities to be chained on the same target class. Each capability validates only the fields, descriptors, and call relationships it requires. Unknown hashes, unrelated fields, and harmless instruction-distance changes do not reject a patch, and one mismatch does not block later capabilities on that class.
+Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Version 0.9.1 allows multiple independent capabilities on one target class; 0.9.2 adds OptiFine dynamic-light snapshots, Rustic lattice state/AABB reuse, post-Fermium worker limits, and a reliable TextureUtil PBO entry; 0.9.3 removes the linear module-gate lookup exposed by Better Caves in standard RLCraft. Each capability still validates only the fields, descriptors, and call relationships it requires.
 
 This does not make every modified pack an officially supported target. Please reproduce issues on one of the primary test environments first.
 
@@ -162,14 +162,14 @@ This does not make every modified pack an officially supported target. Please re
 The recommended download from [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) is the complete bundle:
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.1.zip
+ice-rlcraft-optimizer-bundle-0.9.3.zip
 ```
 
 Extract it and place both contained JARs in the instance `mods` directory:
 
 ```text
-ice-rlcraft-optimizer-0.9.1.jar
-ice-rlcraft-optimizer-core-0.9.1.jar
+ice-rlcraft-optimizer-0.9.3.jar
+ice-rlcraft-optimizer-core-0.9.3.jar
 ```
 
 The Core JAR is required; it is not an optional dependency. The two JARs may also be downloaded separately, but their versions must match exactly.
@@ -202,9 +202,9 @@ For before/after comparisons, use the same save, route, render distance, and JVM
 - **Vanilla chunk rendering**: choose 1–16 workers from logical CPU count and JVM heap without exceeding vanilla's value; install dispatcher policy, upload entry, translucent sorting, and VBO access independently; support both core OpenGL and `GL_ARB_copy_buffer` / `GL_ARB_sync` combinations.
 - **Vanilla world saves**: a temporary scheduled-tick index scoped only to synchronous full chunk saves, avoiding repeated world-wide collection scans for every chunk.
 - **Mo' Bends / Ice and Fire**: parent topology, quaternion matrices, pose lookup, and low-allocation particle arguments.
-- **FoamFix / Xaero**: texture upload staging, PBO/Fence paths, and non-blocking GPU timing.
-- **RenderLib / OreLib / Better Foliage / Dynamic Trees**: tile-entity merging, GL state snapshots, AO scratch reuse, and connection memoization.
-- **Better Caves**: primitive noise storage, deep-copy column caching, collapsed interpolation temporaries, and contiguous threshold maps.
+- **FoamFix / TextureUtil / Xaero**: animated-texture staging, triple-slot PBO/Fence paths, a vanilla TextureUtil entry, and non-blocking GPU timing.
+- **OptiFine / Rustic / RenderLib / OreLib / Better Foliage / Dynamic Trees**: immutable dynamic-light snapshots and spatial indexing, lattice state/AABB reuse, tile-entity merging, GL state snapshots, AO scratch reuse, and connection memoization.
+- **Better Caves**: primitive noise storage, deep-copy column caching, collapsed interpolation temporaries, contiguous threshold maps, and a live circuit-breaker gate without linear module scans.
 - **Quality Tools / Quark**: stable equipment-attribute reuse and lower-allocation dropped-item synchronization state.
 - **Open Terrain Generator / BO4**: redundant source rewrite suppression, lower-allocation parsing, and per-spawn block-array/layout reuse.
 - **Player skulls**: bounded off-render-thread Authlib profile resolution for incomplete profiles.

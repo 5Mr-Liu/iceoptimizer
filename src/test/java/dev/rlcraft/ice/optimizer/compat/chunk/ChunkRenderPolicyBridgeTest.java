@@ -2,6 +2,8 @@ package dev.rlcraft.ice.optimizer.compat.chunk;
 
 import static org.junit.Assert.assertEquals;
 
+import dev.rlcraft.ice.optimizer.OptimizationModule;
+import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import org.junit.Test;
 
 public final class ChunkRenderPolicyBridgeTest {
@@ -37,6 +39,21 @@ public final class ChunkRenderPolicyBridgeTest {
     }
 
     @Test
+    public void clampsTheFinalExternalBuilderResult() {
+        OptimizerRegistry.breaker(OptimizationModule.VANILLA_CHUNK_DISPATCH).configure(true, 3);
+        OptimizerRegistry.breaker(OptimizationModule.VANILLA_CHUNK_DISPATCH)
+            .patchInstalled("ChunkRenderDispatcher", "test");
+        try {
+            ChunkRenderPolicyBridge.setEffectiveWorkersForTest(8);
+            FakeDispatcher dispatcher = new FakeDispatcher(100);
+            ChunkRenderPolicyBridge.clampBuilderCount(dispatcher);
+            assertEquals(32, dispatcher.builders);
+        } finally {
+            OptimizerRegistry.breaker(OptimizationModule.VANILLA_CHUNK_DISPATCH).configure(false, 3);
+        }
+    }
+
+    @Test
     public void stagingCapacityIsPowerOfTwoAndStrictlyBounded() {
         assertEquals(256 * 1024, ChunkVboUploadBridge.roundedCapacityForTest(1));
         assertEquals(512 * 1024, ChunkVboUploadBridge.roundedCapacityForTest(300 * 1024));
@@ -56,5 +73,12 @@ public final class ChunkRenderPolicyBridgeTest {
             ChunkVboUploadBridge.backendForTest(false, false, true, true));
         assertEquals("UNSUPPORTED",
             ChunkVboUploadBridge.backendForTest(true, true, false, false));
+    }
+
+    private static final class FakeDispatcher implements ChunkDispatcherPolicyAccessor {
+        private int builders;
+        private FakeDispatcher(int builders) { this.builders = builders; }
+        @Override public int ice$builderCount() { return builders; }
+        @Override public void ice$setBuilderCount(int value) { builders = value; }
     }
 }

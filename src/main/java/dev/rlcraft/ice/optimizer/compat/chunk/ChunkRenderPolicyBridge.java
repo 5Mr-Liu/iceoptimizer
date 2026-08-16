@@ -40,6 +40,28 @@ public final class ChunkRenderPolicyBridge {
         return tuned;
     }
 
+    /**
+     * Runs after the constructor's builder assignment. This deliberately sees
+     * the value produced by Fermium/NormalASM instead of replacing its policy.
+     */
+    public static void clampBuilderCount(ChunkDispatcherPolicyAccessor dispatcher) {
+        if (dispatcher == null || !OptimizerBridge.isEnabled(MODULE)) return;
+        try {
+            int original = Math.max(1, dispatcher.ice$builderCount());
+            int workers = effectiveWorkers > 0 ? effectiveWorkers
+                : computeWorkerCount(Math.max(1, Runtime.getRuntime().availableProcessors()),
+                    Math.max(1, Runtime.getRuntime().availableProcessors()),
+                    Runtime.getRuntime().maxMemory());
+            int tuned = computeBuilderCount(original, workers);
+            if (tuned != original) dispatcher.ice$setBuilderCount(tuned);
+            effectiveBuilders = tuned;
+            activateIfNeeded();
+            OptimizerBridge.success(MODULE);
+        } catch (Throwable error) {
+            OptimizerBridge.failure(MODULE, error);
+        }
+    }
+
     static int computeWorkerCount(int vanillaWorkers, int logicalProcessors) {
         return computeWorkerCount(vanillaWorkers, logicalProcessors, Long.MAX_VALUE);
     }
@@ -88,6 +110,7 @@ public final class ChunkRenderPolicyBridge {
     static int vanillaWorkers() { return observedVanillaWorkers; }
     static int workers() { return effectiveWorkers; }
     static int builders() { return effectiveBuilders; }
+    static void setEffectiveWorkersForTest(int workers) { effectiveWorkers = Math.max(1, workers); }
 
     private static void activateIfNeeded() {
         if (activated) return;

@@ -93,6 +93,18 @@ public final class OptimizerConfig {
         public boolean vanillaChunkVboUpload = true;
 
         @Config.Comment({
+            "Publish OptiFine's existing 50 ms dynamic-light update as an immutable primitive snapshot.",
+            "Lighting values and update timing are unchanged; chunk workers stop sharing the light-map lock."
+        })
+        public boolean optifineDynamicLights = true;
+
+        @Config.Comment({
+            "Canonicalize Rustic lattice connection states and reuse the 64 exact bounding boxes.",
+            "All six neighbor queries and connection rules remain unchanged."
+        })
+        public boolean rusticLatticeStateCache = true;
+
+        @Config.Comment({
             "During one synchronous full save, index the unchanged scheduled-tick sets once per mutation version.",
             "Chunk order, tick order, NBT content, save timing and all world writes remain on the original server thread."
         })
@@ -134,6 +146,10 @@ public final class OptimizerConfig {
         @Config.Comment("Reuse immutable empty particle argument arrays in reviewed Ice and Fire sea-serpent paths.")
         public boolean iceAndFireParticleScratch = true;
 
+        @Config.Comment({
+            "Use fenced PBO uploads for animated texture levels through FoamFix's batch helper when available,",
+            "with a generic TextureUtil hook when FoamFix loaded its helper before ICE."
+        })
         public boolean foamFixTextureUpload = true;
         public boolean xaeroTextureUpload = true;
         public boolean xaeroGpuFence = true;
