@@ -3,8 +3,10 @@ package dev.rlcraft.ice.hooks;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -14,16 +16,22 @@ import org.apache.logging.log4j.Logger;
 final class OptimizerTargetCatalog {
     private static final Logger LOGGER = LogManager.getLogger("ICE Optimizer Catalog");
     private static final String RESOURCE = "/optimizer-targets.properties";
-    private static final Map<String, TargetSpec> TARGETS = load();
+    private static final Map<String, List<TargetSpec>> TARGETS = load();
 
     private OptimizerTargetCatalog() {
     }
 
     static TargetSpec find(String transformedName) {
-        return TARGETS.get(transformedName);
+        List<TargetSpec> targets = findAll(transformedName);
+        return targets.isEmpty() ? null : targets.get(0);
     }
 
-    private static Map<String, TargetSpec> load() {
+    static List<TargetSpec> findAll(String transformedName) {
+        List<TargetSpec> targets = TARGETS.get(transformedName);
+        return targets == null ? Collections.<TargetSpec>emptyList() : targets;
+    }
+
+    private static Map<String, List<TargetSpec>> load() {
         InputStream input = OptimizerTargetCatalog.class.getResourceAsStream(RESOURCE);
         if (input == null) return Collections.emptyMap();
         Properties properties = new Properties();
@@ -35,7 +43,7 @@ final class OptimizerTargetCatalog {
         } finally {
             try { input.close(); } catch (IOException ignored) { }
         }
-        Map<String, TargetSpec> result = new HashMap<String, TargetSpec>();
+        Map<String, List<TargetSpec>> mutable = new HashMap<String, List<TargetSpec>>();
         int count = integer(properties.getProperty("target.count"), 0);
         for (int i = 0; i < count; i++) {
             String prefix = "target." + i + ".";
@@ -51,7 +59,17 @@ final class OptimizerTargetCatalog {
                     if (clean.length() == 64) fingerprints.add(clean);
                 }
             }
-            result.put(className, new TargetSpec(className, module, adapter, fingerprints));
+            List<TargetSpec> targets = mutable.get(className);
+            if (targets == null) {
+                targets = new ArrayList<TargetSpec>();
+                mutable.put(className, targets);
+            }
+            targets.add(new TargetSpec(className, module, adapter, fingerprints));
+        }
+        Map<String, List<TargetSpec>> result = new HashMap<String, List<TargetSpec>>();
+        for (Map.Entry<String, List<TargetSpec>> entry : mutable.entrySet()) {
+            result.put(entry.getKey(), Collections.unmodifiableList(
+                new ArrayList<TargetSpec>(entry.getValue())));
         }
         return Collections.unmodifiableMap(result);
     }

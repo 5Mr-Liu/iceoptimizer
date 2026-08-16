@@ -5,6 +5,7 @@ import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 /** Hardware-adaptive bounds for vanilla's otherwise unbounded logical-CPU chunk dispatcher. */
 public final class ChunkRenderPolicyBridge {
     private static final String MODULE = "vanilla-chunk-dispatch";
+    private static final long MEBIBYTE = 1024L * 1024L;
     private static volatile int observedVanillaWorkers;
     private static volatile int effectiveWorkers;
     private static volatile int effectiveBuilders;
@@ -20,7 +21,8 @@ public final class ChunkRenderPolicyBridge {
             return observedVanillaWorkers;
         }
         int tuned = computeWorkerCount(observedVanillaWorkers,
-            Math.max(1, Runtime.getRuntime().availableProcessors()));
+            Math.max(1, Runtime.getRuntime().availableProcessors()),
+            Runtime.getRuntime().maxMemory());
         effectiveWorkers = tuned;
         return tuned;
     }
@@ -39,16 +41,42 @@ public final class ChunkRenderPolicyBridge {
     }
 
     static int computeWorkerCount(int vanillaWorkers, int logicalProcessors) {
+        return computeWorkerCount(vanillaWorkers, logicalProcessors, Long.MAX_VALUE);
+    }
+
+    static int computeWorkerCount(int vanillaWorkers, int logicalProcessors, long maximumHeapBytes) {
         int vanilla = Math.max(1, vanillaWorkers);
         int logical = Math.max(1, logicalProcessors);
-        if (vanilla <= 1 || logical <= 1) return 1;
-        int reserved;
-        if (logical >= 13) reserved = 4;
-        else if (logical >= 9) reserved = 3;
-        else if (logical >= 5) reserved = 2;
-        else reserved = 1;
-        int available = Math.max(2, logical - reserved);
-        return Math.max(2, Math.min(vanilla, Math.min(8, available)));
+        if (vanilla <= 1 || logical <= 2) return 1;
+
+        int cpuLimit;
+        if (logical <= 4) {
+            cpuLimit = logical - 1;
+        } else if (logical <= 8) {
+            cpuLimit = logical - 2;
+        } else if (logical <= 23) {
+            int reserved = logical <= 12 ? 3 : 4;
+            cpuLimit = Math.min(8, logical - reserved);
+        } else if (logical <= 31) {
+            cpuLimit = Math.min(12, logical - 4);
+        } else {
+            int reserved = Math.max(4, logical / 8);
+            cpuLimit = Math.min(16, logical - reserved);
+        }
+
+        int memoryLimit = memoryWorkerLimit(maximumHeapBytes);
+        return Math.max(1, Math.min(vanilla, Math.min(cpuLimit, memoryLimit)));
+    }
+
+    private static int memoryWorkerLimit(long maximumHeapBytes) {
+        if (maximumHeapBytes <= 0L || maximumHeapBytes == Long.MAX_VALUE) return 16;
+        long mebibytes = maximumHeapBytes / MEBIBYTE;
+        if (mebibytes < 1536L) return 2;
+        if (mebibytes < 2560L) return 4;
+        if (mebibytes < 4096L) return 6;
+        if (mebibytes < 6144L) return 8;
+        if (mebibytes < 8192L) return 12;
+        return 16;
     }
 
     static int computeBuilderCount(int vanillaBuilders, int workers) {

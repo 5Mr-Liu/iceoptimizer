@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## 0.9.1 — 2026-08-16
+
+### 中文
+
+- 同一个目标类现在可以注册多个独立能力并依次转换；一项结构不兼容只回退这一项，后续能力继续安装。Fermium 改写 `ChunkRenderDispatcher` 线程/构建器策略时，不再连带关闭兼容的 VBO 上传 wrapper。
+- 区块线程适配移除固定 `j * 10` 片段和 `availableProcessors()` 后 16 条指令距离限制，改为验证必要字段写入与初始化关系。类 SHA-256 仍只用于审计，不作为运行白名单。
+- Chunk Worker 改为 CPU 与 JVM 堆双重分档：低配机从 1 个起，24–31 逻辑线程平台可到 12 个，32+ 可到 16 个，同时永远不超过原实现算出的数量。
+- 区块 VBO staging 新增 `GL_ARB_copy_buffer` 后端，并继续支持 OpenGL 3.1 核心 copy、OpenGL 3.2 核心 sync 或 `GL_ARB_sync`。F3 区分 `GL31-COPY` 与 `ARB-COPY`。
+- F3 新增 `MISS`，明确显示已经观察到但至少一项独立结构能力未安装的模块。目标目录为 56 个唯一类、57 个独立能力项。
+- 优化器公开工程使用 Forge SRG、Dregora 捕获类和当前真实模组夹具执行 113 项测试：0 失败、0 错误、6 项可选旧版/Xaero 夹具跳过；重混淆、主/Core 分包与 bundle 校验通过。
+
+### English
+
+- A target class may now host multiple ordered, independent capabilities. A structural mismatch falls back only that capability and later adapters continue. Fermium's dispatcher policy no longer disables the otherwise compatible VBO-upload wrapper.
+- Removed the fixed `j * 10` pattern and the 16-instruction distance limit after `availableProcessors()`. The dispatcher adapter now validates only the required field write and initialization relationship. Whole-class SHA-256 remains audit metadata, not a runtime allowlist.
+- Chunk workers now use CPU-and-heap tiers: one worker on the smallest systems, up to 12 on 24–31 logical CPUs, and up to 16 on 32+ systems, never exceeding vanilla's computed value.
+- Added a `GL_ARB_copy_buffer` VBO staging backend alongside OpenGL 3.1 core copy and core/ARB sync combinations. F3 reports `GL31-COPY` or `ARB-COPY`.
+- Added F3 `MISS` for observed modules with at least one unmatched independent capability. The catalog now contains 56 unique classes and 57 capability entries.
+- Ran 113 optimizer tests in the public project against Forge SRG, captured Dregora classes, and current real-mod fixtures: zero failures, zero errors, and six optional legacy/Xaero fixture skips; reobfuscation, main/Core separation, and bundle verification passed.
+
 ## 0.9.0 — 2026-08-16
 
 ### 中文

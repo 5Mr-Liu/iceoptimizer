@@ -9,12 +9,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import org.junit.Assume;
 import org.junit.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.FieldVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
@@ -38,11 +40,14 @@ public final class VanillaChunkRenderAdapterTest {
             for (Sample sample : SAMPLES) {
                 byte[] original = read(jar, sample.className);
                 assertEquals(sample.sha256, CoreClassFingerprint.sha256(original));
-                TargetSpec target = OptimizerTargetCatalog.find(sample.className);
-                assertNotNull(target);
-                OptimizerBytecodeAdapter adapter = OptimizerAdapterRegistry.find(target.adapterId);
-                assertTrue(adapter instanceof VanillaChunkRenderAdapter);
-                byte[] transformed = adapter.transform(sample.className, original, target);
+                List<TargetSpec> targets = OptimizerTargetCatalog.findAll(sample.className);
+                assertFalse(targets.isEmpty());
+                byte[] transformed = original;
+                for (TargetSpec target : targets) {
+                    OptimizerBytecodeAdapter adapter = OptimizerAdapterRegistry.find(target.adapterId);
+                    assertTrue(adapter instanceof VanillaChunkRenderAdapter);
+                    transformed = adapter.transform(sample.className, transformed, target);
+                }
                 assertFalse(Arrays.equals(original, transformed));
                 new ClassReader(transformed);
                 verify(sample.className, transformed);
@@ -52,6 +57,51 @@ public final class VanillaChunkRenderAdapterTest {
         } finally {
             jar.close();
         }
+    }
+
+    @Test
+    public void dispatcherCatalogKeepsPolicyAndUploadAsIndependentCapabilities() {
+        List<TargetSpec> targets = OptimizerTargetCatalog.findAll(
+            "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher");
+        assertEquals(2, targets.size());
+        assertEquals("vanilla-chunk-dispatch-policy", targets.get(0).adapterId);
+        assertEquals("vanilla-chunk-vbo-dispatch", targets.get(1).adapterId);
+    }
+
+    @Test
+    public void transformerStillInstallsUploadWhenDispatcherPolicyShapeDiffers() {
+        String className = "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher";
+        byte[] original = syntheticDispatcher(true, 0);
+        assertFalse(OptimizerTargetCatalog.find(className)
+            .accepts(CoreClassFingerprint.sha256(original)));
+
+        byte[] transformed = new IceOptimizerTransformer().transform(
+            className, className, original);
+
+        assertFalse(Arrays.equals(original, transformed));
+        assertEquals(0, countCalls(transformed, VanillaChunkRenderAdapter.POLICY_BRIDGE,
+            "tuneWorkerCount", "(I)I"));
+        assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.UPLOAD_BRIDGE,
+            "tryUpload", "(Lnet/minecraft/client/renderer/BufferBuilder;"
+                + "Lnet/minecraft/client/renderer/vertex/VertexBuffer;)Z"));
+        assertTrue(hasMethod(transformed, VanillaChunkRenderAdapter.ORIGINAL_UPLOAD,
+            VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR));
+        new ClassReader(transformed);
+    }
+
+    @Test
+    public void dispatcherPolicyToleratesHarmlessInstrumentationDistance() {
+        String className = "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher";
+        byte[] transformed = new IceOptimizerTransformer().transform(
+            className, className, syntheticDispatcher(false, 32));
+
+        assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.POLICY_BRIDGE,
+            "tuneWorkerCount", "(I)I"));
+        assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.POLICY_BRIDGE,
+            "tuneBuilderCount", "(II)I"));
+        assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.UPLOAD_BRIDGE,
+            "tryUpload", "(Lnet/minecraft/client/renderer/BufferBuilder;"
+                + "Lnet/minecraft/client/renderer/vertex/VertexBuffer;)Z"));
     }
 
     private static void verify(String className, byte[] transformed) {
@@ -161,6 +211,69 @@ public final class VanillaChunkRenderAdapterTest {
             }
         }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
         return count[0];
+    }
+
+    private static byte[] syntheticDispatcher(boolean duplicateProcessorProbe, int paddingNops) {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC,
+            VanillaChunkRenderAdapter.DISPATCHER, null, "java/lang/Object", null);
+        writer.visitField(Opcodes.ACC_PRIVATE,
+            "field_188249_c", "I", null, null).visitEnd();
+
+        MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC,
+            "<init>", "(I)V", null, null);
+        constructor.visitCode();
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object",
+            "<init>", "()V", false);
+        constructor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Runtime",
+            "getRuntime", "()Ljava/lang/Runtime;", false);
+        constructor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Runtime",
+            "availableProcessors", "()I", false);
+        for (int i = 0; i < paddingNops; i++) constructor.visitInsn(Opcodes.NOP);
+        constructor.visitVarInsn(Opcodes.ISTORE, 2);
+        if (duplicateProcessorProbe) {
+            constructor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Runtime",
+                "getRuntime", "()Ljava/lang/Runtime;", false);
+            constructor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Runtime",
+                "availableProcessors", "()I", false);
+            constructor.visitInsn(Opcodes.POP);
+        }
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitVarInsn(Opcodes.ILOAD, 2);
+        constructor.visitIntInsn(Opcodes.BIPUSH, 10);
+        constructor.visitInsn(Opcodes.IMUL);
+        constructor.visitFieldInsn(Opcodes.PUTFIELD,
+            VanillaChunkRenderAdapter.DISPATCHER, "field_188249_c", "I");
+        constructor.visitInsn(Opcodes.RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
+
+        MethodVisitor upload = writer.visitMethod(Opcodes.ACC_PUBLIC,
+            VanillaChunkRenderAdapter.UPLOAD_METHOD,
+            VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR, null, null);
+        upload.visitCode();
+        upload.visitTypeInsn(Opcodes.NEW,
+            "net/minecraft/client/renderer/VertexBufferUploader");
+        upload.visitInsn(Opcodes.DUP);
+        upload.visitMethodInsn(Opcodes.INVOKESPECIAL,
+            "net/minecraft/client/renderer/VertexBufferUploader", "<init>", "()V", false);
+        upload.visitVarInsn(Opcodes.ASTORE, 3);
+        upload.visitVarInsn(Opcodes.ALOAD, 3);
+        upload.visitVarInsn(Opcodes.ALOAD, 2);
+        upload.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/client/renderer/VertexBufferUploader", "func_178178_a",
+            "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;)V", false);
+        upload.visitVarInsn(Opcodes.ALOAD, 3);
+        upload.visitVarInsn(Opcodes.ALOAD, 1);
+        upload.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/client/renderer/VertexBufferUploader", "func_181679_a",
+            "(Lnet/minecraft/client/renderer/BufferBuilder;)V", false);
+        upload.visitInsn(Opcodes.RETURN);
+        upload.visitMaxs(0, 0);
+        upload.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
     }
 
     private static final class Sample {

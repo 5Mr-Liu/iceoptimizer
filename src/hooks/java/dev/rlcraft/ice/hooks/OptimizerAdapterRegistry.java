@@ -48,7 +48,14 @@ final class OptimizerAdapterRegistry {
         adapters.put("betterfoliage-optifine-colors", new BetterFoliageOptifineColorAdapter());
         adapters.put("qualitytools-stable-attributes", new QualityToolsAttributeAdapter());
         adapters.put("quark-item-sync-state", new QuarkItemSyncAdapter());
-        adapters.put("vanilla-chunk-render-pipeline", new VanillaChunkRenderAdapter());
+        adapters.put("vanilla-chunk-dispatch-policy", new VanillaChunkRenderAdapter(
+            VanillaChunkRenderAdapter.Part.DISPATCH_POLICY));
+        adapters.put("vanilla-chunk-vbo-dispatch", new VanillaChunkRenderAdapter(
+            VanillaChunkRenderAdapter.Part.DISPATCH_UPLOAD));
+        adapters.put("vanilla-chunk-primitive-sort", new VanillaChunkRenderAdapter(
+            VanillaChunkRenderAdapter.Part.BUFFER_SORT));
+        adapters.put("vanilla-chunk-vbo-access", new VanillaChunkRenderAdapter(
+            VanillaChunkRenderAdapter.Part.VERTEX_BUFFER_ACCESS));
         ADAPTERS = Collections.unmodifiableMap(adapters);
     }
 

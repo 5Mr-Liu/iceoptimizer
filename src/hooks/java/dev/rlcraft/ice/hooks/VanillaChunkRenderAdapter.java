@@ -10,7 +10,6 @@ import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
-import org.objectweb.asm.tree.IntInsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
@@ -20,6 +19,13 @@ import org.objectweb.asm.tree.VarInsnNode;
 
 /** Structurally installs the generic vanilla chunk worker, sort and VBO paths. */
 final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
+    enum Part {
+        DISPATCH_POLICY,
+        DISPATCH_UPLOAD,
+        BUFFER_SORT,
+        VERTEX_BUFFER_ACCESS
+    }
+
     static final String DISPATCHER = "net/minecraft/client/renderer/chunk/ChunkRenderDispatcher";
     static final String BUFFER_BUILDER = "net/minecraft/client/renderer/BufferBuilder";
     static final String VERTEX_BUFFER = "net/minecraft/client/renderer/vertex/VertexBuffer";
@@ -56,27 +62,62 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     private static final String VBO_COUNT = "field_177364_c";
     private static final String VERTEX_FORMAT_OWNER =
         "net/minecraft/client/renderer/vertex/VertexFormat";
+    private static final String DISPATCHER_BUILDER_COUNT = "field_188249_c";
+    private static final String NORMALASM_DISPATCH_POLICY =
+        "mirror/normalasm/common/priorities/mixins/client/ChunkRenderDispatcherMixin.class";
+    private final Part part;
+
+    VanillaChunkRenderAdapter(Part part) {
+        if (part == null) throw new IllegalArgumentException("part");
+        this.part = part;
+    }
 
     @Override
     public byte[] transform(String transformedName, byte[] originalClass, TargetSpec target) {
         ClassReader reader = new ClassReader(originalClass);
         ClassNode node = new ClassNode(Opcodes.ASM5);
         reader.accept(node, ClassReader.EXPAND_FRAMES);
-        if (DISPATCHER.equals(node.name)) transformDispatcher(node);
-        else if (BUFFER_BUILDER.equals(node.name)) transformBufferBuilder(node);
-        else if (VERTEX_BUFFER.equals(node.name)) transformVertexBuffer(node);
-        else throw new IllegalStateException("区块渲染目标类变化：" + node.name);
+        switch (part) {
+            case DISPATCH_POLICY:
+                requireTarget(node, DISPATCHER);
+                transformDispatcherPolicy(node);
+                break;
+            case DISPATCH_UPLOAD:
+                requireTarget(node, DISPATCHER);
+                transformDispatcherUpload(node);
+                break;
+            case BUFFER_SORT:
+                requireTarget(node, BUFFER_BUILDER);
+                transformBufferBuilder(node);
+                break;
+            case VERTEX_BUFFER_ACCESS:
+                requireTarget(node, VERTEX_BUFFER);
+                transformVertexBuffer(node);
+                break;
+            default:
+                throw new IllegalStateException("未知区块渲染能力：" + part);
+        }
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
     }
 
-    private static void transformDispatcher(ClassNode node) {
+    private static void transformDispatcherPolicy(ClassNode node) {
+        if (VanillaChunkRenderAdapter.class.getClassLoader()
+            .getResource(NORMALASM_DISPATCH_POLICY) != null) {
+            throw new OptimizerAdapterSkippedException(
+                "检测到 NormalASM/Fermium 的区块线程策略；避免重复改写同一构造器");
+        }
         MethodNode constructor = requireMethod(node, "<init>", "(I)V");
+        FieldInsnNode builderAssignment = uniqueField(constructor, Opcodes.PUTFIELD,
+            node.name, DISPATCHER_BUILDER_COUNT, "I");
         MethodInsnNode processors = uniqueCall(constructor, Opcodes.INVOKEVIRTUAL,
             "java/lang/Runtime", "availableProcessors", "()I");
-        VarInsnNode workerStore = nextStore(processors, 16);
+        if (!comesBefore(processors, builderAssignment)) {
+            throw new IllegalStateException("区块 worker 与构建器初始化顺序变化");
+        }
+        VarInsnNode workerStore = nextStoreBefore(processors, builderAssignment);
         if (workerStore == null) throw new IllegalStateException("区块 worker 计数局部变量变化");
         InsnList tuneWorkers = new InsnList();
         tuneWorkers.add(new VarInsnNode(Opcodes.ILOAD, workerStore.var));
@@ -85,32 +126,14 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         tuneWorkers.add(new VarInsnNode(Opcodes.ISTORE, workerStore.var));
         constructor.instructions.insert(workerStore, tuneWorkers);
 
-        IntInsnNode ten = null;
-        int tens = 0;
-        for (AbstractInsnNode instruction : constructor.instructions.toArray()) {
-            if (instruction instanceof IntInsnNode && instruction.getOpcode() == Opcodes.BIPUSH
-                && ((IntInsnNode) instruction).operand == 10
-                && nextOpcode(instruction) != null
-                && nextOpcode(instruction).getOpcode() == Opcodes.IMUL) {
-                ten = (IntInsnNode) instruction;
-                tens++;
-            }
-        }
-        if (tens != 1 || ten == null) {
-            throw new IllegalStateException("区块构建器 j*10 调用图变化：" + tens);
-        }
-        VarInsnNode builderStore = nextStore(ten, 16);
-        if (builderStore == null || builderStore.var != 1) {
-            throw new IllegalStateException("区块构建器计数局部变量变化");
-        }
         InsnList tuneBuilders = new InsnList();
-        tuneBuilders.add(new VarInsnNode(Opcodes.ILOAD, builderStore.var));
         tuneBuilders.add(new VarInsnNode(Opcodes.ILOAD, workerStore.var));
         tuneBuilders.add(new MethodInsnNode(Opcodes.INVOKESTATIC, POLICY_BRIDGE,
             "tuneBuilderCount", "(II)I", false));
-        tuneBuilders.add(new VarInsnNode(Opcodes.ISTORE, builderStore.var));
-        constructor.instructions.insert(builderStore, tuneBuilders);
+        constructor.instructions.insertBefore(builderAssignment, tuneBuilders);
+    }
 
+    private static void transformDispatcherUpload(ClassNode node) {
         rejectMethod(node, ORIGINAL_UPLOAD, UPLOAD_DESCRIPTOR);
         MethodNode upload = requireMethod(node, UPLOAD_METHOD, UPLOAD_DESCRIPTOR);
         if (countCalls(upload, "net/minecraft/client/renderer/VertexBufferUploader",
@@ -120,6 +143,13 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
             throw new IllegalStateException("区块 VBO 上传调用图变化");
         }
         wrapDispatcherUpload(node, upload);
+    }
+
+    private static void requireTarget(ClassNode node, String expected) {
+        if (!expected.equals(node.name)) {
+            throw new IllegalStateException("区块渲染目标类变化：" + node.name
+                + "，期望 " + expected);
+        }
     }
 
     private static void wrapDispatcherUpload(ClassNode node, MethodNode original) {
@@ -319,6 +349,24 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         return found;
     }
 
+    private static FieldInsnNode uniqueField(MethodNode method, int opcode, String owner,
+                                             String name, String descriptor) {
+        FieldInsnNode found = null;
+        int count = 0;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (!(instruction instanceof FieldInsnNode)) continue;
+            FieldInsnNode field = (FieldInsnNode) instruction;
+            if (field.getOpcode() == opcode && owner.equals(field.owner)
+                && name.equals(field.name) && descriptor.equals(field.desc)) {
+                found = field;
+                count++;
+            }
+        }
+        if (count != 1) throw new IllegalStateException(method.name + " 字段写入数量变化："
+            + owner + '.' + name + descriptor + '=' + count);
+        return found;
+    }
+
     private static int countCalls(MethodNode method, String owner, String name, String descriptor) {
         int count = 0;
         for (AbstractInsnNode instruction : method.instructions.toArray()) {
@@ -338,12 +386,9 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         return count;
     }
 
-    private static VarInsnNode nextStore(AbstractInsnNode start, int maximumOpcodes) {
-        int seen = 0;
-        for (AbstractInsnNode current = start.getNext(); current != null && seen < maximumOpcodes;
+    private static VarInsnNode nextStoreBefore(AbstractInsnNode start, AbstractInsnNode boundary) {
+        for (AbstractInsnNode current = start.getNext(); current != null && current != boundary;
              current = current.getNext()) {
-            if (current.getOpcode() < 0) continue;
-            seen++;
             if (current instanceof VarInsnNode && current.getOpcode() == Opcodes.ISTORE) {
                 return (VarInsnNode) current;
             }
@@ -351,10 +396,11 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         return null;
     }
 
-    private static AbstractInsnNode nextOpcode(AbstractInsnNode instruction) {
-        AbstractInsnNode current = instruction == null ? null : instruction.getNext();
-        while (current != null && current.getOpcode() < 0) current = current.getNext();
-        return current;
+    private static boolean comesBefore(AbstractInsnNode start, AbstractInsnNode expectedLater) {
+        for (AbstractInsnNode current = start.getNext(); current != null; current = current.getNext()) {
+            if (current == expectedLater) return true;
+        }
+        return false;
     }
 
     private static MethodNode requireMethod(ClassNode node, String name, String descriptor) {

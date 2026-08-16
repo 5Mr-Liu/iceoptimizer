@@ -87,7 +87,7 @@ public final class OptimizerConfig {
         public boolean vanillaChunkSort = true;
 
         @Config.Comment({
-            "Use a bounded fenced staging ring and GPU buffer copies for chunk VBO uploads when OpenGL supports it.",
+            "Use a bounded fenced staging ring and GPU buffer copies for chunk VBO uploads through OpenGL core or ARB extensions.",
             "Busy slots, unsupported drivers and any error immediately use vanilla glBufferData."
         })
         public boolean vanillaChunkVboUpload = true;

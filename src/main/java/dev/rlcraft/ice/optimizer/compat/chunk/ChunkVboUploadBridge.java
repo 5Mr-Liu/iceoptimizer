@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BufferBuilder;
 import net.minecraft.client.renderer.vertex.VertexBuffer;
+import org.lwjgl.opengl.ARBCopyBuffer;
 import org.lwjgl.opengl.ARBSync;
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
@@ -81,9 +82,10 @@ public final class ChunkVboUploadBridge {
                 FALLBACKS.incrementAndGet();
                 return false;
             }
+            String activeBackend = copyBackend(capabilities);
             slot = acquireSlot(capabilities);
             if (slot == null) {
-                backend = "GPU-COPY/BUSY";
+                backend = activeBackend + "/BUSY";
                 return fallback(null);
             }
             previousCopyWrite = GL11.glGetInteger(COPY_WRITE_BUFFER_BINDING);
@@ -100,7 +102,7 @@ public final class ChunkVboUploadBridge {
                 GL15.glBufferData(COPY_WRITE_BUFFER, (long) bytes, STATIC_DRAW);
                 accessor.ice$setCapacityBytes(bytes);
             }
-            GL31.glCopyBufferSubData(ARRAY_BUFFER, COPY_WRITE_BUFFER, 0L, 0L, bytes);
+            copyBufferSubData(capabilities, bytes);
             slot.markSubmitted(capabilities);
             GL15.glBindBuffer(ARRAY_BUFFER, 0);
             GL15.glBindBuffer(COPY_WRITE_BUFFER, previousCopyWrite);
@@ -109,10 +111,10 @@ public final class ChunkVboUploadBridge {
             accessor.ice$setVertexCount(bytes / stride);
             builder.reset();
             GPU_UPLOADS.incrementAndGet();
-            backend = "GPU-COPY";
+            backend = activeBackend;
             if (ACTIVATED.compareAndSet(false, true)) {
                 OptimizerBridge.activate(MODULE,
-                    "区块 VBO 已使用有界 Fence staging 与 GPU buffer copy");
+                    "区块 VBO 已使用 " + activeBackend + " 有界 Fence staging");
             }
             OptimizerBridge.success(MODULE);
             return true;
@@ -145,8 +147,27 @@ public final class ChunkVboUploadBridge {
     }
 
     private static boolean supported(ContextCapabilities capabilities) {
-        return capabilities != null && capabilities.OpenGL31
+        return capabilities != null
+            && (capabilities.OpenGL31 || capabilities.GL_ARB_copy_buffer)
             && (capabilities.OpenGL32 || capabilities.GL_ARB_sync);
+    }
+
+    static String backendForTest(boolean openGl31, boolean arbCopyBuffer,
+                                 boolean openGl32, boolean arbSync) {
+        if (!(openGl31 || arbCopyBuffer) || !(openGl32 || arbSync)) return "UNSUPPORTED";
+        return openGl31 ? "GL31-COPY" : "ARB-COPY";
+    }
+
+    private static String copyBackend(ContextCapabilities capabilities) {
+        return capabilities.OpenGL31 ? "GL31-COPY" : "ARB-COPY";
+    }
+
+    private static void copyBufferSubData(ContextCapabilities capabilities, int bytes) {
+        if (capabilities.OpenGL31) {
+            GL31.glCopyBufferSubData(ARRAY_BUFFER, COPY_WRITE_BUFFER, 0L, 0L, bytes);
+        } else {
+            ARBCopyBuffer.glCopyBufferSubData(ARRAY_BUFFER, COPY_WRITE_BUFFER, 0L, 0L, bytes);
+        }
     }
 
     private static UploadSlot acquireSlot(ContextCapabilities capabilities) {

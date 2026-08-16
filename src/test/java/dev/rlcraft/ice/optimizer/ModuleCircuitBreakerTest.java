@@ -59,4 +59,22 @@ public class ModuleCircuitBreakerTest {
         assertEquals(ModuleState.INCOMPATIBLE, breaker.snapshot().getState());
         assertFalse(breaker.isOperational());
     }
+
+    @Test
+    public void oneIncompatibleTargetDoesNotDisableAnotherCompatibleCapability() {
+        ModuleCircuitBreaker breaker = new ModuleCircuitBreaker(
+            OptimizationModule.VANILLA_CHUNK_VBO_UPLOAD);
+        breaker.configure(true, 3);
+        breaker.targetObserved("example.Policy", "first", false);
+        assertEquals(ModuleState.INCOMPATIBLE, breaker.snapshot().getState());
+
+        breaker.targetObserved("example.Upload", "second", true);
+        breaker.patchInstalled("example.Upload", "second");
+
+        ModuleStatus status = breaker.snapshot();
+        assertEquals(ModuleState.VERIFIED, status.getState());
+        assertEquals(2, status.getObservedTargets());
+        assertEquals(1, status.getPatchedTargets());
+        assertTrue(breaker.isOperational());
+    }
 }

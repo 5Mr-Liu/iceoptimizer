@@ -24,12 +24,12 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| 当前版本 | 0.9.0 |
+| 当前版本 | 0.9.1 |
 | 模组 ID | `iceoptimizer` |
 | 运行端 | 客户端与服务端 |
 | 已重点验证 | RLCraft 2.9.3、RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
 
-0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。每个适配器会独立检查目标字段、方法描述符和精确指令结构；结构不匹配、桥接能力不完整或运行时异常时，只回退对应目标，不影响其他模块。
+0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。0.9.1 进一步允许同一个目标类串联多个独立能力；每项只检查自己必需的字段、方法描述符和调用关系。未知 SHA、无关字段或无害指令距离变化不会拒绝补丁，一项结构不匹配也不会阻止同类中的后续能力。
 
 这并不代表任意修改版整合包都受到正式支持。出现问题时请先在上述已验证环境中复现。
 
@@ -38,14 +38,14 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 推荐从 [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) 下载完整安装包：
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.0.zip
+ice-rlcraft-optimizer-bundle-0.9.1.zip
 ```
 
 解压后把其中两个 JAR 一起放入实例的 `mods` 目录：
 
 ```text
-ice-rlcraft-optimizer-0.9.0.jar
-ice-rlcraft-optimizer-core-0.9.0.jar
+ice-rlcraft-optimizer-0.9.1.jar
+ice-rlcraft-optimizer-core-0.9.1.jar
 ```
 
 Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR，但版本必须完全一致。
@@ -64,9 +64,10 @@ Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR�
 - `CORE OK`：两个 JAR 都已正确加载；`CORE MISSING` 表示底层补丁完全没有安装成功。
 - `PATCH`：通过结构校验并安装的模块数量；它不代表对应热点已经发生。
 - `HIT`：本次启动中确实执行过优化分支的模块数量。进入世界、移动和触发相关内容后应逐渐增加。
+- `MISS`：已经观察到目标类，但该模块至少有一项独立能力因结构不兼容而未安装；其他兼容能力仍会继续工作。
 - `ICE Chunk: W 16>8 B32`：原版会创建 16 个 Worker，当前自适应为 8 个并使用 32 个构建器。不同 CPU 会显示不同数字。
 - `Sort`：实际完成原始类型透明四边形排序的累计数量；只有透明区块重建时才增长。
-- `GPU GPU-COPY 120/3`：120 次区块上传走 GPU copy、3 次安全回退。`UNSUPPORTED`、`BUSY`、`BUDGET`、`ABI-MISSING` 或 `CORE-MISSING` 会直接说明为什么这台电脑没有走该路径。
+- `GPU GL31-COPY 120/3` 或 `GPU ARB-COPY 120/3`：120 次区块上传走核心或 ARB GPU copy、3 次安全回退。`UNSUPPORTED`、`BUSY`、`BUDGET`、`ABI-MISSING` 或 `CORE-MISSING` 会直接说明为什么这台电脑没有走该路径。
 
 比较前后版本时，应使用同一存档、同一路线、相同视距与 JVM 参数，先完成资源加载和区块热身，再比较帧时间 P95/P99 与卡顿峰值。显卡已经空闲而 CPU 主线程满载的电脑，不会因为 GPU 上传优化获得明显平均 FPS；反过来，区块没有重建时，区块流水线计数也不会增长。
 
@@ -74,7 +75,7 @@ Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR�
 
 - **SRParasites**：热点模型静态分支批处理、单次寻路节点缓存、最近目标线性选择及部分姿态/粒子路径。
 - **Lycanites Mobs**：寻路节点缓存、注册表单次探测、OBJ/VBO 稳定分组、动画/效果热路径及低分配刷怪位置扫描。
-- **原版区块渲染**：按处理器规模为客户端/集成服务器保留 CPU，限制过量 Worker 与 Direct Buffer 构建器；透明层使用结果等价的原始类型稳定排序，并在驱动支持时通过有界 Fence staging 与 GPU buffer copy 上传 VBO。
+- **原版区块渲染**：按逻辑处理器与 JVM 堆分档选择 1–16 个 Worker（且不超过原值），限制过量 Direct Buffer 构建器；线程策略、上传入口、透明排序和 VBO 访问独立安装。GPU copy 同时支持 OpenGL 核心接口与 `GL_ARB_copy_buffer` / `GL_ARB_sync` 扩展组合。
 - **原版世界保存**：仅在同步全量区块保存范围内建立计划刻临时索引，避免每个区块重复扫描世界级集合。
 - **Mo' Bends / Ice and Fire**：父链、四元数、姿态查询及低分配粒子参数路径。
 - **FoamFix / Xaero**：纹理上传暂存、PBO/Fence 和非阻塞 GPU 计时路径。
@@ -147,12 +148,12 @@ This repository contains the optimizer only. It does not include performance rec
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| Current version | 0.9.0 |
+| Current version | 0.9.1 |
 | Mod ID | `iceoptimizer` |
 | Environment | Client and server |
 | Primary test targets | RLCraft 2.9.3 and RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
 
-Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Each adapter independently validates target fields, method descriptors, and the exact instruction graph. If the structure, bridge capability, or runtime state is incompatible, only that target falls back to its original implementation.
+Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Version 0.9.1 also allows multiple independent capabilities to be chained on the same target class. Each capability validates only the fields, descriptors, and call relationships it requires. Unknown hashes, unrelated fields, and harmless instruction-distance changes do not reject a patch, and one mismatch does not block later capabilities on that class.
 
 This does not make every modified pack an officially supported target. Please reproduce issues on one of the primary test environments first.
 
@@ -161,14 +162,14 @@ This does not make every modified pack an officially supported target. Please re
 The recommended download from [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) is the complete bundle:
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.0.zip
+ice-rlcraft-optimizer-bundle-0.9.1.zip
 ```
 
 Extract it and place both contained JARs in the instance `mods` directory:
 
 ```text
-ice-rlcraft-optimizer-0.9.0.jar
-ice-rlcraft-optimizer-core-0.9.0.jar
+ice-rlcraft-optimizer-0.9.1.jar
+ice-rlcraft-optimizer-core-0.9.1.jar
 ```
 
 The Core JAR is required; it is not an optional dependency. The two JARs may also be downloaded separately, but their versions must match exactly.
@@ -187,9 +188,10 @@ Performance is not a fixed FPS multiplier: the limiting resource may be the CPU 
 - `CORE OK` means both JARs loaded. `CORE MISSING` means the low-level patches are not installed at all.
 - `PATCH` counts modules whose bytecode passed structural validation and was installed; it does not mean that workload has occurred.
 - `HIT` counts modules whose optimized branch actually ran during this launch. It should rise after entering a world and exercising the relevant content.
+- `MISS` means a target was observed but at least one independent capability in that module did not match; other compatible capabilities continue to run.
 - `ICE Chunk: W 16>8 B32` means vanilla requested 16 workers while the hardware policy selected 8 workers and 32 builders. Values differ by CPU.
 - `Sort` counts translucent quads processed by the primitive sorter and only grows during translucent chunk rebuilds.
-- `GPU GPU-COPY 120/3` means 120 staged GPU-copy uploads and three safe fallbacks. `UNSUPPORTED`, `BUSY`, `BUDGET`, `ABI-MISSING`, or `CORE-MISSING` states explain why that PC did not use the path.
+- `GPU GL31-COPY 120/3` or `GPU ARB-COPY 120/3` means 120 core/ARB staged GPU-copy uploads and three safe fallbacks. `UNSUPPORTED`, `BUSY`, `BUDGET`, `ABI-MISSING`, or `CORE-MISSING` states explain why that PC did not use the path.
 
 For before/after comparisons, use the same save, route, render distance, and JVM arguments; allow resource and chunk warm-up first; then compare P95/P99 frame time and hitch peaks. A PC that is CPU-main-thread limited will not gain much average FPS from a GPU-upload optimization, and the chunk-pipeline counters will not move while no chunks are being rebuilt.
 
@@ -197,7 +199,7 @@ For before/after comparisons, use the same save, route, render distance, and JVM
 
 - **SRParasites**: hot model branch batching, per-search path-node caching, stable linear target selection, and selected pose/particle paths.
 - **Lycanites Mobs**: path-node caching, single registry probes, stable OBJ/VBO grouping, animation/effect hot paths, and low-allocation spawn-position scans.
-- **Vanilla chunk rendering**: reserve CPU capacity for the client/integrated server, bound excessive workers and Direct-Buffer builders, use a result-equivalent primitive stable translucent sort, and upload VBOs through bounded fenced staging and GPU buffer copies when supported.
+- **Vanilla chunk rendering**: choose 1–16 workers from logical CPU count and JVM heap without exceeding vanilla's value; install dispatcher policy, upload entry, translucent sorting, and VBO access independently; support both core OpenGL and `GL_ARB_copy_buffer` / `GL_ARB_sync` combinations.
 - **Vanilla world saves**: a temporary scheduled-tick index scoped only to synchronous full chunk saves, avoiding repeated world-wide collection scans for every chunk.
 - **Mo' Bends / Ice and Fire**: parent topology, quaternion matrices, pose lookup, and low-allocation particle arguments.
 - **FoamFix / Xaero**: texture upload staging, PBO/Fence paths, and non-blocking GPU timing.

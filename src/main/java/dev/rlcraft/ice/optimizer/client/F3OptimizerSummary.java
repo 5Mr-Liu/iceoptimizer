@@ -23,11 +23,13 @@ public final class F3OptimizerSummary {
         if (status == null) return Collections.emptyList();
         int patched = 0;
         int hit = 0;
+        int missed = 0;
         long errors = 0L;
         for (ModuleStatus module : status.getModules()) {
             OptimizationModule id = module.getModule();
             if (id == OptimizationModule.CORE_RUNTIME || id == OptimizationModule.RENDER_SUBMISSION) continue;
             if (module.getPatchedTargets() > 0) patched++;
+            if (module.getObservedTargets() > module.getPatchedTargets()) missed++;
             if (module.getState() == dev.rlcraft.ice.optimizer.ModuleState.ACTIVE
                 || module.getState() == dev.rlcraft.ice.optimizer.ModuleState.DEGRADED) hit++;
             errors += module.getFailures();
@@ -35,8 +37,9 @@ public final class F3OptimizerSummary {
         }
         String core = status.isCoreModPresent() ? "OK" : "MISSING";
         List<String> lines = new ArrayList<String>(3);
-        lines.add(String.format(Locale.ROOT, "ICE Opt: CORE %s | HIT %d | PATCH %d | ERR %d",
-            core, hit, patched, errors));
+        lines.add(String.format(Locale.ROOT,
+            "ICE Opt: CORE %s | HIT %d | PATCH %d | MISS %d | ERR %d",
+            core, hit, patched, missed, errors));
 
         ChunkRenderStatus chunk = status.getChunkRender();
         if (chunk != null) {

@@ -33,7 +33,9 @@ public final class F3OptimizerSummaryTest {
             new ModuleStatus(OptimizationModule.CORE_RUNTIME, ModuleState.ACTIVE, 1L, 0L, 0L, 0, 0, ""),
             new ModuleStatus(OptimizationModule.SRP_STATIC_MESH, ModuleState.ACTIVE, 3L, 0L, 0L, 1, 1, ""),
             new ModuleStatus(OptimizationModule.LYCANITES_OBJ_RENDER, ModuleState.VERIFIED, 0L, 0L, 0L, 1, 1, ""),
-            new ModuleStatus(OptimizationModule.CHUNK_MESH_AO, ModuleState.DEGRADED, 1L, 1L, 2L, 1, 1, "")
+            new ModuleStatus(OptimizationModule.CHUNK_MESH_AO, ModuleState.DEGRADED, 1L, 1L, 2L, 1, 1, ""),
+            new ModuleStatus(OptimizationModule.FOAMFIX_TEXTURE_UPLOAD,
+                ModuleState.INCOMPATIBLE, 0L, 0L, 0L, 1, 0, "")
         );
         PackLockStatus lock = new PackLockStatus(PackLockState.VERIFIED, "",
             Collections.<PackComponent>emptyList(), null);
@@ -44,7 +46,7 @@ public final class F3OptimizerSummaryTest {
 
         List<String> lines = F3OptimizerSummary.format(status);
         assertEquals(3, lines.size());
-        assertEquals("ICE Opt: CORE OK | HIT 2 | PATCH 3 | ERR 3", lines.get(0));
+        assertEquals("ICE Opt: CORE OK | HIT 2 | PATCH 3 | MISS 1 | ERR 3", lines.get(0));
         assertEquals("ICE Chunk: W 16>8 B32 | Sort 120 | GPU GPU-COPY 9/2", lines.get(1));
         assertEquals("ICE Q: CPU 3/1024 | Render 7/2048", lines.get(2));
     }
