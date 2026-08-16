@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.client;
 
 import dev.rlcraft.ice.optimizer.OptimizerConfig;
+import dev.rlcraft.ice.optimizer.compat.foamfix.FoamFixUploadBridge;
 import java.io.File;
 import java.util.List;
 import net.minecraft.client.Minecraft;
@@ -25,6 +26,7 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
 
     public void preInit(File gameDirectory) {
         ClientOptimizerRuntime.INSTANCE.initialize(gameDirectory);
+        FoamFixUploadBridge.installCoreBridge();
     }
 
     public void init() {

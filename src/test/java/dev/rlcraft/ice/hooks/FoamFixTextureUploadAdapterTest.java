@@ -51,6 +51,35 @@ public class FoamFixTextureUploadAdapterTest {
     }
 
     @Test
+    public void transformedClassStartsWithOnlyTheCoreBridgeVisible() throws Exception {
+        byte[] original = syntheticClass(true);
+        TargetSpec target = new TargetSpec(SYNTHETIC_INTERNAL.replace('/', '.'),
+            "foamfix-texture-upload", "foamfix-pbo-upload",
+            Collections.<String>emptySet());
+        byte[] transformed = new FoamFixTextureUploadAdapter().transform(
+            target.className, original, target);
+
+        URL coreOutput = TextureUploadBootstrap.class.getProtectionDomain()
+            .getCodeSource().getLocation();
+        URLClassLoader coreOnly = new URLClassLoader(new URL[] { coreOutput }, null);
+        try {
+            ByteLoader loader = new ByteLoader(coreOnly);
+            Class<?> sprite = loader.define(SYNTHETIC_INTERNAL.replace('/', '.'), transformed);
+            Method method = sprite.getDeclaredMethod(FoamFixTextureUploadAdapter.TARGET_METHOD,
+                int.class, int[][].class, int.class, int.class, int.class, int.class,
+                boolean.class, boolean.class, boolean.class);
+            method.setAccessible(true);
+            method.invoke(null, new Object[] {
+                0, null, 1, 1, 0, 0, false, false, false
+            });
+            assertEquals("early Core-only loading must retain the untouched FoamFix body", 37,
+                sprite.getField("fallbackMarker").getInt(null));
+        } finally {
+            coreOnly.close();
+        }
+    }
+
+    @Test
     public void refusesAClassWithoutTheExactReviewedMethodDescriptor() {
         TargetSpec target = new TargetSpec(SYNTHETIC_INTERNAL.replace('/', '.'), "foamfix-texture-upload",
             "foamfix-pbo-upload", Collections.<String>emptySet());

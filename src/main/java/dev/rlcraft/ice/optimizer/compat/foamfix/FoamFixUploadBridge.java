@@ -7,6 +7,7 @@ import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.lang.reflect.InvocationTargetException;
 import net.minecraft.client.Minecraft;
 import org.lwjgl.opengl.ARBSync;
 import org.lwjgl.opengl.ContextCapabilities;
@@ -31,8 +32,39 @@ public final class FoamFixUploadBridge {
     private static int slotCursor;
     private static long knownContextGeneration = Long.MIN_VALUE;
     private static boolean activated;
+    private static volatile boolean coreBridgeInstalled;
 
     private FoamFixUploadBridge() {
+    }
+
+    /**
+     * Connects the regular optimizer runtime to the early CoreMod trampoline.
+     * The lookup is intentionally reflective so the main JAR still starts
+     * safely when the optional Core JAR is missing or incompatible.
+     */
+    public static synchronized boolean installCoreBridge() {
+        if (coreBridgeInstalled) return true;
+        try {
+            ClassLoader loader = FoamFixUploadBridge.class.getClassLoader();
+            Class<?> bootstrap = Class.forName(
+                "dev.rlcraft.ice.hooks.TextureUploadBootstrap", true, loader);
+            Object installed = bootstrap.getMethod("install", Class.class)
+                .invoke(null, FoamFixUploadBridge.class);
+            if (Boolean.TRUE.equals(installed)) {
+                coreBridgeInstalled = true;
+                return true;
+            }
+            OptimizerBridge.failure(MODULE,
+                new IllegalStateException("Core 纹理上传桥签名不兼容"));
+        } catch (ClassNotFoundException missingCore) {
+            return false;
+        } catch (Throwable error) {
+            Throwable cause = error instanceof InvocationTargetException
+                && ((InvocationTargetException) error).getCause() != null
+                ? ((InvocationTargetException) error).getCause() : error;
+            OptimizerBridge.failure(MODULE, cause);
+        }
+        return false;
     }
 
     /**

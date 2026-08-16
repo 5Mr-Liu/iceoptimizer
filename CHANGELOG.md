@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## 0.9.4 — 2026-08-16
+
+### 中文
+
+- 修复 Dregora 客户端初始化帧缓冲时的 `NoClassDefFoundError`：Core 已改写 `TextureUtil`，但普通 Forge 模组尚未进入 pre-init，旧字节码会直接解析只存在于主 JAR 的 `FoamFixUploadBridge`。问题属于 ICE 的分包加载边界，不是显卡、内存或 FoamFix 自身故障。
+- 新增仅位于 optimizer Core JAR 的 `TextureUploadBootstrap`。主运行时不可见时它返回未处理并执行原版/FoamFix 上传；客户端 pre-init 后原子安装两个 MethodHandle 委托，稳定热路径没有类名扫描或逐次反射调用。
+- Core 缺失、版本混装、签名不兼容或委托异常时只回退该纹理能力，不再让 `TextureUtil.<clinit>` 失败。像素、纹理参数、mip 顺序、PBO 能力判断和最终画面保持不变。
+- 新增 Core-only 隔离类加载回归：完全隐藏主 optimizer JAR 后定义并执行转换后的 FoamFix 上传类，确认仍进入未修改的原实现；构建期同时验证引导桥只存在于 Core JAR。
+- 公开优化器工程使用普通 RLCraft 与 Dregora 真实目标、Forge 1.12.2 SRG 和 Core-only 启动夹具执行 135 项测试：0 失败、0 错误，1 项仅因缺少可选运行期 Better Foliage 单类样本而跳过；重混淆、主/Core 分包和 bundle 校验通过。
+
+### English
+
+- Fixed the Dregora client `NoClassDefFoundError` during framebuffer initialization. Core had already transformed `TextureUtil`, while regular Forge mods had not reached pre-init, so the old bytecode directly resolved `FoamFixUploadBridge` from the main JAR. This was an ICE split-loading boundary bug, not a GPU, memory, or FoamFix failure.
+- Added `TextureUploadBootstrap`, shipped only in the optimizer Core JAR. It declines optimized uploads until the main runtime is available, preserving the untouched Minecraft/FoamFix path; client pre-init then atomically installs two MethodHandle delegates without per-upload class-name lookup or reflection.
+- A missing Core, mixed versions, incompatible signatures, or delegate failures now disable only this texture capability instead of failing `TextureUtil.<clinit>`. Pixels, texture parameters, mip order, PBO capability checks, and final rendering remain unchanged.
+- Added a Core-only isolated class-loading regression that hides the main optimizer JAR, defines and executes a transformed FoamFix upload class, and verifies that the untouched fallback still runs. Packaging verification also requires the bootstrap to exist only in Core.
+- The public optimizer project ran 135 tests against real standard-RLCraft and Dregora targets, Forge 1.12.2 SRG, and the Core-only startup fixture: zero failures, zero errors, and one skip only for the optional runtime-transformed Better Foliage class fixture. Reobfuscation, main/Core separation, and bundle verification passed.
+
 ## 0.9.3 — 2026-08-16
 
 ### 中文

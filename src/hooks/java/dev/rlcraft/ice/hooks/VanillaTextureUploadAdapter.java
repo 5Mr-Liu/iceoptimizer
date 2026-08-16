@@ -18,8 +18,7 @@ final class VanillaTextureUploadAdapter implements OptimizerBytecodeAdapter {
     static final String TARGET = "net/minecraft/client/renderer/texture/TextureUtil";
     static final String TARGET_DESCRIPTOR = "(I[IIIIIZZZ)V";
     static final String ORIGINAL_UPLOAD = "ice$originalUploadTextureSub";
-    static final String BRIDGE =
-        "dev/rlcraft/ice/optimizer/compat/foamfix/FoamFixUploadBridge";
+    static final String BRIDGE = "dev/rlcraft/ice/hooks/TextureUploadBootstrap";
     static final String BRIDGE_DESCRIPTOR = "(I[IIIIIZZZ)Z";
 
     @Override

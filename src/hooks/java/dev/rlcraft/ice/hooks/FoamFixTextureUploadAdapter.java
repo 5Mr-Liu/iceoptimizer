@@ -11,7 +11,7 @@ import org.objectweb.asm.Opcodes;
 final class FoamFixTextureUploadAdapter implements OptimizerBytecodeAdapter {
     static final String TARGET_METHOD = "uploadTextureMaxMips";
     static final String TARGET_DESCRIPTOR = "(I[[IIIIIZZZ)V";
-    static final String BRIDGE_OWNER = "dev/rlcraft/ice/optimizer/compat/foamfix/FoamFixUploadBridge";
+    static final String BRIDGE_OWNER = "dev/rlcraft/ice/hooks/TextureUploadBootstrap";
     static final String BRIDGE_METHOD = "tryUpload";
     static final String BRIDGE_DESCRIPTOR = "(I[[IIIIIZZZ)Z";
 

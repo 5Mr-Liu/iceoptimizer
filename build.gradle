@@ -303,6 +303,8 @@ task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar, optimizer
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerLoadingPlugin.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceClientOptimizerTransformer.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/hooks/TextureUploadBootstrap.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/hooks/TextureUploadBootstrap$Delegate.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class', 'optimizer core JAR')

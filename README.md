@@ -24,12 +24,12 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| 当前版本 | 0.9.3 |
+| 当前版本 | 0.9.4 |
 | 模组 ID | `iceoptimizer` |
 | 运行端 | 客户端与服务端 |
 | 已重点验证 | RLCraft 2.9.3、RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
 
-0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。0.9.1 允许同一个目标类串联多个独立能力；0.9.2 增加 OptiFine 动态光快照、Rustic 栅栏状态/AABB 复用、Fermium 后置线程限制和可靠的 TextureUtil PBO 入口；0.9.3 修复普通 RLCraft Better Caves 热循环中的模块开关线性查找回退。每项仍只检查自己必需的字段、方法描述符和调用关系。
+0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。0.9.1 允许同一个目标类串联多个独立能力；0.9.2 增加 OptiFine 动态光快照、Rustic 栅栏状态/AABB 复用、Fermium 后置线程限制和可靠的 TextureUtil PBO 入口；0.9.3 修复普通 RLCraft Better Caves 热循环中的模块开关线性查找回退；0.9.4 修复 TextureUtil 在 Forge pre-init 前跨主/Core JAR 解析导致的启动崩溃。每项仍只检查自己必需的字段、方法描述符和调用关系。
 
 这并不代表任意修改版整合包都受到正式支持。出现问题时请先在上述已验证环境中复现。
 
@@ -38,17 +38,17 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 推荐从 [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) 下载完整安装包：
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.3.zip
+ice-rlcraft-optimizer-bundle-0.9.4.zip
 ```
 
 解压后把其中两个 JAR 一起放入实例的 `mods` 目录：
 
 ```text
-ice-rlcraft-optimizer-0.9.3.jar
-ice-rlcraft-optimizer-core-0.9.3.jar
+ice-rlcraft-optimizer-0.9.4.jar
+ice-rlcraft-optimizer-core-0.9.4.jar
 ```
 
-Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR，但版本必须完全一致。
+Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR，但版本必须完全一致，不能把 0.9.3 Core 与 0.9.4 主包混装。
 
 - 单人游戏：安装到客户端实例。
 - 多人游戏：客户端和专用服务端都必须安装两个文件。
@@ -86,6 +86,8 @@ Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR�
 - **玩家头颅**：将不完整资料的 Authlib 网络解析移出渲染线程，并使用有界缓存与队列。
 
 具体模块可以在 `config/ice-optimizer.cfg` 中独立关闭。
+
+0.9.4 的 `TextureUtil` 注入只直接依赖 Core 内的自包含引导桥。普通 optimizer 主 JAR 尚未进入 Forge pre-init 时，引导桥返回未处理并执行原版/FoamFix 上传；运行时就绪后再安装 MethodHandle 委托，因此不会在帧缓冲初始化阶段解析尚不可见的主 JAR 类。
 
 ### 行为与安全边界
 
@@ -148,12 +150,12 @@ This repository contains the optimizer only. It does not include performance rec
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| Current version | 0.9.3 |
+| Current version | 0.9.4 |
 | Mod ID | `iceoptimizer` |
 | Environment | Client and server |
 | Primary test targets | RLCraft 2.9.3 and RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
 
-Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Version 0.9.1 allows multiple independent capabilities on one target class; 0.9.2 adds OptiFine dynamic-light snapshots, Rustic lattice state/AABB reuse, post-Fermium worker limits, and a reliable TextureUtil PBO entry; 0.9.3 removes the linear module-gate lookup exposed by Better Caves in standard RLCraft. Each capability still validates only the fields, descriptors, and call relationships it requires.
+Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Version 0.9.1 allows multiple independent capabilities on one target class; 0.9.2 adds OptiFine dynamic-light snapshots, Rustic lattice state/AABB reuse, post-Fermium worker limits, and a reliable TextureUtil PBO entry; 0.9.3 removes the linear module-gate lookup exposed by Better Caves in standard RLCraft; 0.9.4 fixes the cross-main/Core class resolution that could crash TextureUtil before Forge pre-init. Each capability still validates only the fields, descriptors, and call relationships it requires.
 
 This does not make every modified pack an officially supported target. Please reproduce issues on one of the primary test environments first.
 
@@ -162,17 +164,17 @@ This does not make every modified pack an officially supported target. Please re
 The recommended download from [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) is the complete bundle:
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.3.zip
+ice-rlcraft-optimizer-bundle-0.9.4.zip
 ```
 
 Extract it and place both contained JARs in the instance `mods` directory:
 
 ```text
-ice-rlcraft-optimizer-0.9.3.jar
-ice-rlcraft-optimizer-core-0.9.3.jar
+ice-rlcraft-optimizer-0.9.4.jar
+ice-rlcraft-optimizer-core-0.9.4.jar
 ```
 
-The Core JAR is required; it is not an optional dependency. The two JARs may also be downloaded separately, but their versions must match exactly.
+The Core JAR is required; it is not an optional dependency. The two JARs may also be downloaded separately, but their versions must match exactly; do not mix a 0.9.3 Core JAR with the 0.9.4 main JAR.
 
 - Single player: install both files in the client instance.
 - Multiplayer: install both files on every client and on the dedicated server.
@@ -208,6 +210,8 @@ For before/after comparisons, use the same save, route, render distance, and JVM
 - **Quality Tools / Quark**: stable equipment-attribute reuse and lower-allocation dropped-item synchronization state.
 - **Open Terrain Generator / BO4**: redundant source rewrite suppression, lower-allocation parsing, and per-spawn block-array/layout reuse.
 - **Player skulls**: bounded off-render-thread Authlib profile resolution for incomplete profiles.
+
+In 0.9.4, transformed TextureUtil code links only to a self-contained bootstrap in the Core JAR. Before the regular optimizer reaches Forge pre-init, the bootstrap declines the optimized upload and the untouched Minecraft/FoamFix path runs. Once the runtime is ready it installs MethodHandle delegates, avoiding both the startup linkage failure and per-upload class-name reflection.
 
 Individual modules can be disabled in `config/ice-optimizer.cfg`.
 
