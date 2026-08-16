@@ -24,7 +24,7 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| 当前版本 | 0.8.0 |
+| 当前版本 | 0.8.1 |
 | 模组 ID | `iceoptimizer` |
 | 运行端 | 客户端与服务端 |
 | 已重点验证 | RLCraft 2.9.3、RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
@@ -38,8 +38,8 @@ ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户�
 从 [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) 下载同一版本的两个文件：
 
 ```text
-ice-rlcraft-optimizer-0.8.0.jar
-ice-rlcraft-optimizer-core-0.8.0.jar
+ice-rlcraft-optimizer-0.8.1.jar
+ice-rlcraft-optimizer-core-0.8.1.jar
 ```
 
 将两个文件一起放入实例的 `mods` 目录。Core JAR 是必需组件，不是可选依赖。
@@ -126,7 +126,7 @@ This repository contains the optimizer only. It does not include performance rec
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2860 |
 | Java | Java 8 |
-| Current version | 0.8.0 |
+| Current version | 0.8.1 |
 | Mod ID | `iceoptimizer` |
 | Environment | Client and server |
 | Primary test targets | RLCraft 2.9.3 and RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
@@ -140,8 +140,8 @@ This does not make every modified pack an officially supported target. Please re
 Download both files with the same version from [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest):
 
 ```text
-ice-rlcraft-optimizer-0.8.0.jar
-ice-rlcraft-optimizer-core-0.8.0.jar
+ice-rlcraft-optimizer-0.8.1.jar
+ice-rlcraft-optimizer-core-0.8.1.jar
 ```
 
 Place both files in the instance `mods` directory. The Core JAR is required; it is not an optional dependency.
