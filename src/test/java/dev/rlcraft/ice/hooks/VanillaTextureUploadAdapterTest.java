@@ -1,8 +1,10 @@
 package dev.rlcraft.ice.hooks;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -21,26 +23,17 @@ import org.objectweb.asm.Opcodes;
 
 public final class VanillaTextureUploadAdapterTest {
     @Test
-    public void transformsReviewedForgeSrgTextureUtilWhenProvided() throws Exception {
+    public void leavesForgeSrgTextureUtilUnmodifiedAfterSingleLevelPboRemoval() throws Exception {
         String configured = System.getProperty("ice.minecraft.srg.jar", "").trim();
         Assume.assumeTrue("run with -PminecraftSrgJar=<jar>", !configured.isEmpty());
         JarFile jar = new JarFile(new File(configured));
         try {
             byte[] original = read(jar, VanillaTextureUploadAdapter.TARGET.replace('/', '.'));
-            TargetSpec target = null;
-            for (TargetSpec candidate : OptimizerTargetCatalog.findAll(
-                VanillaTextureUploadAdapter.TARGET.replace('/', '.'))) {
-                if ("vanilla-texture-pbo-upload".equals(candidate.adapterId)) target = candidate;
-            }
-            assertNotNull(target);
+            String className = VanillaTextureUploadAdapter.TARGET.replace('/', '.');
+            assertTrue(OptimizerTargetCatalog.findAll(className).isEmpty());
             byte[] transformed = new IceOptimizerTransformer().transform(
-                target.className, target.className, original);
-            assertFalse(Arrays.equals(original, transformed));
-            assertEquals(1, countCalls(transformed, VanillaTextureUploadAdapter.BRIDGE,
-                "tryUploadLevel", VanillaTextureUploadAdapter.BRIDGE_DESCRIPTOR));
-            assertEquals(1, countCalls(transformed, VanillaTextureUploadAdapter.TARGET,
-                VanillaTextureUploadAdapter.ORIGINAL_UPLOAD,
-                VanillaTextureUploadAdapter.TARGET_DESCRIPTOR));
+                className, className, original);
+            assertArrayEquals(original, transformed);
             new ClassReader(transformed);
         } finally {
             jar.close();

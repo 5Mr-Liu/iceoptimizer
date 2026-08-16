@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.chunk;
 
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
@@ -26,7 +27,7 @@ import org.lwjgl.opengl.GLSync;
  * original glBufferData path in the same call.
  */
 public final class ChunkVboUploadBridge {
-    private static final String MODULE = "vanilla-chunk-vbo-upload";
+    private static final int MODULE = OptimizationModule.VANILLA_CHUNK_VBO_UPLOAD.ordinal();
     private static final int ARRAY_BUFFER = 34962;
     private static final int COPY_WRITE_BUFFER = 36663;
     private static final int COPY_WRITE_BUFFER_BINDING = 36663;
@@ -35,6 +36,7 @@ public final class ChunkVboUploadBridge {
     private static final int MIN_STAGING_BYTES = 256 * 1024;
     private static final int MAX_STAGING_BYTES = 16 * 1024 * 1024;
     private static final int SLOT_COUNT = 6;
+    private static final int MAX_SLOT_PROBES = 2;
     private static final UploadSlot[] SLOTS = new UploadSlot[SLOT_COUNT];
     private static final AtomicLong GPU_UPLOADS = new AtomicLong();
     private static final AtomicLong FALLBACKS = new AtomicLong();
@@ -69,6 +71,10 @@ public final class ChunkVboUploadBridge {
             || stride <= 0 || bytes % stride != 0 || accessor.ice$glBufferId() < 0) {
             return fallback("GUARD");
         }
+        // Staging adds one CPU upload, one GPU copy and one Fence. That fixed
+        // cost is larger than vanilla for small chunk layers on every driver,
+        // so keep those calls on the original glBufferData path.
+        if (!shouldStage(bytes)) return fallback("SMALL");
         int previousCopyWrite = 0;
         boolean copyBindingTouched = false;
         UploadSlot slot = null;
@@ -140,10 +146,22 @@ public final class ChunkVboUploadBridge {
         return roundedCapacity(requiredBytes);
     }
 
+    static boolean shouldStageForTest(int bytes) {
+        return shouldStage(bytes);
+    }
+
+    static int maximumSlotProbesForTest() {
+        return MAX_SLOT_PROBES;
+    }
+
     private static boolean fallback(String reason) {
         FALLBACKS.incrementAndGet();
         if (reason != null && !"DISABLED".equals(reason)) backend = reason;
         return false;
+    }
+
+    private static boolean shouldStage(int bytes) {
+        return bytes >= MIN_STAGING_BYTES && bytes <= MAX_STAGING_BYTES;
     }
 
     private static boolean supported(ContextCapabilities capabilities) {
@@ -171,7 +189,9 @@ public final class ChunkVboUploadBridge {
     }
 
     private static UploadSlot acquireSlot(ContextCapabilities capabilities) {
-        for (int checked = 0; checked < SLOT_COUNT; checked++) {
+        // A zero-timeout glClientWaitSync still crosses into the driver. Probe
+        // only a bounded subset and immediately use vanilla when the GPU lags.
+        for (int checked = 0; checked < Math.min(MAX_SLOT_PROBES, SLOT_COUNT); checked++) {
             int index = (slotCursor + checked) % SLOT_COUNT;
             UploadSlot slot = SLOTS[index];
             if (slot == null) {

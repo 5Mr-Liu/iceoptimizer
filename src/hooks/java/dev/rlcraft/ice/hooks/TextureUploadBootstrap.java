@@ -8,10 +8,10 @@ import java.lang.invoke.MethodType;
  * Early CoreMod-safe entry for texture uploads.
  *
  * <p>Minecraft initializes {@code TextureUtil} before regular Forge mods reach
- * pre-init. Consequently transformed Minecraft classes must not directly link
- * against a class that exists only in the regular optimizer JAR. Until that
- * JAR installs its delegate this bridge simply returns {@code false}, so the
- * untouched Minecraft/FoamFix implementation runs.</p>
+ * pre-init.  Consequently transformed Minecraft classes must not directly
+ * link against a class that exists only in the regular optimizer JAR.  Until
+ * that JAR installs its delegate this bridge simply returns {@code false}, so
+ * the untouched Minecraft/FoamFix implementation runs.</p>
  */
 public final class TextureUploadBootstrap {
     private static final MethodType LEVEL_TYPE = MethodType.methodType(boolean.class,

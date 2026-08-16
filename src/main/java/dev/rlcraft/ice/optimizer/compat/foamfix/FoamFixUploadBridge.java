@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.foamfix;
 
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
@@ -20,10 +21,12 @@ import org.lwjgl.opengl.GLSync;
 /** Fail-open PBO upload path shared by FoamFix's batch helper and vanilla TextureUtil. */
 public final class FoamFixUploadBridge {
     private static final String MODULE = "foamfix-texture-upload";
+    private static final int MODULE_ORDINAL = OptimizationModule.FOAMFIX_TEXTURE_UPLOAD.ordinal();
     private static final int PIXEL_UNPACK_BUFFER = 35052;
     private static final int PIXEL_UNPACK_BUFFER_BINDING = 35055;
     private static final int STREAM_DRAW = 35040;
     private static final int MAX_STAGING_BYTES = 16 * 1024 * 1024;
+    private static final int MIN_BATCH_PBO_BYTES = 256 * 1024;
     private static final int SLOT_COUNT = 3;
     private static final PboSlot[] SLOTS = new PboSlot[SLOT_COUNT];
     private static IntBuffer staging;
@@ -74,70 +77,15 @@ public final class FoamFixUploadBridge {
     public static boolean tryUploadLevel(int mipLevel, int[] data, int width, int height,
                                          int originX, int originY, boolean linearFiltering,
                                          boolean clamped, boolean mipFiltering) {
-        if (!OptimizerBridge.isEnabled(MODULE) || mipLevel < 0 || data == null
-            || width <= 0 || height <= 0) return false;
-        Minecraft minecraft = Minecraft.getMinecraft();
-        if (minecraft == null || minecraft.gameSettings == null || minecraft.gameSettings.anaglyph) return false;
-        long countLong = (long) width * (long) height;
-        if (countLong <= 0L || countLong > data.length || countLong > MAX_STAGING_BYTES / 4L) return false;
-        int count = (int) countLong;
-        int previousPbo = 0;
-        boolean bindingChanged = false;
-        try {
-            IntBuffer pixels = prepareSinglePixels(data, count);
-            if (pixels == null) return false;
-            setTextureParameters(linearFiltering, clamped, mipFiltering);
-            ContextCapabilities capabilities = GLContext.getCapabilities();
-            if (supportsPbo(capabilities)) {
-                previousPbo = GL11.glGetInteger(PIXEL_UNPACK_BUFFER_BINDING);
-                PboSlot slot = acquirePboSlot(capabilities);
-                if (slot != null) {
-                    GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
-                    bindingChanged = true;
-                    if (slot.ensureCapacity(count * 4)) {
-                        try {
-                            GL15.glBufferSubData(PIXEL_UNPACK_BUFFER, 0L, pixels);
-                            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
-                                width, height, 32993, 33639, 0L);
-                            slot.markSubmitted(capabilities);
-                        } catch (Throwable error) {
-                            slot.poison();
-                            throw error;
-                        }
-                    } else {
-                        GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, 0);
-                        GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
-                            width, height, 32993, 33639, pixels);
-                    }
-                } else {
-                    if (previousPbo != 0) {
-                        GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, 0);
-                        bindingChanged = true;
-                    }
-                    GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
-                        width, height, 32993, 33639, pixels);
-                }
-            } else {
-                GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mipLevel, originX, originY,
-                    width, height, 32993, 33639, pixels);
-            }
-            if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
-            activate();
-            OptimizerBridge.success(MODULE);
-            return true;
-        } catch (Throwable error) {
-            try {
-                if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
-            } catch (Throwable ignored) {
-            }
-            OptimizerBridge.failure(MODULE, error);
-            return false;
-        }
+        // A single TextureUtil level is not a batch. Intercepting it creates one
+        // fence per tiny animated sprite and was measured as a 42-45% render-thread tax.
+        return false;
     }
 
     public static boolean tryUpload(int maxMips, int[][] data, int width, int height, int originX, int originY,
                                     boolean linearFiltering, boolean clamped, boolean mipFiltering) {
-        if (!OptimizerBridge.isEnabled(MODULE) || data == null || width <= 0 || height <= 0) return false;
+        if (!OptimizerBridge.isEnabled(MODULE_ORDINAL) || data == null
+            || width <= 0 || height <= 0) return false;
         Minecraft minecraft = Minecraft.getMinecraft();
         if (minecraft == null || minecraft.gameSettings == null || minecraft.gameSettings.anaglyph) return false;
         int mips = maxMips >= 0 ? Math.min(maxMips, data.length - 1) : data.length - 1;
@@ -154,52 +102,45 @@ public final class FoamFixUploadBridge {
         }
         int totalInts = (int) totalIntsLong;
         if (totalInts == 0) return true;
+        int totalBytes = totalInts * 4;
+        if (totalBytes < MIN_BATCH_PBO_BYTES) return false;
         int previousPbo = 0;
         boolean bindingChanged = false;
         try {
+            ContextCapabilities capabilities = GLContext.getCapabilities();
+            if (!supportsPbo(capabilities)) return false;
+            ensureContext();
+            PboSlot slot = acquirePboSlot(capabilities);
+            if (slot == null) return false;
             IntBuffer pixels = preparePixels(data, width, height, mips, totalInts);
             if (pixels == null) return false;
+            previousPbo = GL11.glGetInteger(PIXEL_UNPACK_BUFFER_BINDING);
+            GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
+            bindingChanged = true;
+            if (!slot.ensureCapacity(totalBytes)) {
+                GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
+                bindingChanged = false;
+                return false;
+            }
             setTextureParameters(linearFiltering, clamped, mipFiltering);
-            ContextCapabilities capabilities = GLContext.getCapabilities();
-            if (supportsPbo(capabilities)) {
-                previousPbo = GL11.glGetInteger(PIXEL_UNPACK_BUFFER_BINDING);
-                PboSlot slot = acquirePboSlot(capabilities);
-                if (slot != null) {
-                    GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
-                    bindingChanged = true;
-                    if (slot.ensureCapacity(totalInts * 4)) {
-                        try {
-                            GL15.glBufferSubData(PIXEL_UNPACK_BUFFER, 0L, pixels);
-                            uploadFromPbo(width, height, originX, originY, mips);
-                            slot.markSubmitted(capabilities);
-                        } catch (Throwable error) {
-                            slot.poison();
-                            throw error;
-                        }
-                    } else {
-                        GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, 0);
-                        uploadDirect(width, height, originX, originY, mips);
-                    }
-                } else {
-                    if (previousPbo != 0) {
-                        GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, 0);
-                        bindingChanged = true;
-                    }
-                    uploadDirect(width, height, originX, originY, mips);
-                }
-            } else {
-                uploadDirect(width, height, originX, originY, mips);
+            try {
+                GL15.glBufferSubData(PIXEL_UNPACK_BUFFER, 0L, pixels);
+                uploadFromPbo(width, height, originX, originY, mips);
+                slot.markSubmitted(capabilities);
+            } catch (Throwable error) {
+                slot.poison();
+                throw error;
             }
             if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
             activate();
-            OptimizerBridge.success(MODULE);
+            OptimizerBridge.success(MODULE_ORDINAL);
             return true;
         } catch (Throwable error) {
             try {
                 if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
             } catch (Throwable ignored) {
             }
-            OptimizerBridge.failure(MODULE, error);
+            OptimizerBridge.failure(MODULE_ORDINAL, error);
             return false;
         }
     }
@@ -218,20 +159,11 @@ public final class FoamFixUploadBridge {
         return staging;
     }
 
-    private static IntBuffer prepareSinglePixels(int[] data, int count) {
-        ensureContext();
-        int requiredBytes = count * 4;
-        if (!ensureStagingCapacity(requiredBytes)) return null;
-        staging.clear();
-        staging.put(data, 0, count);
-        staging.flip();
-        return staging;
-    }
-
     private static void activate() {
         if (activated) return;
         activated = true;
-        OptimizerBridge.activate(MODULE, "动画纹理上传已使用三槽 PBO；批量入口可用时同时合并 mip 参数");
+        OptimizerBridge.activate(MODULE_ORDINAL,
+            "仅大批量动画纹理使用三槽 PBO；小纹理与忙槽立即回退原上传路径");
     }
 
     private static boolean ensureStagingCapacity(int requiredBytes) {
@@ -276,20 +208,8 @@ public final class FoamFixUploadBridge {
         }
     }
 
-    private static void uploadDirect(int width, int height, int originX, int originY, int mips) {
-        int offsetInts = 0;
-        for (int mip = 0; mip <= mips; mip++) {
-            int mipWidth = width >> mip;
-            int mipHeight = height >> mip;
-            if (mipWidth <= 0 || mipHeight <= 0) continue;
-            int count = mipWidth * mipHeight;
-            IntBuffer view = staging.duplicate();
-            view.position(offsetInts);
-            view.limit(offsetInts + count);
-            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mip, originX >> mip, originY >> mip,
-                mipWidth, mipHeight, 32993, 33639, view.slice());
-            offsetInts += count;
-        }
+    static int minimumBatchPboBytesForTest() {
+        return MIN_BATCH_PBO_BYTES;
     }
 
     private static boolean supportsPbo(ContextCapabilities capabilities) {

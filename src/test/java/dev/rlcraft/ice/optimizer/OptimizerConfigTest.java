@@ -17,6 +17,8 @@ public final class OptimizerConfigTest {
     public void reviewedCombatOptimizationsAreEnabledByDefault() {
         assertTrue(OptimizerConfig.settings.vanillaSaveTickIndex);
         assertTrue(OptimizerConfig.settings.lycanitesSpawnScan);
+        assertTrue(OptimizerConfig.settings.lycanitesBlockMembership);
+        assertTrue(OptimizerConfig.settings.srpSpawnFilter);
         assertTrue(OptimizerConfig.settings.lycanitesObjRender);
         assertTrue(OptimizerConfig.settings.lycanitesModelAnimation);
         assertTrue(OptimizerConfig.settings.lycanitesEffectCache);
@@ -29,6 +31,9 @@ public final class OptimizerConfigTest {
         assertTrue(OptimizerConfig.settings.otgConfigParser);
         assertTrue(OptimizerConfig.settings.otgBo4Layout);
         assertTrue(OptimizerConfig.settings.skullProfileAsync);
+        assertTrue(OptimizerConfig.settings.konkreteLocaleLookup);
+        assertTrue(OptimizerConfig.settings.vanillaChunkCompression);
+        assertTrue(OptimizerConfig.settings.forgeBlockStateDirectCalls);
         assertEquals(2048, OptimizerConfig.settings.skullProfileCacheEntries);
         assertEquals(360, OptimizerConfig.settings.skullProfilePositiveTtlMinutes);
         assertEquals(300, OptimizerConfig.settings.skullProfileNegativeTtlSeconds);

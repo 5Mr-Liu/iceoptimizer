@@ -1,0 +1,16 @@
+[
+  {
+    "modid": "iceprofiler",
+    "name": "ICE Performance Recorder",
+    "description": "Bounded hitch detection, stack sampling, root-cause analysis, and local report export for Minecraft 1.12.2.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "url": "",
+    "updateUrl": "",
+    "authorList": ["ICE Team"],
+    "credits": "Profiler-first performance analysis for the RLCraft community.",
+    "logoFile": "",
+    "screenshots": [],
+    "dependencies": []
+  }
+]

@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.bridge;
 
+import dev.rlcraft.ice.optimizer.ModuleCircuitBreaker;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 
@@ -21,10 +22,17 @@ public final class OptimizerBridge {
     public static boolean isEnabled(String moduleId) {
         try {
             OptimizationModule module = OptimizationModule.byId(moduleId);
-            return module != null && OptimizerRegistry.isOperational(module);
+            return module != null && isEnabled(module.ordinal());
         } catch (LinkageError | RuntimeException ignored) {
-            // Injected call sites must retain the original mod path while the runtime is absent
-            // or still becoming visible to LaunchClassLoader.
+            return false;
+        }
+    }
+
+    /** Ordinal ABI: no String hashing and one volatile operational-mask read. */
+    public static boolean isEnabled(int moduleOrdinal) {
+        try {
+            return OptimizerRegistry.isOperational(moduleOrdinal);
+        } catch (LinkageError | RuntimeException ignored) {
             return false;
         }
     }
@@ -77,36 +85,72 @@ public final class OptimizerBridge {
     public static void success(String moduleId) {
         try {
             OptimizationModule module = OptimizationModule.byId(moduleId);
-            if (module != null) OptimizerRegistry.breaker(module).recordSuccess();
+            if (module != null) success(module.ordinal());
         } catch (LinkageError | RuntimeException ignored) {
-            // Fail open: optimizer bookkeeping must never break an adapted mod.
+            // Fail open: bookkeeping must never break an adapted mod.
+        }
+    }
+
+    public static void success(int moduleOrdinal) {
+        try {
+            ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
+            if (breaker != null) breaker.recordSuccess();
+        } catch (LinkageError | RuntimeException ignored) {
+            // Fail open: bookkeeping must never break an adapted mod.
         }
     }
 
     public static void activate(String moduleId, String detail) {
         try {
             OptimizationModule module = OptimizationModule.byId(moduleId);
-            if (module != null) OptimizerRegistry.breaker(module).activate(detail);
+            if (module != null) activate(module.ordinal(), detail);
         } catch (LinkageError | RuntimeException ignored) {
-            // Fail open: optimizer bookkeeping must never break an adapted mod.
+            // Fail open: bookkeeping must never break an adapted mod.
+        }
+    }
+
+    public static void activate(int moduleOrdinal, String detail) {
+        try {
+            ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
+            if (breaker != null) breaker.activate(detail);
+        } catch (LinkageError | RuntimeException ignored) {
+            // Fail open: bookkeeping must never break an adapted mod.
         }
     }
 
     public static void failure(String moduleId, Throwable error) {
         try {
             OptimizationModule module = OptimizationModule.byId(moduleId);
-            if (module != null) OptimizerRegistry.breaker(module).recordFailure(error);
+            if (module != null) failure(module.ordinal(), error);
         } catch (LinkageError | RuntimeException ignored) {
-            // Fail open: optimizer bookkeeping must never break an adapted mod.
+            // Fail open: bookkeeping must never break an adapted mod.
+        }
+    }
+
+    public static void failure(int moduleOrdinal, Throwable error) {
+        try {
+            ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
+            if (breaker != null) breaker.recordFailure(error);
+        } catch (LinkageError | RuntimeException ignored) {
+            // Fail open: bookkeeping must never break an adapted mod.
         }
     }
 
     public static void incompatible(String moduleId, String detail) {
         try {
             OptimizationModule module = OptimizationModule.byId(moduleId);
-            if (module != null) OptimizerRegistry.breaker(module).forceIncompatible(detail);
+            if (module != null) incompatible(module.ordinal(), detail);
         } catch (LinkageError | RuntimeException ignored) {
-            // Fail open: optimizer bookkeeping must never break an adapted mod.
+            // Fail open: bookkeeping must never break an adapted mod.
+        }
+    }
+
+    public static void incompatible(int moduleOrdinal, String detail) {
+        try {
+            ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
+            if (breaker != null) breaker.forceIncompatible(detail);
+        } catch (LinkageError | RuntimeException ignored) {
+            // Fail open: bookkeeping must never break an adapted mod.
         }
     }
 }

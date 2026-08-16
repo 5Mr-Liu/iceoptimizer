@@ -1,6 +1,8 @@
 package dev.rlcraft.ice.optimizer.compat.chunk;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
@@ -59,6 +61,15 @@ public final class ChunkRenderPolicyBridgeTest {
         assertEquals(512 * 1024, ChunkVboUploadBridge.roundedCapacityForTest(300 * 1024));
         assertEquals(16 * 1024 * 1024,
             ChunkVboUploadBridge.roundedCapacityForTest(16 * 1024 * 1024));
+    }
+
+    @Test
+    public void vboStagingSkipsSmallUploadsAndBoundsFencePolling() {
+        assertFalse(ChunkVboUploadBridge.shouldStageForTest(256 * 1024 - 1));
+        assertTrue(ChunkVboUploadBridge.shouldStageForTest(256 * 1024));
+        assertTrue(ChunkVboUploadBridge.shouldStageForTest(16 * 1024 * 1024));
+        assertFalse(ChunkVboUploadBridge.shouldStageForTest(16 * 1024 * 1024 + 1));
+        assertEquals(2, ChunkVboUploadBridge.maximumSlotProbesForTest());
     }
 
     @Test

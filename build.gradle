@@ -64,8 +64,8 @@ configurations {
 dependencies {
     minecraft 'net.minecraftforge:forge:1.12.2-14.23.5.2860'
 
-    // ForgeGradle may expose only the partial recomp JAR on Java 8/Windows.
-    // The mapped JAR beside it supplies unchanged vanilla classes to tests.
+    // ForgeGradle 3.0.197 sometimes exposes only the partial "recomp" jar on Java 8/Windows.
+    // The normal mapped jar is generated beside it and supplies unchanged vanilla classes.
     def mappedVersion = '1.12.2-14.23.5.2860_mapped_stable_39-1.12'
     def mappedJar = new File(
         gradle.gradleUserHomeDir,
@@ -97,37 +97,89 @@ sourceSets.test.compileClasspath += sourceSets.hooks.output
 sourceSets.test.runtimeClasspath += sourceSets.hooks.output
 
 test {
-    [
-        foamfixJar: 'ice.foamfix.jar',
-        optifineJar: 'ice.optifine.jar',
-        rusticJar: 'ice.rustic.jar',
-        xaeroWorldMapJar: 'ice.xaero.worldmap.jar',
-        renderLibJar: 'ice.renderlib.jar',
-        srpJar: 'ice.srp.jar',
-        lycanitesJar: 'ice.lycanites.jar',
-        moBendsJar: 'ice.mobends.jar',
-        iceAndFireJar: 'ice.iceandfire.jar',
-        llibraryJar: 'ice.llibrary.jar',
-        oreLibJar: 'ice.orelib.jar',
-        betterFoliageJar: 'ice.betterfoliage.jar',
-        betterCavesJar: 'ice.bettercaves.jar',
-        qualityToolsJar: 'ice.qualitytools.jar',
-        quarkJar: 'ice.quark.jar',
-        betterFoliageRuntimeClass: 'ice.betterfoliage.runtimeClass',
-        dynamicTreesJar: 'ice.dynamictrees.jar',
-        otgJar: 'ice.otg.jar',
-        minecraftSrgJar: 'ice.minecraft.srg.jar',
-        dregoraDiscoveryDir: 'ice.dregora.discoveryDir',
-        dregoraModsDir: 'ice.dregora.modsDir',
-        dregoraSrpJar: 'ice.dregora.srp.jar',
-        dregoraLycanitesJar: 'ice.dregora.lycanites.jar',
-        dregoraRenderLibJar: 'ice.dregora.renderlib.jar',
-        dregoraFoliageJar: 'ice.dregora.foliage.jar',
-        dregoraIceAndFireJar: 'ice.dregora.iceandfire.jar'
-    ].each { projectProperty, systemPropertyName ->
-        if (project.hasProperty(projectProperty)) {
-            systemProperty systemPropertyName, file(project.property(projectProperty)).absolutePath
-        }
+    if (project.hasProperty('foamfixJar')) {
+        systemProperty 'ice.foamfix.jar', file(project.property('foamfixJar')).absolutePath
+    }
+    if (project.hasProperty('optifineJar')) {
+        systemProperty 'ice.optifine.jar', file(project.property('optifineJar')).absolutePath
+    }
+    if (project.hasProperty('konkreteJar')) {
+        systemProperty 'ice.konkrete.jar', file(project.property('konkreteJar')).absolutePath
+    }
+    if (project.hasProperty('rusticJar')) {
+        systemProperty 'ice.rustic.jar', file(project.property('rusticJar')).absolutePath
+    }
+    if (project.hasProperty('xaeroWorldMapJar')) {
+        systemProperty 'ice.xaero.worldmap.jar', file(project.property('xaeroWorldMapJar')).absolutePath
+    }
+    if (project.hasProperty('renderLibJar')) {
+        systemProperty 'ice.renderlib.jar', file(project.property('renderLibJar')).absolutePath
+    }
+    if (project.hasProperty('srpJar')) {
+        systemProperty 'ice.srp.jar', file(project.property('srpJar')).absolutePath
+    }
+    if (project.hasProperty('srpMixinsJar')) {
+        systemProperty 'ice.srp.mixins.jar', file(project.property('srpMixinsJar')).absolutePath
+    }
+    if (project.hasProperty('lycanitesJar')) {
+        systemProperty 'ice.lycanites.jar', file(project.property('lycanitesJar')).absolutePath
+    }
+    if (project.hasProperty('moBendsJar')) {
+        systemProperty 'ice.mobends.jar', file(project.property('moBendsJar')).absolutePath
+    }
+    if (project.hasProperty('iceAndFireJar')) {
+        systemProperty 'ice.iceandfire.jar', file(project.property('iceAndFireJar')).absolutePath
+    }
+    if (project.hasProperty('llibraryJar')) {
+        systemProperty 'ice.llibrary.jar', file(project.property('llibraryJar')).absolutePath
+    }
+    if (project.hasProperty('oreLibJar')) {
+        systemProperty 'ice.orelib.jar', file(project.property('oreLibJar')).absolutePath
+    }
+    if (project.hasProperty('betterFoliageJar')) {
+        systemProperty 'ice.betterfoliage.jar', file(project.property('betterFoliageJar')).absolutePath
+    }
+    if (project.hasProperty('betterCavesJar')) {
+        systemProperty 'ice.bettercaves.jar', file(project.property('betterCavesJar')).absolutePath
+    }
+    if (project.hasProperty('qualityToolsJar')) {
+        systemProperty 'ice.qualitytools.jar', file(project.property('qualityToolsJar')).absolutePath
+    }
+    if (project.hasProperty('quarkJar')) {
+        systemProperty 'ice.quark.jar', file(project.property('quarkJar')).absolutePath
+    }
+    if (project.hasProperty('betterFoliageRuntimeClass')) {
+        systemProperty 'ice.betterfoliage.runtimeClass', file(project.property('betterFoliageRuntimeClass')).absolutePath
+    }
+    if (project.hasProperty('dynamicTreesJar')) {
+        systemProperty 'ice.dynamictrees.jar', file(project.property('dynamicTreesJar')).absolutePath
+    }
+    if (project.hasProperty('otgJar')) {
+        systemProperty 'ice.otg.jar', file(project.property('otgJar')).absolutePath
+    }
+    if (project.hasProperty('minecraftSrgJar')) {
+        systemProperty 'ice.minecraft.srg.jar', file(project.property('minecraftSrgJar')).absolutePath
+    }
+    if (project.hasProperty('dregoraDiscoveryDir')) {
+        systemProperty 'ice.dregora.discoveryDir', file(project.property('dregoraDiscoveryDir')).absolutePath
+    }
+    if (project.hasProperty('dregoraModsDir')) {
+        systemProperty 'ice.dregora.modsDir', file(project.property('dregoraModsDir')).absolutePath
+    }
+    if (project.hasProperty('dregoraSrpJar')) {
+        systemProperty 'ice.dregora.srp.jar', file(project.property('dregoraSrpJar')).absolutePath
+    }
+    if (project.hasProperty('dregoraLycanitesJar')) {
+        systemProperty 'ice.dregora.lycanites.jar', file(project.property('dregoraLycanitesJar')).absolutePath
+    }
+    if (project.hasProperty('dregoraRenderLibJar')) {
+        systemProperty 'ice.dregora.renderlib.jar', file(project.property('dregoraRenderLibJar')).absolutePath
+    }
+    if (project.hasProperty('dregoraFoliageJar')) {
+        systemProperty 'ice.dregora.foliage.jar', file(project.property('dregoraFoliageJar')).absolutePath
+    }
+    if (project.hasProperty('dregoraIceAndFireJar')) {
+        systemProperty 'ice.dregora.iceandfire.jar', file(project.property('dregoraIceAndFireJar')).absolutePath
     }
 }
 
@@ -137,7 +189,7 @@ processResources {
     inputs.property 'version', project.version
     inputs.property 'mcversion', '1.12.2'
 
-    filesMatching('mcmod-optimizer.info') {
+    filesMatching('mcmod-*.info') {
         expand 'version': project.version, 'mcversion': '1.12.2'
     }
 }
@@ -167,15 +219,26 @@ shadowJar {
     relocate 'org.agrona', 'dev.rlcraft.ice.shadow.agrona'
     relocate 'com.github.benmanes.caffeine', 'dev.rlcraft.ice.shadow.caffeine'
     relocate 'net.jpountz', 'dev.rlcraft.ice.shadow.lz4'
+    exclude 'dev/rlcraft/ice/IceProfilerMod*.class'
+    exclude 'dev/rlcraft/ice/client/**'
+    exclude 'dev/rlcraft/ice/command/**'
+    exclude 'dev/rlcraft/ice/config/**'
+    exclude 'dev/rlcraft/ice/profiler/**'
+    exclude 'dev/rlcraft/ice/proxy/**'
+    exclude 'dev/rlcraft/ice/server/**'
+    exclude 'assets/ice/lang/**'
+    exclude 'mcmod-profiler.info'
     // WorldServer implements this ABI during the early CoreMod phase. Keep the
     // class exclusively in the core JAR so LaunchWrapper can resolve it before
     // the regular mod JAR is added to the runtime class path.
     exclude 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterCallbacks.class'
     rename { String fileName -> fileName == 'mcmod-optimizer.info' ? 'mcmod.info' : fileName }
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
     manifest {
@@ -191,6 +254,37 @@ shadowJar {
     }
 }
 
+task profilerJar(type: Jar, dependsOn: classes) {
+    baseName = 'ice-rlcraft-profiler'
+    version = project.version
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    from(sourceSets.main.output) {
+        include 'dev/rlcraft/ice/IceProfilerMod*.class'
+        include 'dev/rlcraft/ice/client/**'
+        include 'dev/rlcraft/ice/command/**'
+        include 'dev/rlcraft/ice/config/**'
+        include 'dev/rlcraft/ice/profiler/**'
+        include 'dev/rlcraft/ice/proxy/**'
+        include 'dev/rlcraft/ice/server/**'
+        include 'assets/ice/lang/**'
+        include 'pack.mcmeta'
+        include 'mcmod-profiler.info'
+        rename { String fileName -> fileName == 'mcmod-profiler.info' ? 'mcmod.info' : fileName }
+    }
+    manifest {
+        attributes([
+            'Specification-Title': 'iceprofiler',
+            'Specification-Vendor': project.mod_vendor,
+            'Specification-Version': '1',
+            'Implementation-Title': 'ICE Performance Recorder',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': project.mod_vendor,
+            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
 task optimizerCoreJar(type: Jar, dependsOn: [hooksClasses, classes]) {
     baseName = 'ice-rlcraft-optimizer-core'
     version = project.version
@@ -199,20 +293,46 @@ task optimizerCoreJar(type: Jar, dependsOn: [hooksClasses, classes]) {
     from(sourceSets.hooks.output) {
         include 'dev/rlcraft/ice/hooks/**'
         include 'optimizer-targets.properties'
+        exclude 'dev/rlcraft/ice/hooks/IceProfilerLoadingPlugin*.class'
+        exclude 'dev/rlcraft/ice/hooks/IceProfilerTransformer*.class'
+        exclude 'dev/rlcraft/ice/hooks/ProbeProtocol*.class'
     }
     from(sourceSets.main.output) {
         include 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterCallbacks.class'
     }
     manifest {
         attributes([
             'FMLCorePlugin': 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin',
             'FMLCorePluginContainsFMLMod': 'false',
             'Implementation-Title': 'ICE RLCraft Optimizer Core',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': project.mod_vendor
+        ])
+    }
+}
+
+task profilerCoreJar(type: Jar, dependsOn: hooksClasses) {
+    baseName = 'ice-rlcraft-profiler-core'
+    version = project.version
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    from(sourceSets.hooks.output) {
+        include 'dev/rlcraft/ice/hooks/IceProfilerLoadingPlugin*.class'
+        include 'dev/rlcraft/ice/hooks/IceProfilerTransformer*.class'
+        include 'dev/rlcraft/ice/hooks/ProbeProtocol*.class'
+    }
+    manifest {
+        attributes([
+            'FMLCorePlugin': 'dev.rlcraft.ice.hooks.IceProfilerLoadingPlugin',
+            'FMLCorePluginContainsFMLMod': 'false',
+            'Implementation-Title': 'ICE Performance Recorder Core',
             'Implementation-Version': project.version,
             'Implementation-Vendor': project.mod_vendor
         ])
@@ -233,10 +353,11 @@ task optimizerBundleZip(type: Zip, dependsOn: ['reobfShadowJar', optimizerCoreJa
 
 reobf {
     shadowJar { }
+    profilerJar { }
 }
 
 def readJarEntries = { File archive ->
-    if (!archive.isFile()) throw new GradleException("Missing optimizer artifact: ${archive}")
+    if (!archive.isFile()) throw new GradleException("Missing split artifact: ${archive}")
     def entries = new LinkedHashSet<String>()
     def zip = new java.util.zip.ZipFile(archive)
     try {
@@ -281,66 +402,115 @@ def requireEntry = { Set<String> entries, String entry, String artifact ->
     if (!entries.contains(entry)) throw new GradleException("${artifact} is missing ${entry}")
 }
 
-task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar, optimizerBundleZip]) {
+task verifySplitJars(dependsOn: [reobfShadowJar, reobfProfilerJar, optimizerCoreJar, profilerCoreJar]) {
     doLast {
         Set<String> optimizer = readJarEntries(shadowJar.archivePath)
-        Set<String> core = readJarEntries(optimizerCoreJar.archivePath)
+        Set<String> profiler = readJarEntries(profilerJar.archivePath)
+        Set<String> optimizerCore = readJarEntries(optimizerCoreJar.archivePath)
+        Set<String> profilerCore = readJarEntries(profilerCoreJar.archivePath)
 
         requireEntry(optimizer, 'dev/rlcraft/ice/IceMod.class', 'optimizer JAR')
         requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/OptimizerConfig.class', 'optimizer JAR')
         requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/OptimizerRegistry.class', 'optimizer JAR')
         requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/proxy/OptimizerServerProxy.class', 'optimizer JAR')
         requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/server/ServerOptimizerRuntime.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/compat/save/ChunkSaveCompressionBridge.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/compat/konkrete/KonkreteLocaleBridge.class', 'optimizer JAR')
+        requireEntry(optimizer, 'dev/rlcraft/ice/optimizer/compat/chunk/ForgeBlockStateDirectBridge.class', 'optimizer JAR')
         requireEntry(optimizer, 'mcmod.info', 'optimizer JAR')
-
+        requireEntry(profiler, 'dev/rlcraft/ice/IceProfilerMod.class', 'profiler JAR')
+        requireEntry(profiler, 'dev/rlcraft/ice/profiler/core/ProfilerRuntime.class', 'profiler JAR')
+        requireEntry(profiler, 'dev/rlcraft/ice/profiler/sampling/ThreadSamplingPlan.class', 'profiler JAR')
+        requireEntry(profiler, 'mcmod.info', 'profiler JAR')
         if (!readJarEntryText(shadowJar.archivePath, 'mcmod.info').contains('"modid": "iceoptimizer"')) {
             throw new GradleException('optimizer JAR contains the wrong mcmod.info')
         }
-        if (optimizer.any { it.contains('/profiler/') || it.contains('IceProfiler') || it == 'mcmod-optimizer.info' }) {
-            throw new GradleException('optimizer JAR contains private profiler or source metadata content')
+        if (!readJarEntryText(profilerJar.archivePath, 'mcmod.info').contains('"modid": "iceprofiler"')) {
+            throw new GradleException('profiler JAR contains the wrong mcmod.info')
         }
 
-        requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerLoadingPlugin.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/hooks/IceClientOptimizerTransformer.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/hooks/TextureUploadBootstrap.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/hooks/TextureUploadBootstrap$Delegate.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class', 'optimizer core JAR')
-        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class', 'optimizer core JAR')
-        requireEntry(core, 'optimizer-targets.properties', 'optimizer core JAR')
+        def optimizerLeaks = optimizer.findAll {
+            it.startsWith('dev/rlcraft/ice/profiler/') || it.startsWith('dev/rlcraft/ice/client/') ||
+                it.startsWith('dev/rlcraft/ice/command/') || it.startsWith('dev/rlcraft/ice/config/') ||
+                it.startsWith('dev/rlcraft/ice/proxy/') || it.startsWith('dev/rlcraft/ice/server/') ||
+                it == 'dev/rlcraft/ice/IceProfilerMod.class'
+        }
+        if (!optimizerLeaks.isEmpty()) throw new GradleException("optimizer JAR contains profiler classes: ${optimizerLeaks}")
+
+        def profilerLeaks = profiler.findAll {
+            it.startsWith('dev/rlcraft/ice/optimizer/') || it.startsWith('dev/rlcraft/ice/shadow/') ||
+                it == 'dev/rlcraft/ice/IceMod.class'
+        }
+        if (!profilerLeaks.isEmpty()) throw new GradleException("profiler JAR contains optimizer classes: ${profilerLeaks}")
+
+        Set<String> optimizerClasses = optimizer.findAll { it.endsWith('.class') } as Set<String>
+        Set<String> profilerClasses = profiler.findAll { it.endsWith('.class') } as Set<String>
+        Set<String> sharedMainClasses = new LinkedHashSet<String>(optimizerClasses)
+        sharedMainClasses.retainAll(profilerClasses)
+        if (!sharedMainClasses.isEmpty()) throw new GradleException("main JARs contain duplicate classes: ${sharedMainClasses}")
+
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/IceOptimizerLoadingPlugin.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/IceClientOptimizerTransformer.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/TextureUploadBootstrap.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/TextureUploadBootstrap$Delegate.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/ChunkSaveCompressionAdapter.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/KonkreteLocaleAdapter.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/hooks/ForgeBlockStateDirectAdapter.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterCallbacks.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'optimizer-targets.properties', 'optimizer core JAR')
+        requireEntry(profilerCore, 'dev/rlcraft/ice/hooks/IceProfilerLoadingPlugin.class', 'profiler core JAR')
+        requireEntry(profilerCore, 'dev/rlcraft/ice/hooks/IceProfilerTransformer.class', 'profiler core JAR')
+        requireEntry(profilerCore, 'dev/rlcraft/ice/hooks/ProbeProtocol.class', 'profiler core JAR')
         if (readManifestAttribute(optimizerCoreJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin') {
             throw new GradleException('optimizer core JAR declares the wrong FMLCorePlugin')
         }
-        if (core.any { it.contains('IceProfiler') || it.contains('ProbeProtocol') }) {
+        if (readManifestAttribute(profilerCoreJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceProfilerLoadingPlugin') {
+            throw new GradleException('profiler core JAR declares the wrong FMLCorePlugin')
+        }
+
+        if (optimizerCore.any { it.startsWith('dev/rlcraft/ice/hooks/IceProfiler') || it.startsWith('dev/rlcraft/ice/hooks/ProbeProtocol') }) {
             throw new GradleException('optimizer core JAR contains profiler hook classes')
         }
+        if (profilerCore.any { it.startsWith('dev/rlcraft/ice/hooks/IceOptimizer') || it.startsWith('dev/rlcraft/ice/hooks/IceClientOptimizer') || it == 'optimizer-targets.properties' }) {
+            throw new GradleException('profiler core JAR contains optimizer hook classes')
+        }
+
         if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class')) {
             throw new GradleException('optimizer JAR contains the early CoreMod PendingTickAccessor ABI')
         }
+        if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor.class')) {
+            throw new GradleException('optimizer JAR contains the early CoreMod RegionFileRawWriteAccessor ABI')
+        }
         if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class') ||
-            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class') ||
-            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class') ||
-            optimizer.contains('dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class') ||
-            optimizer.contains('dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class')) {
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class')) {
             throw new GradleException('optimizer JAR contains early CoreMod chunk-render ABI classes')
         }
 
-        Set<String> bundle = readJarEntries(optimizerBundleZip.archivePath)
-        requireEntry(bundle, shadowJar.archivePath.name, 'optimizer bundle ZIP')
-        requireEntry(bundle, optimizerCoreJar.archivePath.name, 'optimizer bundle ZIP')
-        requireEntry(bundle, 'INSTALL.txt', 'optimizer bundle ZIP')
+        Set<String> optimizerCoreClasses = optimizerCore.findAll { it.endsWith('.class') } as Set<String>
+        Set<String> profilerCoreClasses = profilerCore.findAll { it.endsWith('.class') } as Set<String>
+        optimizerCoreClasses.retainAll(profilerCoreClasses)
+        if (!optimizerCoreClasses.isEmpty()) throw new GradleException("core JARs contain duplicate classes: ${optimizerCoreClasses}")
 
-        Set<String> optimizerClasses = optimizer.findAll { it.endsWith('.class') } as Set<String>
-        Set<String> coreClasses = core.findAll { it.endsWith('.class') } as Set<String>
-        optimizerClasses.retainAll(coreClasses)
-        if (!optimizerClasses.isEmpty()) {
-            throw new GradleException("optimizer main/core JARs contain duplicate classes: ${optimizerClasses}")
+        Set<String> optimizerMainCoreOverlap = new LinkedHashSet<String>(optimizerClasses)
+        optimizerMainCoreOverlap.retainAll(optimizerCore.findAll { it.endsWith('.class') })
+        if (!optimizerMainCoreOverlap.isEmpty()) throw new GradleException("optimizer main/core JARs contain duplicate classes: ${optimizerMainCoreOverlap}")
+        Set<String> profilerMainCoreOverlap = new LinkedHashSet<String>(profilerClasses)
+        profilerMainCoreOverlap.retainAll(profilerCore.findAll { it.endsWith('.class') })
+        if (!profilerMainCoreOverlap.isEmpty()) throw new GradleException("profiler main/core JARs contain duplicate classes: ${profilerMainCoreOverlap}")
+
+        if (optimizer.contains('mcmod-optimizer.info') || optimizer.contains('mcmod-profiler.info') ||
+            profiler.contains('mcmod-optimizer.info') || profiler.contains('mcmod-profiler.info')) {
+            throw new GradleException('source metadata names leaked into a release JAR')
         }
     }
 }
 
-build.dependsOn verifyOptimizerJars
+build.dependsOn verifySplitJars

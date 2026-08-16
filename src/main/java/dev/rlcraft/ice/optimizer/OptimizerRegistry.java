@@ -1,23 +1,26 @@
 package dev.rlcraft.ice.optimizer;
 
+import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.EnumMap;
 import java.util.List;
-import java.util.Map;
-import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 
-/**
- * Shared status bridge between the very-early Coremod transformer and the
- * normal Forge client or dedicated-server runtime.
- */
+/** Shared status bridge between the early Coremod and the regular runtime. */
 public final class OptimizerRegistry {
-    private static final Map<OptimizationModule, ModuleCircuitBreaker> BREAKERS =
-        new EnumMap<OptimizationModule, ModuleCircuitBreaker>(OptimizationModule.class);
+    private static final OptimizationModule[] MODULES = OptimizationModule.values();
+    private static final ModuleCircuitBreaker[] BREAKERS = new ModuleCircuitBreaker[MODULES.length];
+    private static volatile long operationalMask;
 
     static {
-        for (OptimizationModule module : OptimizationModule.values()) {
-            BREAKERS.put(module, new ModuleCircuitBreaker(module));
+        if (MODULES.length > Long.SIZE) {
+            throw new IllegalStateException("ICE operational mask supports at most "
+                + Long.SIZE + " modules");
+        }
+        Runnable publisher = new Runnable() {
+            @Override public void run() { refreshOperationalMask(); }
+        };
+        for (OptimizationModule module : MODULES) {
+            BREAKERS[module.ordinal()] = new ModuleCircuitBreaker(module, publisher);
         }
     }
 
@@ -25,52 +28,79 @@ public final class OptimizerRegistry {
     }
 
     public static synchronized void beginRuntime() {
-        for (OptimizationModule module : OptimizationModule.values()) {
-            BREAKERS.get(module).resetRuntimeState();
-        }
+        for (ModuleCircuitBreaker breaker : BREAKERS) breaker.resetRuntimeState();
+        refreshOperationalMask();
     }
 
     public static synchronized void configure(OptimizerRuntimeConfig config) {
-        for (OptimizationModule module : OptimizationModule.values()) {
-            BREAKERS.get(module).configure(config.enabled(module), config.getCircuitBreakerFailures());
+        for (OptimizationModule module : MODULES) {
+            BREAKERS[module.ordinal()].configure(config.enabled(module),
+                config.getCircuitBreakerFailures());
         }
+        refreshOperationalMask();
     }
 
     public static ModuleCircuitBreaker breaker(OptimizationModule module) {
-        return BREAKERS.get(module);
+        return module == null ? null : BREAKERS[module.ordinal()];
+    }
+
+    public static ModuleCircuitBreaker breaker(int moduleOrdinal) {
+        return moduleOrdinal >= 0 && moduleOrdinal < BREAKERS.length
+            ? BREAKERS[moduleOrdinal] : null;
     }
 
     public static boolean isOperational(OptimizationModule module) {
-        ModuleCircuitBreaker breaker = BREAKERS.get(module);
-        return breaker != null && breaker.isOperational();
+        return module != null && isOperational(module.ordinal());
     }
 
-    public static void targetObserved(String moduleId, String className, String fingerprint, boolean supported) {
+    /** One volatile read; used by injected and other high-frequency call sites. */
+    public static boolean isOperational(int moduleOrdinal) {
+        return moduleOrdinal >= 0 && moduleOrdinal < MODULES.length
+            && (operationalMask & (1L << moduleOrdinal)) != 0L;
+    }
+
+    public static void targetObserved(String moduleId, String className,
+                                      String fingerprint, boolean supported) {
         OptimizationModule module = OptimizationModule.byId(moduleId);
-        if (module != null) BREAKERS.get(module).targetObserved(className, fingerprint, supported);
+        if (module != null) {
+            BREAKERS[module.ordinal()].targetObserved(className, fingerprint, supported);
+        }
     }
 
     public static void patchInstalled(String moduleId, String className, String fingerprint) {
         OptimizationModule module = OptimizationModule.byId(moduleId);
-        if (module != null) BREAKERS.get(module).patchInstalled(className, fingerprint);
+        if (module != null) BREAKERS[module.ordinal()].patchInstalled(className, fingerprint);
     }
 
     public static List<ModuleStatus> snapshot() {
-        List<ModuleStatus> result = new ArrayList<ModuleStatus>(OptimizationModule.values().length);
-        for (OptimizationModule module : OptimizationModule.values()) result.add(BREAKERS.get(module).snapshot());
+        List<ModuleStatus> result = new ArrayList<ModuleStatus>(MODULES.length);
+        for (ModuleCircuitBreaker breaker : BREAKERS) result.add(breaker.snapshot());
         return Collections.unmodifiableList(result);
     }
 
     public static void enforcePackLock(PackLockStatus status) {
         if (status == null || status.permitsPatches()) return;
-        for (OptimizationModule module : OptimizationModule.values()) {
-            BREAKERS.get(module).rejectByPackLock(status.getDetail());
+        for (ModuleCircuitBreaker breaker : BREAKERS) {
+            breaker.rejectByPackLock(status.getDetail());
         }
+        refreshOperationalMask();
     }
 
     public static synchronized void shutdown(String detail) {
-        for (OptimizationModule module : OptimizationModule.values()) {
-            BREAKERS.get(module).disable(detail);
+        for (ModuleCircuitBreaker breaker : BREAKERS) breaker.disable(detail);
+        refreshOperationalMask();
+    }
+
+    static long operationalMaskForTest() {
+        return operationalMask;
+    }
+
+    private static void refreshOperationalMask() {
+        long next = 0L;
+        for (int i = 0; i < BREAKERS.length; i++) {
+            ModuleCircuitBreaker breaker = BREAKERS[i];
+            if (breaker != null && breaker.isOperational()) next |= 1L << i;
         }
+        operationalMask = next;
     }
 }

@@ -74,6 +74,12 @@ public final class OptimizerConfig {
         public boolean srpParticleCollision = true;
 
         @Config.Comment({
+            "Compile SRPMixins spawn wrappers into primitive arrays and memoize repeated pure checks within one call.",
+            "Result order and all dynamic SRP state checks remain unchanged."
+        })
+        public boolean srpSpawnFilter = true;
+
+        @Config.Comment({
             "Reserve CPU capacity for the client and integrated-server main threads instead of letting",
             "vanilla chunk rebuild workers consume every logical processor. The original priority queue",
             "and chunk results are unchanged; only worker and reusable builder counts are bounded."
@@ -122,6 +128,12 @@ public final class OptimizerConfig {
         })
         public boolean lycanitesSpawnScan = true;
 
+        @Config.Comment({
+            "Index the standard Lycanites block-id list while preserving List order and mutation semantics.",
+            "Nonstandard replacement lists keep their original contains implementation."
+        })
+        public boolean lycanitesBlockMembership = true;
+
         @Config.Comment("Cache stable Lycanites OBJ/VBO render groups in exact OpenGL display lists with bounded GPU accounting.")
         public boolean lycanitesObjRender = true;
 
@@ -147,8 +159,8 @@ public final class OptimizerConfig {
         public boolean iceAndFireParticleScratch = true;
 
         @Config.Comment({
-            "Use fenced PBO uploads for animated texture levels through FoamFix's batch helper when available,",
-            "with a generic TextureUtil hook when FoamFix loaded its helper before ICE."
+            "Use fenced PBO uploads only for large animated-texture batches through FoamFix's batch helper.",
+            "Single mip levels, small sprites, busy slots and unsupported drivers keep the original upload path."
         })
         public boolean foamFixTextureUpload = true;
         public boolean xaeroTextureUpload = true;
@@ -191,6 +203,24 @@ public final class OptimizerConfig {
 
         @Config.Comment("Resolve incomplete player-skull profiles away from the render thread with bounded positive, negative and in-flight caches.")
         public boolean skullProfileAsync = true;
+
+        @Config.Comment({
+            "Build one resource-generation-scoped reverse index for Konkrete localization values.",
+            "Unknown map implementations or reload races execute Konkrete's original reflective scan."
+        })
+        public boolean konkreteLocaleLookup = true;
+
+        @Config.Comment({
+            "Compress completed chunk NBT snapshots on a bounded dedicated worker pool, then write them",
+            "from vanilla's file-I/O thread in the original order. Queue pressure or incompatibility falls back immediately."
+        })
+        public boolean vanillaChunkCompression = true;
+
+        @Config.Comment({
+            "Replace reviewed OptiFine Reflector light/AO calls with equivalent Forge virtual calls.",
+            "The original reflective methods remain as fallback when a target shape or invocation fails."
+        })
+        public boolean forgeBlockStateDirectCalls = true;
 
         @Config.RangeInt(min = 64, max = 8192)
         public int skullProfileCacheEntries = 2048;

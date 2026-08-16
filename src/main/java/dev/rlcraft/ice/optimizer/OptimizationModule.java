@@ -49,7 +49,13 @@ public enum OptimizationModule {
     OTG_CONFIG_PARSER("otg-config-parser", "OTG 配置函数低分配解析", true),
     OTG_BO4_LAYOUT("otg-bo4-layout", "OTG BO4 布局与方块数组复用", true),
     SKULL_PROFILE_ASYNC("skull-profile-async", "玩家头颅资料异步解析"),
-    RENDER_SUBMISSION("render-submission", "有界渲染提交后端");
+    RENDER_SUBMISSION("render-submission", "有界渲染提交后端"),
+    // Append-only: injected ordinal call sites depend on all previous ordinals staying stable.
+    LYCANITES_BLOCK_MEMBERSHIP("lycanites-block-membership", "Lycanites 方块列表成员索引", true),
+    SRP_SPAWN_FILTER("srp-spawn-filter", "SRPMixins 刷怪过滤编译路径", true),
+    KONKRETE_LOCALE_LOOKUP("konkrete-locale-lookup", "Konkrete 本地化反向索引"),
+    VANILLA_CHUNK_COMPRESSION("vanilla-chunk-compression", "区块 NBT 并行压缩与顺序写盘", true),
+    FORGE_BLOCKSTATE_DIRECT_CALLS("forge-blockstate-direct-calls", "区块光照/AO Forge 直调");
 
     private static final Map<String, OptimizationModule> MODULES_BY_ID;
     private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;

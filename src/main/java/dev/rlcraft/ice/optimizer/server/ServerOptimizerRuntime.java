@@ -6,6 +6,7 @@ import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import dev.rlcraft.ice.optimizer.ServerOptimizerConfig;
 import dev.rlcraft.ice.optimizer.common.CommonOptimizerBootstrap;
 import dev.rlcraft.ice.optimizer.common.OptimizerBootstrapResult;
+import dev.rlcraft.ice.optimizer.compat.save.ChunkSaveCompressionBridge;
 import dev.rlcraft.ice.optimizer.lock.PackLockState;
 import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import java.io.File;
@@ -55,6 +56,7 @@ public final class ServerOptimizerRuntime {
 
     public synchronized void shutdown() {
         if (!initialized) return;
+        ChunkSaveCompressionBridge.shutdown();
         OptimizerRegistry.shutdown("专用服务端已停止");
         initialized = false;
         config = null;

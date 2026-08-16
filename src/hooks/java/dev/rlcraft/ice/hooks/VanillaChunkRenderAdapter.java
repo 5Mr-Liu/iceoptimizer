@@ -1,6 +1,9 @@
 package dev.rlcraft.ice.hooks;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -106,15 +109,22 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     private static void transformDispatcherPolicy(ClassNode node) {
         rejectInterface(node, POLICY_ACCESS);
         MethodNode constructor = requireMethod(node, "<init>", "(I)V");
-        FieldWrite builderWrite = uniqueFieldWrite(node, Opcodes.PUTFIELD,
-            node.name, DISPATCHER_BUILDER_COUNT, "I");
+        List<FieldWrite> builderWrites = constructorReachableFieldWrites(node, constructor,
+            Opcodes.PUTFIELD, node.name, DISPATCHER_BUILDER_COUNT, "I");
         MethodInsnNode processors = uniqueCall(constructor, Opcodes.INVOKEVIRTUAL,
             "java/lang/Runtime", "availableProcessors", "()I");
-        if (builderWrite.method == constructor && !comesBefore(processors, builderWrite.instruction)) {
-            throw new IllegalStateException("区块 worker 与构建器初始化顺序变化");
+        AbstractInsnNode firstDirectWrite = null;
+        for (FieldWrite builderWrite : builderWrites) {
+            if (builderWrite.method != constructor) continue;
+            if (!comesBefore(processors, builderWrite.instruction)) {
+                throw new IllegalStateException("区块 worker 与构建器初始化顺序变化");
+            }
+            if (firstDirectWrite == null
+                || comesBefore(builderWrite.instruction, firstDirectWrite)) {
+                firstDirectWrite = builderWrite.instruction;
+            }
         }
-        VarInsnNode workerStore = nextStoreBefore(processors,
-            builderWrite.method == constructor ? builderWrite.instruction : null);
+        VarInsnNode workerStore = nextStoreBefore(processors, firstDirectWrite);
         if (workerStore == null) throw new IllegalStateException("区块 worker 计数局部变量变化");
         InsnList tuneWorkers = new InsnList();
         tuneWorkers.add(new VarInsnNode(Opcodes.ILOAD, workerStore.var));
@@ -126,11 +136,13 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         node.interfaces.add(POLICY_ACCESS);
         addIntFieldAccessor(node, "ice$builderCount", DISPATCHER_BUILDER_COUNT);
         addIntFieldSetter(node, "ice$setBuilderCount", DISPATCHER_BUILDER_COUNT);
-        InsnList clampBuilders = new InsnList();
-        clampBuilders.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        clampBuilders.add(new MethodInsnNode(Opcodes.INVOKESTATIC, POLICY_BRIDGE,
-            "clampBuilderCount", "(L" + POLICY_ACCESS + ";)V", false));
-        builderWrite.method.instructions.insert(builderWrite.instruction, clampBuilders);
+        for (FieldWrite builderWrite : builderWrites) {
+            InsnList clampBuilders = new InsnList();
+            clampBuilders.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            clampBuilders.add(new MethodInsnNode(Opcodes.INVOKESTATIC, POLICY_BRIDGE,
+                "clampBuilderCount", "(L" + POLICY_ACCESS + ";)V", false));
+            builderWrite.method.instructions.insert(builderWrite.instruction, clampBuilders);
+        }
     }
 
     private static void transformDispatcherUpload(ClassNode node) {
@@ -367,24 +379,57 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         return found;
     }
 
-    private static FieldWrite uniqueFieldWrite(ClassNode node, int opcode, String owner,
-                                               String name, String descriptor) {
-        FieldWrite found = null;
-        int count = 0;
+    private static List<FieldWrite> constructorReachableFieldWrites(ClassNode node,
+            MethodNode constructor, int opcode, String owner, String name, String descriptor) {
+        List<FieldWrite> reachableWrites = new ArrayList<FieldWrite>();
+        List<MethodNode> pending = new ArrayList<MethodNode>();
+        Set<String> visited = new HashSet<String>();
+        pending.add(constructor);
+        for (int index = 0; index < pending.size(); index++) {
+            MethodNode method = pending.get(index);
+            String key = method.name + method.desc;
+            if (!visited.add(key)) continue;
+            if ((method.access & Opcodes.ACC_STATIC) != 0) {
+                throw new IllegalStateException("区块构建器初始化 helper 不再是实例方法：" + key);
+            }
+            for (AbstractInsnNode instruction : method.instructions.toArray()) {
+                if (instruction instanceof FieldInsnNode) {
+                    FieldInsnNode field = (FieldInsnNode) instruction;
+                    if (field.getOpcode() == opcode && owner.equals(field.owner)
+                        && name.equals(field.name) && descriptor.equals(field.desc)) {
+                        reachableWrites.add(new FieldWrite(method, field));
+                    }
+                } else if (instruction instanceof MethodInsnNode) {
+                    MethodInsnNode call = (MethodInsnNode) instruction;
+                    if (!node.name.equals(call.owner) || "<init>".equals(call.name)) continue;
+                    MethodNode called = findMethod(node, call.name, call.desc);
+                    if (called != null && (called.access & Opcodes.ACC_PRIVATE) != 0) {
+                        pending.add(called);
+                    }
+                }
+            }
+        }
+        int allWrites = 0;
         for (MethodNode method : node.methods) {
             for (AbstractInsnNode instruction : method.instructions.toArray()) {
                 if (!(instruction instanceof FieldInsnNode)) continue;
                 FieldInsnNode field = (FieldInsnNode) instruction;
                 if (field.getOpcode() == opcode && owner.equals(field.owner)
-                    && name.equals(field.name) && descriptor.equals(field.desc)) {
-                    found = new FieldWrite(method, field);
-                    count++;
-                }
+                    && name.equals(field.name) && descriptor.equals(field.desc)) allWrites++;
             }
         }
-        if (count != 1) throw new IllegalStateException(node.name + " 字段写入数量变化："
-            + owner + '.' + name + descriptor + '=' + count);
-        return found;
+        if (reachableWrites.isEmpty() || reachableWrites.size() != allWrites) {
+            throw new IllegalStateException(node.name + " 构建器字段写入无法证明只属于构造路径："
+                + reachableWrites.size() + '/' + allWrites);
+        }
+        return reachableWrites;
+    }
+
+    private static MethodNode findMethod(ClassNode node, String name, String descriptor) {
+        for (MethodNode method : node.methods) {
+            if (name.equals(method.name) && descriptor.equals(method.desc)) return method;
+        }
+        return null;
     }
 
     private static int countCalls(MethodNode method, String owner, String name, String descriptor) {

@@ -1,264 +1,352 @@
-# ICE RLCraft Optimizer
+# ICE RLCraft Optimizer + ICE Performance Recorder
 
-<p align="center">
-  <img src="docs/images/cover.png" alt="ICE RLCraft Optimizer cover" width="512">
-</p>
+本工程面向 **Minecraft 1.12.2 / Forge 14.23.5.2860 / Java 8 的 RLCraft 系整合包**，包括普通 RLCraft、RLCraft Dregora 以及结构兼容的旧版和衍生版本。从 `0.4.0` 起工程拆成两个可独立安装和维护的模组：`ICE RLCraft Optimizer` 负责客户端、单人集成服务器和远程专用服务端热点优化，`ICE Performance Recorder` 负责自动卡顿取证、采样和报告导出。优化器针对实测确认的 SRP、Lycanites、Mo' Bends、Ice and Fire、OptiFine、Rustic、FoamFix、Xaero、RenderLib、OreLib / Dynamic Surroundings、Better Foliage、Better Caves、Quality Tools、Quark、Dynamic Trees 与 OTG 热路径提供分侧能力选择、独立熔断和可回退的字节码适配框架。
 
-<p align="center">
-  <a href="#中文">中文</a> · <a href="#english">English</a> ·
-  <a href="https://github.com/5Mr-Liu/iceoptimizer/releases/latest">Releases</a>
-</p>
+当前版本：`0.10.0`
 
----
+它不删内容、不减粒子、不降模型、不跳 Tick，也不异步写世界。优化运行时只允许缓存完全相同输入的结果、把纯 CPU 准备工作交给专用线程，以及在渲染线程按原顺序提交 GPU 工作。`0.8.0` 不再按 RLCraft、Dregora 或单个模组的版本/JAR SHA-256 拒绝运行；每个目标类都由适配器检查所需方法签名和精确指令结构，结构不兼容时只放弃该目标并保留原字节码。
 
-## 中文
+## 0.10.0 模组边界
 
-ICE RLCraft Optimizer 是面向 Minecraft 1.12.2 RLCraft 系整合包的客户端与专用服务端性能优化模组。它针对实际卡顿热点提供精确的字节码适配、受预算约束的缓存与工作队列，并在目标代码结构不兼容时保留原实现。
+- `ice-rlcraft-optimizer-0.10.0.jar`：双端优化器主运行时、高性能库和客户端 F3 状态。
+- `ice-rlcraft-optimizer-core-0.10.0.jar`：双端共享 transformer、结构适配器、早期安全桥和审计指纹目录。
+- `ice-rlcraft-profiler-0.10.0.jar`：独立记录器、F8/F9/F10、命令、指标、分析和报告。
+- `ice-rlcraft-profiler-core-0.10.0.jar`：只包含只读性能探针 transformer。
 
-本仓库只包含优化器，不包含性能记录、采样、Session、报告导出或 F8/F9/F10 功能。
+两套主 JAR 和两套 Core JAR 均经过构建期重复 class 与越界内容检查。只安装优化器时不会创建采样线程、不会注册 F8/F9/F10、不会导出 Session，也不会显示常规 HUD。
 
-### 运行环境
+`0.10.0` 仍要求联机双方安装同一版 optimizer 主 JAR，以避免客户端和服务端运行时协议不一致；这只是 ICE 自身的 Forge 握手要求，不限制 RLCraft 或其他模组的版本。专服只启用可在物理服务端安全执行的 SRP AI/寻路与刷怪过滤、Lycanites 寻路/注册表/刷怪/效果、区块 NBT 压缩、Ice and Fire 粒子暂存、Rustic 栅栏状态、Better Caves、Quality Tools、Quark 和 OTG/BO4 模块；模型渲染、OptiFine、OpenGL、区块网格、Xaero、头颅联网及客户端工作池在物理服务端均保持关闭。
 
-| 项目 | 要求 |
-| --- | --- |
-| Minecraft | 1.12.2 |
-| Forge | 14.23.5.2860 |
-| Java | Java 8 |
-| 当前版本 | 0.9.4 |
-| 模组 ID | `iceoptimizer` |
-| 运行端 | 客户端与服务端 |
-| 已重点验证 | RLCraft 2.9.3、RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
+`0.10.0` 在 Fermium 最终改写 worker 与 builder 数量之后再做硬件自适应上限，不替换 Fermium 策略；Chunk Worker 按逻辑处理器与 JVM 最大堆共同分档，范围为 1–16 且永远不超过前序实现。区块 VBO 只有达到 256 KiB 才尝试 GPU staging，每次最多探测两个 Fence 槽；小上传、GPU 落后、预算不足或能力缺失直接执行原 `glBufferData`。动画纹理的通用单级 PBO 已停用，避免不同显卡驱动上出现每 mip 一个 Fence 的反优化；FoamFix 只有完整 mip 批次达到 256 KiB 时才尝试 PBO。
 
-0.8.0 起不再按整个整合包版本或 JAR SHA-256 阻止优化。0.9.1 允许同一个目标类串联多个独立能力；0.9.2 增加 OptiFine 动态光快照、Rustic 栅栏状态/AABB 复用、Fermium 后置线程限制和可靠的 TextureUtil PBO 入口；0.9.3 修复普通 RLCraft Better Caves 热循环中的模块开关线性查找回退；0.9.4 修复 TextureUtil 在 Forge pre-init 前跨主/Core JAR 解析导致的启动崩溃。每项仍只检查自己必需的字段、方法描述符和调用关系。
+普通 RLCraft 的 Better Caves 会在单个区块生成中极高频调用 NoiseTuple/NoiseColumn 门。`0.10.0` 将所有模块热路径统一为稳定 ordinal + 单次 volatile bit-mask 读取；关闭、熔断或结构失配仍会立即刷新 mask 并回退原逻辑，不会把优化固定为开启。
 
-这并不代表任意修改版整合包都受到正式支持。出现问题时请先在上述已验证环境中复现。
+`0.10.0` 保留动画纹理入口的早期类加载隔离：Core 改写后的 `TextureUtil` 只依赖 Core 内自包含引导桥；主 optimizer 尚未进入 Forge pre-init 时无条件执行原上传，运行时就绪后才安装无逐次反射开销的 MethodHandle 委托。因此不会因为主 JAR 类尚不可见而在帧缓冲初始化阶段崩溃。
 
-### 安装
+F3 状态不再把“字节码已安装”误写成“实际生效”：`CORE` 显示 Core JAR 是否存在，`PATCH` 表示结构补丁已安装，`HIT` 只统计真正执行过优化分支的模块，`MISS` 表示已观察到但至少一项结构能力未安装；区块行同时显示原版/有效 Worker、构建器数量、已排序四边形、`GL31-COPY` / `ARB-COPY` 后端和上传/回退次数。Core JAR 缺失时还会在进入世界后发送一次红色提示。
 
-推荐从 [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) 下载完整安装包：
+本版本根据 0.9.4 新采样继续处理实测反优化和主线程热点：Konkrete 本地化值查询由逐次反射加全 Map 扫描改为资源代际反向索引；区块 NBT 仍由主线程生成完全相同的快照，只把序列化与 Deflate 交给 1–4 个有界专用 Worker，原 FILE_IO 线程按原 Map 顺序写 RegionFile；OptiFine 的区块光照与侧面遮挡 Reflector 调用在结构匹配时改为等价 Forge 虚调用。任一队列、目标结构、世界代际、内存预算或调用异常不满足时执行保留的原方法。
+
+`0.6.5` 针对 Dregora 跑图卡顿新增 OTG/BO4 精确优化：阻止已解析 BO4 在生成期间被无意义地整文件回写；同一次 `trySpawnAt` 复用第一份方块对象数组；把 `loadBlockArrays` 中每个方块一次的 16×16 前缀扫描改为同数组身份下的 256 项前缀表；配置函数参数改用结果等价的低分配解析器，函数名 lowercase 使用最大 128 项、默认 Locale 变化即清空的 Caffeine 缓存。优化器不会生成 `.BO4Data`、不会预读约 1.9 GiB 预设，也不会跨结构生成缓存会被随机方块逻辑修改的 `BO4BlockFunction` 对象。
+
+同一版本把 `LayerCustomHead` 中不完整玩家头颅资料的 Authlib 联网移出渲染线程：画面先按原版默认皮肤继续绘制，单线程有界队列在后台取得资料，后续帧自动使用结果。正/负缓存、队列和 in-flight 去重均有硬上限；重配置代际会丢弃尚未结束的旧请求，失败只进入短期负缓存，不会退回渲染线程同步联网。
+
+`0.6.4` 修复 RenderLib 版本间的泛型语义差异：1.2.8 的 `processTileEntities` 接收 `Consumer<List<TileEntity>>`，而 Dregora 1.4.5 的同名方法接收 `Consumer<TileEntity>` 并委托给内部 `processTileEntityList`。适配器现在通过精确调用图选择各自入口；Dregora 路径从 `ITileEntityHolder.getTileEntities()` 取得原可见列表，外层逐方块实体 Consumer、处理标志、待加入列表与通知顺序保持原样。
+
+`0.6.3` 修复 Dregora 的 Lycanites OBJ/VBO JVM 栈帧校验冲突：适配器不再重算未修改方法的 `StackMapTable`，而是逐字保留现有 CoreMod/Mixin 转换链生成的精确类型，只为新增缓存包装方法写入自己的确定帧。真实回归现在会让 HotSpot 定义并校验全部已捕获 Dregora 目标类，而不再只检查 ASM 文件结构。
+
+`0.6.2` 修复 Dregora 启动阶段的 Forge 1.12 `LaunchClassLoader` 负缓存冲突：CoreMod 只在内存中记录早期补丁状态，直到优化器主运行时显式就绪后才回放；主注册表会先通过正常模组类路径初始化。所有注入桥接也增加失效开放边界，运行时类尚不可见时直接执行目标模组原逻辑，不再让 Lycanites 或其他已适配模组因优化器状态查询而中止启动。
+
+## 当前优化实现状态
+
+已经完成并通过测试的底层能力：
+
+- 每模块独立开关、状态机和连续错误熔断。
+- 不限制 RLCraft、Dregora 或目标模组版本；普通版与衍生版统一按目标类结构判断。
+- 类 SHA-256 仅作为已验证样本的审计信息，不参与运行放行；未知 SHA 只要结构满足同样可以转换。
+- 专用低优先级工作线程池、固定容量 CPU 队列和 Agrona MPSC 渲染队列。
+- `frameId/clientTickId/worldGeneration/resourceGeneration/glContextGeneration` 代际取消。
+- 堆、Direct、GPU 三类硬预算，以及 Caffeine 带权缓存、Agrona 原始类型表和 LZ4 无损冷存储。
+- 常规画面完全隐藏优化器界面；仅在原版 F3 调试画面右侧显示 Core、实际命中、区块流水线和有界队列摘要。
+
+普通 RLCraft 与 Dregora 的真实 JAR 仍用于回归测试和记录已知指纹，但不再形成四套整合包 profile，也不会因名称、版本或 JAR SHA 不同而全局关闭优化。运行时先按物理 side 禁用不可能安全加载的模块，再由每个目标适配器独立验证方法描述符、字段和调用图；某一个类发生结构变化只会让该类 fail-open，不影响其他可兼容目标：
+
+- 原版区块渲染：根据逻辑处理器数量和 JVM 最大堆为客户端/集成服务器保留处理能力，低配机从 1 个 Worker 起，24–31 线程平台最多 12 个，32+ 平台最多 16 个，且永远不超过原实现；默认构建器池从原版每 Worker 十个收敛为四个。透明四边形以与 `Arrays.sort(Object[], Comparator)` 相同的稳定降序重新排列，但距离、NaN 比较、相等顺序和顶点位完全相同。VBO 上传只在渲染线程提交，支持核心与 ARB copy/sync 组合，GPU staging Fence 不等待，任何不支持或繁忙状态执行原上传。
+- SRParasites 13 个热点模型：`ModelEsor`、`ModelMudo`、`ModelNuuh`、`ModelJinjo`、`ModelBanoAdapted`、`ModelInfVillager`、`ModelInfEnderman`、`ModelInfHorse`、`ModelInfHuman`、`ModelCruxA`、`ModelAlafha`、`ModelNogla` 与 `ModelKirin` 均使用自适应分支批处理。每个关节自身的 offset、旋转点和旋转角始终逐实体、逐帧实时读取；只有连续稳定至少四次、包含至少三个可见节点的后代分支才编译为有 GPU 硬预算的外层 Display List。每次提交前重新校验后代变换、显隐、原 Display List、compiled 状态、子节点身份/顺序和 scale 原始位；任一变化当次立即精确遍历原树，并冷却 40 次调用后才重试。
+- SRParasites 寻路：`EntityParasiteBase` 使用行为等价的 `PathNavigateGround`，只在一次 `PathFinder` 生命周期内用 Agrona 原始类型表复用 vanilla `WalkNodeProcessor` 的原始/邻域节点分类；`postProcess` 后立即清空，不跨寻路、不跨 Tick，也不缓存路径结果。
+- SRParasites 目标搜索：`EntityAINearestAttackableTargetStatus` 中“完整排序后只读取第一个”的私有候选表改为稳定线性最小值选择。比较器相等时仍选择原列表中最先出现者，实体筛选、可见性、仇恨和最终目标设置逻辑不变。
+- 原版全量保存：`WorldServer.getPendingBlockUpdates(chunk, false)` 不再为每个脏区块重复遍历全局计划刻集合；一次同步 `saveChunks(true)` 内按变更版本建立临时只读索引。计划刻、区块、NBT、事件和保存顺序不变，不移除条目、不异步访问世界；任何集合变更、重入失配或结构异常都会重建或执行原逐区块扫描。
+- 原版区块压缩：服务端主线程仍完整构造 `NBTTagCompound` 快照；1–4 个按 CPU/堆自适应的有界专用 Worker 只执行 NBT 序列化和 zlib Deflate，原 FILE_IO 线程等待对应结果并按原 pending Map 顺序写 RegionFile。队列满、结果超过 16 MiB、世界代际变化、Accessor 缺失、关闭取消或压缩错误时立即使用原压缩流；取消任务会释放等待者，不会在世界关闭时卡死。
+- Lycanites 寻路：`CreatureNodeProcessor` 的 2 个原始节点分类调用和 14 个方块状态调用只在当前一次寻路内按坐标复用，支持嵌套搜索；生命周期或缓存异常时当前上下文立即停用并走原方法。
+- Lycanites 注册表：`ObjectManager.getEffect/getBlock` 从 `containsKey + get` 两次 `HashMap` 探测改为一次 `get`。普通 RLCraft 2.0.8.9 保留原 `toLowerCase()`；Dregora 2.0.8.10 保留原精确、区分大小写 key，配置关闭时两者都恢复各自原双探测路径。
+- Lycanites 刷怪扫描：`BlockSpawnLocation` 保留原 Y/X/Z 遍历、流体高度、方块白/黑名单、候选顺序与最终排序/RNG；方块种类计数表首次需要时才分配。只有精确已审查基类和无中间可见副作用的普通方块路径会复用同一坐标的只读状态，子类、流体、自定义 World 或可变列表立即使用原读取。
+- Lycanites OBJ/VBO：`TessellatorModel` 与 `VBOModel` 的稳定分组以模型、网格身份、颜色原始位、UV 原始位和 `VertexFormat` 为完整 key，连续观察三次后才进入受 GPU 硬预算约束的 Display List；资源或 GL 代际变化、网格身份/长度/VBO 变化、变体过多、预算拒绝或异常都会立即走原渲染方法。
+- Lycanites 模型动画：四个 Animator GL 转发方法跳过数学上完全等价的恒等旋转、平移和单位缩放；`ModelObjPart` 保留父级、offset、中心变换和帧应用顺序，只把 Iterator 改成索引循环；动画帧类型以公开 `type` 字段身份校验后走 `tableswitch`；三个模型基类的 10 个 `toLowerCase()` 调用进入最大 4096 项、Locale 变化即清空的 Caffeine 缓存。
+- Lycanites 实体效果：`PotionEffects` 中 35 个常量 `ObjectManager.getEffect` 调用、20 个唯一效果名进入原子槽缓存；公开注册表第一次仍真实解析，空值也显式编码。附近实体筛选 Predicate 按目标类型复用，事件、实体 Tick 和效果判定次数不变。
+- Mo' Bends 通用模型：优化公共 `ModelPart`，因此覆盖它接管的玩家、原版怪物和动物，而不是只针对某一种怪物。父链拓扑逐次验证后复用，pre/local transform 的先后和 scale 传播完全保持；子模型仍按原列表顺序绘制，只去掉 Iterator 分配。
+- Mo' Bends 四元数与攀爬：每个 Quaternion 持有自己的 16-float 矩阵缓冲，四个分量以 raw float bits 校验，任一变化立即重算；非梯子或已落地实体在三个方块状态读取前返回与原方法相同的 false，真正攀爬时仍完整执行原判定。
+- Ice and Fire：Tabula `moveToPose` 每个部件把重复五次的 `getCube` 收敛为两个局部值，旋转差值、部件遍历和提交顺序不变；海蛇粒子适配同时覆盖 1.7.1 的 `int[0] + int[]{0}` 与 Dregora 2.0.9 的两个 `int[0]` 调用图，不减少粒子。
+- FoamFix `FastTextureAtlasSprite.uploadTextureMaxMips`：0.9.4 记录证明通用单级 PBO 的固定 Fence 成本会形成 42–45% 渲染线程税，因此单 mip `TextureUtil` 入口现在始终走原上传。只有完整 mip 批次达到 256 KiB 才允许使用三槽 PBO；小批次、槽位仍忙、GPU 预算不足或不支持 PBO 时立即执行未修改的 FoamFix 路径，不等待 GPU。
+- Xaero World Map `TextureUploader`：保留原上传对象、池、预算、队列与顺序，把初始化阶段 7 类纹理共 2560 个 `glFinish` 同步基准替换成 32 对非阻塞 GPU Timestamp Query。查询结果只有在驱动报告 available 后才读取，样本仍采用 GPU 时间与 CPU 提交时间的较大值，并保留原来的 512/256 样本目标与默认估计。
+- RenderLib `TileEntityUtil.processTileEntities`：在已加载方块实体不少于 64、待合并不少于 4 时，使用受 Heap 硬预算限制的可复用 Agrona 成员表替代 `pending × loaded` 线性扫描。只有保持 `Object.equals/hashCode` 身份语义的对象才使用哈希查询；自定义相等语义、预算不足、列表发生非预期变化或重入时逐项回退原 `List.contains`。
+- OreLib `OpenGlState`：原构造函数每次为 Dynamic Surroundings 粒子集合、弹出文字、语音文字、极光、天气渲染、HUD 与生成纹理同步读取 16 个驱动状态。ICE 从 Minecraft `GlStateManager` 的同一 Java 状态机读取 13 项，始终保留真实 `GL_BLEND`、`GL_BLEND_EQUATION_RGB` 与当前活动纹理单元 `GL_TEXTURE_2D` 三个查询。首次及每 32 次快照执行一次完整真值校验；任何缓存失配、映射变化或反射错误都会在当前快照使用真实值，并让本模块在本次启动永久回退原查询。
+- Better Foliage / OctarineCore `AoFaceData.update`：保留原 `AmbientOcclusionFace.func_187491_a`、六个方向、亮度、AO 倍率和结果复制顺序，只把每个面新建的 `float[12]` 与 `BitSet(3)` 改为对应 Chunk Worker 私有 `ModelRenderer` 内六个 `AoFaceData` 实例的暂存字段；每次调用前清空 BitSet，模块关闭时仍执行原分配。
+- Better Caves：`NoiseTuple` 的装箱 `ArrayList<Double>` 热存储改为 `double[]` 并提供实时兼容视图；`NoiseColumn` 的正常 0–255 高度改为连续数组；`NoiseGen` 用 64 槽精确位置缓存复用重复角点列并以深复制隔离调用方，四段链式 `times + times + plus` 合并为一次等价 blend；`CaveCarver` 每列阈值 `HashMap<Integer, Float>` 改为保持相同 float 位结果的连续 Map。缓存命中比较完整坐标和高度范围，不使用可能碰撞的散列替代身份，也不跨不安全生命周期复用。
+- Better Foliage + OptiFine：`OptifineCustomColors` 不再在每个区块网格方块上通过 Kotlin/Java 反射读取同一布尔字段，改为按运行时类缓存字段访问器。字段缺失、访问失败或结构不兼容时保持原路径。
+- Quality Tools：普通非玩家、非马生物只在装备槽内容实际改变时重新拆除并安装 Quality Tools 属性修饰；首次观察和每 140 Tick 强制执行原检查，玩家与马始终保持原调用频率，装备变化当 Tick 生效。
+- Quark：`ItemsFlashBeforeExpiring` 的 age/lifespan 状态从两个装箱 `WeakHashMap<EntityItem, Integer>` 合并为一个可变弱状态，保持 Quark 在 age 或 lifespan 异常变化后持续请求同步的原状态机，不改变闪烁、寿命或网络语义。
+- Dynamic Trees `BakedModelBlockBranchBasic.pollConnections`：首次面查询仍按原顺序读取六个 `IUnlistedProperty<Integer>` 并执行相同 clamp；同一 Chunk Worker 随后对同一模型、半径和不可变 `IExtendedBlockState` 查询其他面时，复用这一个只读 `int[6]`。状态、模型、半径或线程任一变化都重新执行原方法。独立的 Cactus 模型会修改返回数组，因此明确不进入该缓存。
+- Open Terrain Generator / BO4：Dregora 实际预设含 16618 个 BO4、约 1.77 GiB，且没有预生成 `.BO4Data`。ICE 只优化当前按需读取和生成路径：关闭运行时 BO4 源文件回写、复用同一次生成中的重复方块数组、把每方块列偏移扫描收敛为一次前缀表，并降低配置函数解析分配；文件内容、结构方块顺序、随机数调用和世界写入顺序均不改。
+- 玩家头颅：`LayerCustomHead` 不再在实体/刷怪笼或光影阴影渲染途中同步等待 HTTPS。最大 2048 项正/负缓存、128 项队列和单工作线程负责最终资料解析；缓存未命中、断网或队列满时当帧继续使用原输入资料/默认皮肤，不阻塞画面。
+- SRPMixins 刷怪过滤：把保持原顺序的包装条目编译为连续数组，同一次过滤中的 parasite 状态、colony 点数和分类 mob cap 只读取一次；动态配置、玩家数量、世界状态和最终限制仍逐次读取，缓存重置或源列表变化立即失效。
+- Lycanites 方块成员判断：`BlockSpawnLocation.blockIds` 的大列表使用可跟踪成员索引；列表被增删改清空或整个字段被其他模组替换时增加代际并重建，小列表、未知列表结构和异常路径保持原 `contains`。
+- Konkrete：`LocaleUtils.getKeyForString` 按当前语言 Map 身份建立一次反向索引，重复翻译仍返回源 Map 遍历遇到的第一个 key；资源重载、未知 Map、竞争或异常时执行保留的原反射扫描。
+- Forge / OptiFine 区块光照：只有 `ReflectorForge.getLightValue`、`StateImplementation.getLightValue` 和 `doesSideBlockRendering` 的参数与 Reflector 调用图完全匹配时，才调用相同 Forge 虚方法；普通 Forge 已经直调的类会跳过，原反射方法始终保留为 fallback。
+
+目标目录目前包含 66 个唯一类、68 个独立能力项；同一个 `ChunkRenderDispatcher` 可依次尝试线程策略和 VBO 上传，两者互不连带。类名只用于找到明确目标，真正的执行门是每个适配器内部的字段、方法描述符和调用图检查；完整 SHA-256 只标记“已审查样本”。输入异常、单项结构变化、预算不足、未知显卡能力、生命周期失配、GL 缓存真值不一致或运行时熔断时只会保留对应能力的原实现，后续独立能力仍继续验证；未在目录中的类不会被猜测适配。
+
+SRP 与 Lycanites AI/寻路优化只会作用于当前 JVM 实际运行的逻辑：单人游戏由客户端进程内的集成服务器受益；多人游戏由安装了同版 ICE 的远程专用服务端受益。SRP、Lycanites、Mo' Bends、Ice and Fire 模型与粒子侧优化仍只在客户端生效，服务端不会加载任何客户端渲染模块。
+
+## 优化器磁盘写入边界
+
+`0.6.1` 起，`settings.developmentDiskOutput=false` 是默认值。只安装优化器时不会建立 Session、不会持续采样、不会写世界或 `saves`，也不会创建或更新 `ice-optimizer/discovery`、`ice-optimizer/components-observed.properties` 或服务端的 `components-observed-server.properties`。Forge 自己仍会维护很小的 `config/ice-optimizer.cfg`，Minecraft 也仍会写正常的 `logs/latest.log`；未知目标最多在每次启动记录一条兼容性警告，不会逐帧或逐 Tick 输出。
+
+已有旧版 `ice-optimizer` 目录不会被自动删除，也不会继续增长。只有开发适配新结构时才应把 `config/ice-optimizer.cfg` 中的 `settings.developmentDiskOutput` 改为 `true` 并重启，或添加 JVM 参数 `-Dice.optimizer.developmentDiskOutput=true`。开启后才会导出未知类样本和一次诊断组件清单；该清单只帮助开发定位来源，不会成为运行限制。
+
+## 为什么数据不会失控
+
+ICE 不逐实体、逐 Tick 写日志。运行时数据采用四级压缩：
+
+1. 普通指标每秒聚合成一个时间点。
+2. 原始线程样本只保存在固定容量环形缓冲中，写满后覆盖最旧数据。
+3. 完全相同的调用栈只保存一次，样本只引用一个数字 ID。
+4. 同一根因的重复卡顿会聚类，只保留最严重的少量代表样本。
+
+单次捕获还会把总样本预算分成触发前保护区和触发后保护区：触发前最多使用 40%，且只保留最接近触发时刻的部分；剩余容量用于触发后窗口。每个阶段再按线程角色加权，客户端/服务端主线程不会被大量 Worker 挤出。报告会写出实际前后覆盖时间和丢弃数量，便于判断证据是否完整。
+
+默认硬边界：
+
+| 数据 | 默认上限 |
+| --- | ---: |
+| Profiler 目标内存预算 | 64 MiB |
+| 每秒时间线 | 3600 点 |
+| 滚动线程样本 | 20000 个 |
+| 唯一调用栈 | 16384 个 |
+| 根因聚类 | 32 类 |
+| 每类代表捕获 | 3 个 |
+| 全会话详细样本 | 50000 个 |
+| 单会话报告软上限 | 25 MiB |
+| 磁盘保留会话 | 20 个 |
+
+内存预算调低时，调用栈、滚动样本和详细样本上限会同步收紧。报告超过软预算前会先取消可选的详细 JSON；旧 Session 自动按保留数量清理。因此用户默认面对的是一份直接结论，而不是海量原始日志。
+
+## 采集内容
+
+### 客户端
+
+- 帧时间与客户端 Tick 的平均值、P50、P95、P99、最大值。
+- FPS、区块重建队列、GPU timer query（显卡支持时异步读取）。
+- 客户端已加载区块、实体、方块实体。
+- 客户端主线程、Chunk Batcher、I/O、Netty 和工作线程调用栈。
+- 网络包数量及能够在 Netty 管线看到的压缩后字节数。
+
+### 服务端
+
+- MSPT 的平均值、P50、P95、P99、最大值。
+- 每个维度的区块、实体、方块实体 Gauge。
+- 区块 Load/Unload、NBT Load/Save 每秒计数。
+- 服务端主线程、区块 I/O、文件 I/O、Netty 与工作线程采样。
+
+### JVM
+
+- 堆已用、已提交、最大值。
+- GC 次数与暂停时间增量。
+- 进程 CPU 使用率。
+- JVM 支持时的目标线程 CPU 时间和分配字节增量。
+
+MXBean 与原生进程 CPU 查询由独立最低优先级线程执行；Minecraft 客户端和服务端线程只读取最近一次缓存快照。
+
+## 自动捕获和根因结论
+
+默认绝对触发阈值为客户端长帧 `80 ms`、服务端长 Tick `75 ms`、GC 暂停 `50 ms`。同时使用“中位数 + MAD + 相对倍率”的自适应阈值，稳定的低 FPS 限制不会被每帧误判为卡顿。
+
+每次触发保留触发前 `15 秒`、触发后 `5 秒` 的调用栈窗口。三秒内的连续触发合并为同一事件。分析器按调用栈、线程角色、阻塞状态、CPU/分配增量和触发类型归类：
+
+处于 `WAITING/TIMED_WAITING` 且停在 park、空队列 take/poll、select 或 Chunk Worker 等待入口的后台线程会被标记为空闲，不参与热点根因排名；其原始样本仍保存在 `.icecap` 中。
+
+默认不需要手动按 F9。ICE 平时只维护有界的被动缓冲；发现卡顿后会自动建立事件会话、回填前 15 秒、记录后 5 秒，再等待额外 2 秒确认没有连续卡顿，随后自动关闭并在后台导出。第一份报告通常在最后一次触发约 7 秒后开始生成；自动报告最短间隔为 30 秒，间隔内的新卡顿仍会继续记录和聚类，避免卡顿密集时产生大量小报告。
+
+- 世界生成、区块读取、区块保存、光照。
+- 实体 Tick、方块实体 Tick、AI/寻路、碰撞。
+- Forge 事件监听器、网络解包、资源加载。
+- 区块网格构建/上传、客户端渲染。
+- GC、CPU 饱和、线程阻塞/锁竞争。
+
+最终报告按照下面的顺序直接给出结论：
 
 ```text
-ice-rlcraft-optimizer-bundle-0.9.4.zip
+类别 → 模组 → 类/方法 → 证据 → 置信度 → 针对性建议
 ```
 
-解压后把其中两个 JAR 一起放入实例的 `mods` 目录：
+类到模组的归属通过 Forge ModContainer 来源和 class 资源所在 JAR 进行，只读取来源，不加载或执行被分析类。
+
+## 安装
+
+### 推荐：客户端与服务端都安装优化器 0.10.0
+
+将下面两个文件同时放入 RLCraft 客户端实例和对应专用服务端的 `mods` 目录：
 
 ```text
-ice-rlcraft-optimizer-0.9.4.jar
-ice-rlcraft-optimizer-core-0.9.4.jar
+ice-rlcraft-optimizer-0.10.0.jar
+ice-rlcraft-optimizer-core-0.10.0.jar
 ```
 
-Core JAR 是必需组件，不是可选依赖。也可以分别下载两个 JAR，但版本必须完全一致，不能把 0.9.3 Core 与 0.9.4 主包混装。
+Forge 握手要求客户端与服务端的 ICE optimizer 主 JAR 同为 `0.10.0`；Core JAR 不参与模组列表握手，但两端都必须同时安装，否则对应端不会获得字节码优化。必须先移除旧的 `ice-rlcraft-runtime-*` 和旧版 optimizer JAR，避免重复入口和转换器；不能混装不同版本的 Main/Core。
 
-- 单人游戏：安装到客户端实例。
-- 多人游戏：客户端和专用服务端都必须安装两个文件。
-- Forge 握手要求客户端与服务端的 ICE Optimizer 主 JAR 版本完全相同。
-- 升级前请删除旧版 `ice-rlcraft-runtime-*`、旧 optimizer 主 JAR 和旧 optimizer core JAR。
+关闭 Minecraft 后也可在工程目录运行已校验 SHA-256、会先备份旧 optimizer JAR 的部署脚本：
 
-启动并进入世界后打开原版 F3 调试界面，右侧会显示三行紧凑的 `ICE Opt` / `ICE Chunk` / `ICE Q` 状态。普通游戏画面没有额外 HUD。
+```powershell
+.\tools\deploy-optimizer-0.10.0.ps1 -Pack Dregora -Target Client
+# 专用服务端：-Target Server -ModsDirectory "D:\path\to\server\mods"
+# 普通版使用：-Pack RLCraft
+```
 
-### 如何确认在不同电脑上确实生效
+脚本只替换两个 optimizer JAR，不安装 profiler，不删除 `ice-optimizer` 旧采集文件，也不接触任何存档。
 
-性能提升不是固定的 FPS 倍数：CPU 主线程、集成服务器、区块重建、GPU、显存、GC 或磁盘中的任何一项都可能是某台电脑的真实瓶颈。先看 F3，而不要只凭平均 FPS 判断：
+### 可选：安装独立记录器
 
-- `CORE OK`：两个 JAR 都已正确加载；`CORE MISSING` 表示底层补丁完全没有安装成功。
-- `PATCH`：通过结构校验并安装的模块数量；它不代表对应热点已经发生。
-- `HIT`：本次启动中确实执行过优化分支的模块数量。进入世界、移动和触发相关内容后应逐渐增加。
-- `MISS`：已经观察到目标类，但该模块至少有一项独立能力因结构不兼容而未安装；其他兼容能力仍会继续工作。
-- `ICE Chunk: W 16>8 B32`：原版会创建 16 个 Worker，当前自适应为 8 个并使用 32 个构建器。不同 CPU 会显示不同数字。
-- `Sort`：实际完成原始类型透明四边形排序的累计数量；只有透明区块重建时才增长。
-- `GPU GL31-COPY 120/3` 或 `GPU ARB-COPY 120/3`：120 次区块上传走核心或 ARB GPU copy、3 次安全回退。`UNSUPPORTED`、`BUSY`、`BUDGET`、`ABI-MISSING` 或 `CORE-MISSING` 会直接说明为什么这台电脑没有走该路径。
+需要重新采集卡顿证据时，再额外安装：
 
-比较前后版本时，应使用同一存档、同一路线、相同视距与 JVM 参数，先完成资源加载和区块热身，再比较帧时间 P95/P99 与卡顿峰值。显卡已经空闲而 CPU 主线程满载的电脑，不会因为 GPU 上传优化获得明显平均 FPS；反过来，区块没有重建时，区块流水线计数也不会增长。
+```text
+ice-rlcraft-profiler-0.10.0.jar
+ice-rlcraft-profiler-core-0.10.0.jar
+```
 
-### 主要优化
+记录器可以单独维护和升级。主 JAR 提供有界采样、自动触发、根因分析、F8/F9/F10 和报告；core JAR 只提供精确只读计时探针。普通自动记录不依赖 profiler core，但深度探针需要两者一起安装。
 
-- **SRParasites**：热点模型静态分支批处理、单次寻路节点缓存、最近目标线性选择及部分姿态/粒子路径。
-- **Lycanites Mobs**：寻路节点缓存、注册表单次探测、OBJ/VBO 稳定分组、动画/效果热路径及低分配刷怪位置扫描。
-- **原版区块渲染**：按逻辑处理器与 JVM 堆分档选择 1–16 个 Worker（且不超过原值），限制过量 Direct Buffer 构建器；线程策略、上传入口、透明排序和 VBO 访问独立安装。GPU copy 同时支持 OpenGL 核心接口与 `GL_ARB_copy_buffer` / `GL_ARB_sync` 扩展组合。
-- **原版世界保存**：仅在同步全量区块保存范围内建立计划刻临时索引，避免每个区块重复扫描世界级集合。
-- **Mo' Bends / Ice and Fire**：父链、四元数、姿态查询及低分配粒子参数路径。
-- **FoamFix / TextureUtil / Xaero**：动画纹理上传暂存、三槽 PBO/Fence、原版 TextureUtil 入口和非阻塞 GPU 计时路径。
-- **OptiFine / Rustic / RenderLib / OreLib / Better Foliage / Dynamic Trees**：动态光不可变快照与空间索引、栅栏状态/AABB 复用、方块实体合并、GL 状态快照、AO 暂存和连接数据复用。
-- **Better Caves**：原始类型噪声存储、深复制列缓存、插值临时对象收敛、连续阈值表，以及不再线性扫描模块目录的实时熔断门。
-- **Quality Tools / Quark**：稳定装备属性复用与掉落物同步状态的低分配实现。
-- **Open Terrain Generator / BO4**：冗余源文件回写抑制、低分配配置解析、方块数组和列偏移复用。
-- **玩家头颅**：将不完整资料的 Authlib 网络解析移出渲染线程，并使用有界缓存与队列。
+### 深度探针模式
 
-具体模块可以在 `config/ice-optimizer.cfg` 中独立关闭。
+安装记录器的 profiler core JAR 后，执行 `/iceprofiler deep on` 或 `/iceprofilerclient deep on`，可按类/监听器聚合：
 
-0.9.4 的 `TextureUtil` 注入只直接依赖 Core 内的自包含引导桥。普通 optimizer 主 JAR 尚未进入 Forge pre-init 时，引导桥返回未处理并执行原版/FoamFix 上传；运行时就绪后再安装 MethodHandle 委托，因此不会在帧缓冲初始化阶段解析尚不可见的主 JAR 类。
+- 实体更新包装调用。
+- 实现 `ITickable` 的方块实体 `update`。
+- `IChunkGenerator` 的生成与 populate。
+- Forge `ASMEventHandler` 的具体监听器。
+- 区块保存与客户端区块重建。
 
-### 行为与安全边界
+两个 core JAR 不混装转换器：profiler core 只包含 `IceProfilerTransformer`，optimizer core 只注册双端 `IceOptimizerTransformer`（旧类名仅保留为开发兼容入口）。每个优化变换必须通过对应物理 side 和适配器的结构检查；类 SHA 或整合包版本不参与放行。任一结构条件不满足都执行原路径。未知目标默认只警告并保留原字节码；只有显式开启 `developmentDiskOutput` 才会在 `ice-optimizer/discovery` 中保存开发样本。
 
-优化器的目标是减少重复计算、分配、同步等待和高频容器开销。它不会故意：
+优化器不再提供 F10 面板。F3 显示 Core 是否存在、实际命中/安装补丁数量、区块 Worker/排序/GPU 后端及 CPU/渲染队列；适配器安装与结构兼容性拒绝仍写入 `logs/latest.log`。`INCOMPATIBLE`、`TRIPPED` 或 `DISABLED` 都会保留对应目标的原实现。
 
-- 删除实体、粒子、模型或游戏内容；
-- 跳过游戏 Tick 或降低 AI 更新频率；
-- 修改掉落、随机数调用、世界生成结果或写入顺序；
-- 把世界或存档写入移动到未经验证的异步线程；
-- 在普通运行中生成性能采集 Session。
+## 快捷键和界面
 
-每个模块拥有独立状态和连续错误熔断。缓存、Heap、Direct、GPU、CPU 队列和渲染队列均设有硬上限；任何校验、预算或生命周期条件不满足时都会使用原路径。
+只安装优化器时：
 
-### 隐私与磁盘写入
+- 普通游戏画面没有 ICE HUD。
+- F8、F9、F10 不由优化器占用。
+- 只有打开原版 F3 时，右侧追加 `ICE Opt`、`ICE Chunk` 和 `ICE Q` 摘要；`config/ice-optimizer.cfg` 的 `display.showF3Summary=false` 可全部关闭。
 
-默认 `settings.developmentDiskOutput=false`。正常安装只会产生 Forge 配置和 Minecraft/Forge 的常规日志；不会导出目标类、整合包组件快照或性能采集报告。
+以下快捷键只属于可选的独立记录器：
 
-只有开发新适配器时才应启用 `developmentDiskOutput`。提交 Issue 前请自行检查并删除日志中的用户名、本机路径、服务器地址或其他不希望公开的信息。
+- `F8`：可选备注；即使自动阈值没有触发，也会建立一次会自动关闭的事件捕获。
+- `F9`：仅在想主动录制一整段路线时使用；再次按下后停止并导出。
+- `F10`：打开记录器 Dashboard，查看客户端、服务端、JVM 和根因聚类。
 
-### 从源码构建
+F8 和 F9 都不是日常自动诊断的必需操作。安装记录器后，它的 HUD 显示当前录制/捕获状态、帧 P95、MSPT P95、GC 和最近根因；F10 Dashboard 不暂停游戏。
+
+自动卡顿捕获默认静默运行，不会在聊天框发送“捕获完成”消息。HUD、F10 Dashboard 和后台报告导出不受影响。需要恢复聊天提示时，可在 `config/ice-profiler.cfg` 中将 `client.silentAutomaticRecording` 改为 `false`。
+
+## 命令
+
+服务端或单人集成服务器：
+
+```text
+/iceprofiler status
+/iceprofiler start [说明]
+/iceprofiler stop
+/iceprofiler mark [说明]
+/iceprofiler export
+/iceprofiler list
+/iceprofiler compare <会话A> <会话B>
+/iceprofiler deep <on|off>
+/iceprofiler reload
+```
+
+`status` 和 `list` 可普通查询；改变录制状态、深度模式和配置需要管理员权限。
+
+纯客户端命令：
+
+```text
+/iceprofilerclient status|start|stop|mark|export|dashboard
+/iceprofilerclient deep <on|off>
+```
+
+客户端别名为 `/iceclient` 和 `/icec`；服务端/集成服务器命令别名为 `/iceperf` 和 `/iceprofile`。
+
+## 报告
+
+报告写入实例目录：
+
+```text
+ice-profiler/sessions/<session-id>/
+```
+
+每个 Session 包含：
+
+- `summary.txt`：中文直接结论与建议。
+- `timeline.csv`：每秒客户端、服务端、JVM、世界、区块、渲染和网络指标。
+- `hitches.json`：聚类、置信度、证据和代表捕获元数据。
+- `probes.csv`：可选精确探针的类/监听器聚合。
+- `stacks.folded`：可直接用于火焰图的代表调用栈。
+- `<session>.icecap`：gzip 压缩的版本化二进制捕获。
+- `report.html`：无需联网的自包含报告。
+- 同名 `.zip`：便于发送给开发者的导出包。
+
+默认不记录世界种子、玩家名和精确坐标；报告也不写绝对游戏/世界路径。
+
+## 从诊断到优化
+
+建议用同一条跑图路线做两次录制：第一次确定类别、模组和方法；只为这个方法编写保持语义的优化；第二次用 `/iceprofiler compare` 比较 P95、最大值、堆占用和触发次数。独立优化器必须遵守：
+
+- 不删除内容、不跳过原有 Tick、不改变掉落/生成/AI 结果。
+- 只缓存纯函数或只读结果；世界状态写入仍在正确主线程。
+- 任何异步化都必须证明线程安全和保存顺序不变。
+- 每个优化器可单独关闭，并用 ICE 报告验证收益和回归。
+
+详细实现见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+## 构建与验证
 
 要求 Java 8：
 
 ```powershell
-./gradlew.bat clean test build
+.\gradlew.bat clean test
+.\gradlew.bat build
 ```
 
-Linux/macOS：
-
-```bash
-./gradlew clean test build
-```
-
-正式产物位于：
-
-```text
-build/libs/ice-rlcraft-optimizer-<version>.jar
-build/libs/ice-rlcraft-optimizer-core-<version>.jar
-build/libs/ice-rlcraft-optimizer-bundle-<version>.zip
-```
-
-部分真实目标 JAR 回归测试需要通过 Gradle 属性提供本地测试夹具；缺少这些可选夹具不会影响普通源码构建和核心单元测试。
-
-### 许可证
-
-项目使用 [MIT License](LICENSE)。最终优化器主 JAR 私有重定位了 Agrona、Caffeine 和 lz4-java；详情见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
----
-
-## English
-
-ICE RLCraft Optimizer is a client and dedicated-server performance mod for Minecraft 1.12.2 RLCraft-family packs. It applies narrowly scoped bytecode adapters, bounded caches, and bounded worker queues to measured hot paths, while preserving the original implementation whenever a target is structurally incompatible.
-
-This repository contains the optimizer only. It does not include performance recording, sampling, sessions, report export, or F8/F9/F10 features.
-
-### Runtime requirements
-
-| Item | Requirement |
-| --- | --- |
-| Minecraft | 1.12.2 |
-| Forge | 14.23.5.2860 |
-| Java | Java 8 |
-| Current version | 0.9.4 |
-| Mod ID | `iceoptimizer` |
-| Environment | Client and server |
-| Primary test targets | RLCraft 2.9.3 and RLCraft Dregora 1.1.2b / DregoraRL 3.9 |
-
-Since 0.8.0, pack versions and whole-JAR SHA-256 values no longer gate optimizations. Version 0.9.1 allows multiple independent capabilities on one target class; 0.9.2 adds OptiFine dynamic-light snapshots, Rustic lattice state/AABB reuse, post-Fermium worker limits, and a reliable TextureUtil PBO entry; 0.9.3 removes the linear module-gate lookup exposed by Better Caves in standard RLCraft; 0.9.4 fixes the cross-main/Core class resolution that could crash TextureUtil before Forge pre-init. Each capability still validates only the fields, descriptors, and call relationships it requires.
-
-This does not make every modified pack an officially supported target. Please reproduce issues on one of the primary test environments first.
-
-### Installation
-
-The recommended download from [GitHub Releases](https://github.com/5Mr-Liu/iceoptimizer/releases/latest) is the complete bundle:
-
-```text
-ice-rlcraft-optimizer-bundle-0.9.4.zip
-```
-
-Extract it and place both contained JARs in the instance `mods` directory:
-
-```text
-ice-rlcraft-optimizer-0.9.4.jar
-ice-rlcraft-optimizer-core-0.9.4.jar
-```
-
-The Core JAR is required; it is not an optional dependency. The two JARs may also be downloaded separately, but their versions must match exactly; do not mix a 0.9.3 Core JAR with the 0.9.4 main JAR.
-
-- Single player: install both files in the client instance.
-- Multiplayer: install both files on every client and on the dedicated server.
-- The Forge handshake requires the ICE Optimizer main JAR to have the exact same version on both sides.
-- Remove old `ice-rlcraft-runtime-*`, optimizer, and optimizer-core JARs before upgrading.
-
-Enter a world and open the vanilla F3 debug screen to see the compact `ICE Opt`, `ICE Chunk`, and `ICE Q` lines. No regular HUD is displayed.
-
-### Verifying that it really runs on another PC
-
-Performance is not a fixed FPS multiplier: the limiting resource may be the CPU main thread, integrated server, chunk rebuilding, GPU, VRAM, GC, or storage on a particular machine. Check F3 before judging by average FPS alone:
-
-- `CORE OK` means both JARs loaded. `CORE MISSING` means the low-level patches are not installed at all.
-- `PATCH` counts modules whose bytecode passed structural validation and was installed; it does not mean that workload has occurred.
-- `HIT` counts modules whose optimized branch actually ran during this launch. It should rise after entering a world and exercising the relevant content.
-- `MISS` means a target was observed but at least one independent capability in that module did not match; other compatible capabilities continue to run.
-- `ICE Chunk: W 16>8 B32` means vanilla requested 16 workers while the hardware policy selected 8 workers and 32 builders. Values differ by CPU.
-- `Sort` counts translucent quads processed by the primitive sorter and only grows during translucent chunk rebuilds.
-- `GPU GL31-COPY 120/3` or `GPU ARB-COPY 120/3` means 120 core/ARB staged GPU-copy uploads and three safe fallbacks. `UNSUPPORTED`, `BUSY`, `BUDGET`, `ABI-MISSING`, or `CORE-MISSING` states explain why that PC did not use the path.
-
-For before/after comparisons, use the same save, route, render distance, and JVM arguments; allow resource and chunk warm-up first; then compare P95/P99 frame time and hitch peaks. A PC that is CPU-main-thread limited will not gain much average FPS from a GPU-upload optimization, and the chunk-pipeline counters will not move while no chunks are being rebuilt.
-
-### Main optimization areas
-
-- **SRParasites**: hot model branch batching, per-search path-node caching, stable linear target selection, and selected pose/particle paths.
-- **Lycanites Mobs**: path-node caching, single registry probes, stable OBJ/VBO grouping, animation/effect hot paths, and low-allocation spawn-position scans.
-- **Vanilla chunk rendering**: choose 1–16 workers from logical CPU count and JVM heap without exceeding vanilla's value; install dispatcher policy, upload entry, translucent sorting, and VBO access independently; support both core OpenGL and `GL_ARB_copy_buffer` / `GL_ARB_sync` combinations.
-- **Vanilla world saves**: a temporary scheduled-tick index scoped only to synchronous full chunk saves, avoiding repeated world-wide collection scans for every chunk.
-- **Mo' Bends / Ice and Fire**: parent topology, quaternion matrices, pose lookup, and low-allocation particle arguments.
-- **FoamFix / TextureUtil / Xaero**: animated-texture staging, triple-slot PBO/Fence paths, a vanilla TextureUtil entry, and non-blocking GPU timing.
-- **OptiFine / Rustic / RenderLib / OreLib / Better Foliage / Dynamic Trees**: immutable dynamic-light snapshots and spatial indexing, lattice state/AABB reuse, tile-entity merging, GL state snapshots, AO scratch reuse, and connection memoization.
-- **Better Caves**: primitive noise storage, deep-copy column caching, collapsed interpolation temporaries, contiguous threshold maps, and a live circuit-breaker gate without linear module scans.
-- **Quality Tools / Quark**: stable equipment-attribute reuse and lower-allocation dropped-item synchronization state.
-- **Open Terrain Generator / BO4**: redundant source rewrite suppression, lower-allocation parsing, and per-spawn block-array/layout reuse.
-- **Player skulls**: bounded off-render-thread Authlib profile resolution for incomplete profiles.
-
-In 0.9.4, transformed TextureUtil code links only to a self-contained bootstrap in the Core JAR. Before the regular optimizer reaches Forge pre-init, the bootstrap declines the optimized upload and the untouched Minecraft/FoamFix path runs. Once the runtime is ready it installs MethodHandle delegates, avoiding both the startup linkage failure and per-upload class-name reflection.
-
-Individual modules can be disabled in `config/ice-optimizer.cfg`.
-
-### Behavioral and safety boundaries
-
-The optimizer reduces repeated computation, allocation, synchronization stalls, and hot-container overhead. It is not intended to:
-
-- remove entities, particles, models, or game content;
-- skip ticks or lower AI update rates;
-- change drops, random-number calls, world-generation results, or write ordering;
-- move world/save writes to unverified asynchronous threads;
-- create performance-capture sessions during normal operation.
-
-Every module has independent state and a consecutive-error circuit breaker. Heap, direct-memory, GPU, CPU-queue, and render-queue usage is bounded. Failed validation, rejected budgets, or lifecycle mismatches use the original path.
-
-### Privacy and disk output
-
-`settings.developmentDiskOutput=false` by default. A normal installation only creates the Forge configuration and regular Minecraft/Forge logs; it does not export target classes, component snapshots, or profiling reports.
-
-Only enable `developmentDiskOutput` while developing a new adapter. Before attaching logs to an issue, review and remove usernames, local paths, server addresses, or any other information you do not want to publish.
-
-### Building from source
-
-Java 8 is required.
-
-Windows:
+如需同时对真实目标 JAR 执行审计指纹、结构适配、ASM 注入、调用图和 JVM 类定义验证：
 
 ```powershell
-./gradlew.bat clean test build
+.\gradlew.bat clean build `
+  -PoptifineJar="D:\path\to\OptiFine_1.12.2_HD_U_G5.jar" `
+  -PrusticJar="D:\path\to\rustic-1.1.7.jar" `
+  -PfoamfixJar="D:\path\to\foamfix-0.10.15-1.12.2.jar" `
+  -PxaeroWorldMapJar="D:\path\to\xaeroworldmap-forge-1.12.2-1.44.2.jar" `
+  -PrenderLibJar="D:\path\to\RenderLib-1.12.2-1.2.8.jar" `
+  -PsrpJar="D:\path\to\SRParasites-1.12.2v1.9.11.jar" `
+  -PlycanitesJar="D:\path\to\lycanitesmobs-1.12.2-2.0.8.9.jar" `
+  -PmoBendsJar="D:\path\to\MoBends_1.12.2-1.2.1-19.12.21.jar" `
+  -PiceAndFireJar="D:\path\to\iceandfire-1.7.1-1.12.2.jar" `
+  -PllibraryJar="D:\path\to\llibrary-1.7.20-1.12.2.jar" `
+  -PoreLibJar="D:\path\to\OreLib-1.12.2-3.6.0.1.jar" `
+  -PbetterCavesJar="D:\path\to\bettercaves-1.12.2-2.0.4.jar" `
+  -PbetterFoliageJar="D:\path\to\BetterFoliage-MC1.12-2.3.3.jar" `
+  -PbetterFoliageRuntimeClass="D:\path\to\mods_octarinecore_client_render_AoFaceData-4b797522a5a1c268.class" `
+  -PdynamicTreesJar="D:\path\to\DynamicTrees-1.12.2-0.9.29.jar" `
+  -PqualityToolsJar="D:\path\to\QualityTools-1.0.7_for_1.12.2.jar" `
+  -PquarkJar="D:\path\to\Quark-r1.6-179.jar"
 ```
 
-Linux/macOS:
+Dregora 参考实例的真实兼容回归可额外传入。这里列出的版本只是测试样本，不是运行限制；旧版或其他衍生版会使用同一套结构门：
 
-```bash
-./gradlew clean test build
+```powershell
+.\gradlew.bat test `
+  -PoptifineJar="D:\path\to\mods\OptiFine_1.12.2_HD_U_G5.jar" `
+  -PrusticJar="D:\path\to\mods\rustic-1.1.7.jar" `
+  -PfoamfixJar="D:\path\to\mods\foamfix-0.10.15-1.12.2.jar" `
+  -PdregoraModsDir="D:\path\to\RLCraft Dregora\mods" `
+  -PdregoraDiscoveryDir="D:\path\to\RLCraft Dregora\ice-optimizer\discovery" `
+  -PdregoraSrpJar="D:\path\to\mods\SRParasites-1.12.2v1.9.21.jar" `
+  -PdregoraLycanitesJar="D:\path\to\mods\lycanitesmobs-1.12.2-2.0.8.10.jar" `
+  -PdregoraRenderLibJar="D:\path\to\mods\RenderLib-1.12.2-1.4.5.jar" `
+  -PdregoraFoliageJar="D:\path\to\mods\RLFoliage-MC1.12-2.4.2.jar" `
+  -PdregoraIceAndFireJar="D:\path\to\mods\Ice and Fire-2.0.9.jar" `
+  -PbetterCavesJar="D:\path\to\mods\bettercaves-1.12.2-2.0.4.jar" `
+  -PbetterFoliageJar="D:\path\to\mods\RLFoliage-MC1.12-2.4.2.jar" `
+  -PqualityToolsJar="D:\path\to\mods\QualityTools-1.0.7_for_1.12.2.jar" `
+  -PquarkJar="D:\path\to\mods\Quark-r1.6-179.jar" `
+  -PotgJar="D:\path\to\mods\OpenTerrainGenerator-1.12.2-v9.7.jar" `
+  -PminecraftSrgJar="D:\path\to\forge-1.12.2-14.23.5.2860-srg.jar"
 ```
 
-Release artifacts are written to:
-
-```text
-build/libs/ice-rlcraft-optimizer-<version>.jar
-build/libs/ice-rlcraft-optimizer-core-<version>.jar
-build/libs/ice-rlcraft-optimizer-bundle-<version>.zip
-```
-
-Some real-target regression tests accept local fixture JARs through Gradle properties. Those optional fixtures are not required for the normal source build and core unit tests.
-
-### License
-
-The project is licensed under the [MIT License](LICENSE). The optimizer main JAR privately relocates Agrona, Caffeine, and lz4-java; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+四个可安装 JAR 都位于 `build/libs`。合并开发产物位于 `build/devlibs`，不可安装到正式实例。`verifySplitJars` 会检查主 JAR 与 core JAR 的类集合互不重叠、模组入口和 transformer 不越界。工程保留了 ForgeGradle 3.0.197 在 Windows/Java 8 下对完整 mapped JAR 的类路径补充。

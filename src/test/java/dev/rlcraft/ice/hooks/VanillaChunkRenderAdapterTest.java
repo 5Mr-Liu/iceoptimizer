@@ -120,6 +120,21 @@ public final class VanillaChunkRenderAdapterTest {
             "(L" + VanillaChunkRenderAdapter.POLICY_ACCESS + ";)V"));
     }
 
+    @Test
+    public void dispatcherPolicyAcceptsTwoConstructorReachableBuilderWrites() {
+        String className = "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher";
+        byte[] transformed = new IceOptimizerTransformer().transform(
+            className, className, syntheticDualWriteDispatcher());
+
+        assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.POLICY_BRIDGE,
+            "tuneWorkerCount", "(I)I"));
+        assertEquals(2, countCalls(transformed, VanillaChunkRenderAdapter.POLICY_BRIDGE,
+            "clampBuilderCount", "(L" + VanillaChunkRenderAdapter.POLICY_ACCESS + ";)V"));
+        assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.UPLOAD_BRIDGE,
+            "tryUpload", "(Lnet/minecraft/client/renderer/BufferBuilder;"
+                + "Lnet/minecraft/client/renderer/vertex/VertexBuffer;)Z"));
+    }
+
     private static void verify(String className, byte[] transformed) {
         if (className.endsWith("ChunkRenderDispatcher")) {
             assertEquals(1, countCalls(transformed, VanillaChunkRenderAdapter.POLICY_BRIDGE,
@@ -363,6 +378,76 @@ public final class VanillaChunkRenderAdapterTest {
         builders.visitCode();
         builders.visitVarInsn(Opcodes.ALOAD, 0);
         builders.visitIntInsn(Opcodes.BIPUSH, 100);
+        builders.visitFieldInsn(Opcodes.PUTFIELD,
+            VanillaChunkRenderAdapter.DISPATCHER, "field_188249_c", "I");
+        builders.visitInsn(Opcodes.RETURN);
+        builders.visitMaxs(0, 0);
+        builders.visitEnd();
+
+        MethodVisitor upload = writer.visitMethod(Opcodes.ACC_PUBLIC,
+            VanillaChunkRenderAdapter.UPLOAD_METHOD,
+            VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR, null, null);
+        upload.visitCode();
+        upload.visitTypeInsn(Opcodes.NEW,
+            "net/minecraft/client/renderer/VertexBufferUploader");
+        upload.visitInsn(Opcodes.DUP);
+        upload.visitMethodInsn(Opcodes.INVOKESPECIAL,
+            "net/minecraft/client/renderer/VertexBufferUploader", "<init>", "()V", false);
+        upload.visitVarInsn(Opcodes.ASTORE, 3);
+        upload.visitVarInsn(Opcodes.ALOAD, 3);
+        upload.visitVarInsn(Opcodes.ALOAD, 2);
+        upload.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/client/renderer/VertexBufferUploader", "func_178178_a",
+            "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;)V", false);
+        upload.visitVarInsn(Opcodes.ALOAD, 3);
+        upload.visitVarInsn(Opcodes.ALOAD, 1);
+        upload.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+            "net/minecraft/client/renderer/VertexBufferUploader", "func_181679_a",
+            "(Lnet/minecraft/client/renderer/BufferBuilder;)V", false);
+        upload.visitInsn(Opcodes.RETURN);
+        upload.visitMaxs(0, 0);
+        upload.visitEnd();
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private static byte[] syntheticDualWriteDispatcher() {
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC,
+            VanillaChunkRenderAdapter.DISPATCHER, null, "java/lang/Object", null);
+        writer.visitField(Opcodes.ACC_PRIVATE,
+            "field_188249_c", "I", null, null).visitEnd();
+
+        MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC,
+            "<init>", "(I)V", null, null);
+        constructor.visitCode();
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object",
+            "<init>", "()V", false);
+        constructor.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Runtime",
+            "getRuntime", "()Ljava/lang/Runtime;", false);
+        constructor.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Runtime",
+            "availableProcessors", "()I", false);
+        constructor.visitVarInsn(Opcodes.ISTORE, 2);
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitVarInsn(Opcodes.ILOAD, 2);
+        constructor.visitFieldInsn(Opcodes.PUTFIELD,
+            VanillaChunkRenderAdapter.DISPATCHER, "field_188249_c", "I");
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitVarInsn(Opcodes.ILOAD, 2);
+        constructor.visitMethodInsn(Opcodes.INVOKESPECIAL,
+            VanillaChunkRenderAdapter.DISPATCHER, "normalasm$setBuilders", "(I)V", false);
+        constructor.visitInsn(Opcodes.RETURN);
+        constructor.visitMaxs(0, 0);
+        constructor.visitEnd();
+
+        MethodVisitor builders = writer.visitMethod(Opcodes.ACC_PRIVATE,
+            "normalasm$setBuilders", "(I)V", null, null);
+        builders.visitCode();
+        builders.visitVarInsn(Opcodes.ALOAD, 0);
+        builders.visitVarInsn(Opcodes.ILOAD, 1);
+        builders.visitIntInsn(Opcodes.BIPUSH, 10);
+        builders.visitInsn(Opcodes.IMUL);
         builders.visitFieldInsn(Opcodes.PUTFIELD,
             VanillaChunkRenderAdapter.DISPATCHER, "field_188249_c", "I");
         builders.visitInsn(Opcodes.RETURN);

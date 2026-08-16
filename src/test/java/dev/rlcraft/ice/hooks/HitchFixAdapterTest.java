@@ -43,8 +43,8 @@ public final class HitchFixAdapterTest {
 
     @Test
     public void transformsReviewedLycanitesSpawnScanWhenJarIsAvailable() throws Exception {
-        String configured = System.getProperty("ice.lycanites.jar", "").trim();
-        Assume.assumeTrue("run with -PlycanitesJar=<jar>", !configured.isEmpty());
+        String configured = System.getProperty("ice.dregora.lycanites.jar", "").trim();
+        Assume.assumeTrue("run with -PdregoraLycanitesJar=<jar>", !configured.isEmpty());
         JarFile jar = new JarFile(new File(configured));
         try {
             String className = "com.lycanitesmobs.core.spawner.location.BlockSpawnLocation";
@@ -69,6 +69,8 @@ public final class HitchFixAdapterTest {
                     + "Lnet/minecraft/block/state/IBlockState;"));
             assertEquals(1, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
                 "newBlockCounter", "(Ljava/lang/Object;)Ljava/util/Map;"));
+            assertEquals(2, countCalls(transformed, LycanitesBlockMembershipAdapter.BRIDGE,
+                "track", LycanitesBlockMembershipAdapter.TRACK_DESCRIPTOR));
             new ClassReader(transformed);
         } finally {
             jar.close();

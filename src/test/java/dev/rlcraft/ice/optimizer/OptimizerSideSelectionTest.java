@@ -17,6 +17,8 @@ public final class OptimizerSideSelectionTest {
         assertTrue(server.enabled(OptimizationModule.LYCANITES_PATH_NODE_CACHE));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_REGISTRY_LOOKUP));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_SPAWN_SCAN));
+        assertTrue(server.enabled(OptimizationModule.LYCANITES_BLOCK_MEMBERSHIP));
+        assertTrue(server.enabled(OptimizationModule.SRP_SPAWN_FILTER));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_EFFECT_CACHE));
         assertTrue(server.enabled(OptimizationModule.ICEANDFIRE_PARTICLE_SCRATCH));
         assertTrue(server.enabled(OptimizationModule.OTG_BO4_IO));
@@ -25,6 +27,7 @@ public final class OptimizerSideSelectionTest {
         assertTrue(server.enabled(OptimizationModule.BETTER_CAVES_NOISE));
         assertTrue(server.enabled(OptimizationModule.QUALITY_TOOLS_ATTRIBUTES));
         assertTrue(server.enabled(OptimizationModule.QUARK_ITEM_SYNC));
+        assertTrue(server.enabled(OptimizationModule.VANILLA_CHUNK_COMPRESSION));
 
         assertFalse(server.enabled(OptimizationModule.SRP_STATIC_MESH));
         assertFalse(server.enabled(OptimizationModule.VANILLA_CHUNK_DISPATCH));
@@ -41,6 +44,8 @@ public final class OptimizerSideSelectionTest {
         assertFalse(server.enabled(OptimizationModule.CHUNK_MESH_DYNAMIC_TREES));
         assertFalse(server.enabled(OptimizationModule.BETTER_FOLIAGE_OPTIFINE_COLORS));
         assertFalse(server.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
+        assertFalse(server.enabled(OptimizationModule.KONKRETE_LOCALE_LOOKUP));
+        assertFalse(server.enabled(OptimizationModule.FORGE_BLOCKSTATE_DIRECT_CALLS));
         assertFalse(server.enabled(OptimizationModule.RENDER_SUBMISSION));
     }
 
@@ -56,6 +61,8 @@ public final class OptimizerSideSelectionTest {
         assertTrue(client.enabled(OptimizationModule.RUSTIC_LATTICE_STATE));
         assertTrue(client.enabled(OptimizationModule.VANILLA_SAVE_TICK_INDEX));
         assertTrue(client.enabled(OptimizationModule.LYCANITES_SPAWN_SCAN));
+        assertTrue(client.enabled(OptimizationModule.LYCANITES_BLOCK_MEMBERSHIP));
+        assertTrue(client.enabled(OptimizationModule.SRP_SPAWN_FILTER));
         assertTrue(client.enabled(OptimizationModule.LYCANITES_OBJ_RENDER));
         assertTrue(client.enabled(OptimizationModule.OTG_BO4_LAYOUT));
         assertTrue(client.enabled(OptimizationModule.BETTER_CAVES_NOISE));
@@ -63,6 +70,9 @@ public final class OptimizerSideSelectionTest {
         assertTrue(client.enabled(OptimizationModule.QUALITY_TOOLS_ATTRIBUTES));
         assertTrue(client.enabled(OptimizationModule.QUARK_ITEM_SYNC));
         assertTrue(client.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
+        assertTrue(client.enabled(OptimizationModule.KONKRETE_LOCALE_LOOKUP));
+        assertTrue(client.enabled(OptimizationModule.VANILLA_CHUNK_COMPRESSION));
+        assertTrue(client.enabled(OptimizationModule.FORGE_BLOCKSTATE_DIRECT_CALLS));
         assertTrue(client.enabled(OptimizationModule.RENDER_SUBMISSION));
     }
 }

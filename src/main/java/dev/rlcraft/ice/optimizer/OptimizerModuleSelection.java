@@ -23,6 +23,7 @@ final class OptimizerModuleSelection {
             case SRP_TARGET_SEARCH: return source.srpTargetSearch;
             case SRP_POSE_CACHE: return source.srpPoseCache;
             case SRP_PARTICLE_COLLISION: return source.srpParticleCollision;
+            case SRP_SPAWN_FILTER: return source.srpSpawnFilter;
             case VANILLA_CHUNK_DISPATCH: return source.vanillaChunkDispatch;
             case VANILLA_CHUNK_SORT: return source.vanillaChunkSort;
             case VANILLA_CHUNK_VBO_UPLOAD: return source.vanillaChunkVboUpload;
@@ -32,6 +33,7 @@ final class OptimizerModuleSelection {
             case LYCANITES_PATH_NODE_CACHE: return source.lycanitesPathNodeCache;
             case LYCANITES_REGISTRY_LOOKUP: return source.lycanitesRegistryLookup;
             case LYCANITES_SPAWN_SCAN: return source.lycanitesSpawnScan;
+            case LYCANITES_BLOCK_MEMBERSHIP: return source.lycanitesBlockMembership;
             case LYCANITES_OBJ_RENDER: return source.lycanitesObjRender;
             case LYCANITES_MODEL_ANIMATION: return source.lycanitesModelAnimation;
             case LYCANITES_EFFECT_CACHE: return source.lycanitesEffectCache;
@@ -55,6 +57,9 @@ final class OptimizerModuleSelection {
             case OTG_CONFIG_PARSER: return source.otgConfigParser;
             case OTG_BO4_LAYOUT: return source.otgBo4Layout;
             case SKULL_PROFILE_ASYNC: return source.skullProfileAsync;
+            case KONKRETE_LOCALE_LOOKUP: return source.konkreteLocaleLookup;
+            case VANILLA_CHUNK_COMPRESSION: return source.vanillaChunkCompression;
+            case FORGE_BLOCKSTATE_DIRECT_CALLS: return source.forgeBlockStateDirectCalls;
             default: return true;
         }
     }

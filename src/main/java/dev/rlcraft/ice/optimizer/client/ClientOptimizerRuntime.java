@@ -9,6 +9,7 @@ import dev.rlcraft.ice.optimizer.common.OptimizerBootstrapResult;
 import dev.rlcraft.ice.optimizer.bridge.ClientRuntimeAccess;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.compat.skull.SkullProfileBridge;
+import dev.rlcraft.ice.optimizer.compat.save.ChunkSaveCompressionBridge;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderTelemetry;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderStatus;
 import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
@@ -82,6 +83,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     public void worldChanged() {
         if (epochs == null) return;
         epochs.invalidateWorld();
+        ChunkSaveCompressionBridge.reset();
         if (workers != null) workers.discardStaleQueuedTasks();
     }
 
@@ -145,6 +147,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         OptimizerBridge.detachClientRuntime(this);
         if (workers != null) workers.shutdown();
         SkullProfileBridge.shutdown();
+        ChunkSaveCompressionBridge.shutdown();
         workers = null;
         renderQueue = null;
         cacheBudget = null;

@@ -1,0 +1,4 @@
+key.categories.ice=ICE Performance Recorder
+key.ice.marker=Mark and capture hitch window
+key.ice.recording=Start/stop manual recording
+key.ice.dashboard=Open profiler dashboard

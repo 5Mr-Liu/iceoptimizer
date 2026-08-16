@@ -77,4 +77,19 @@ public class ModuleCircuitBreakerTest {
         assertEquals(1, status.getPatchedTargets());
         assertTrue(breaker.isOperational());
     }
+
+    @Test
+    public void registryPublishesOperationalStateThroughTheOrdinalMask() {
+        OptimizationModule module = OptimizationModule.FOAMFIX_TEXTURE_UPLOAD;
+        ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(module);
+        breaker.configure(true, 2);
+        breaker.patchInstalled("example.Texture", "test");
+        assertTrue(OptimizerRegistry.isOperational(module.ordinal()));
+        assertTrue((OptimizerRegistry.operationalMaskForTest() & (1L << module.ordinal())) != 0L);
+
+        breaker.recordFailure(new IllegalStateException("first"));
+        assertTrue(OptimizerRegistry.isOperational(module.ordinal()));
+        breaker.recordFailure(new IllegalStateException("second"));
+        assertFalse(OptimizerRegistry.isOperational(module.ordinal()));
+    }
 }

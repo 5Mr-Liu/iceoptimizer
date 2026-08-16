@@ -11,7 +11,6 @@ final class OptimizerAdapterRegistry {
     static {
         Map<String, OptimizerBytecodeAdapter> adapters = new HashMap<String, OptimizerBytecodeAdapter>();
         adapters.put("foamfix-pbo-upload", new FoamFixTextureUploadAdapter());
-        adapters.put("vanilla-texture-pbo-upload", new VanillaTextureUploadAdapter());
         adapters.put("optifine-dynamic-lights", new OptifineDynamicLightsAdapter(
             OptifineDynamicLightsAdapter.Part.LIGHTS));
         adapters.put("optifine-dynamic-light-access", new OptifineDynamicLightsAdapter(
@@ -30,6 +29,17 @@ final class OptimizerAdapterRegistry {
         adapters.put("lycanites-path-search-cache", new LycanitesNodeProcessorAdapter());
         adapters.put("lycanites-registry-single-probe", new LycanitesObjectManagerAdapter());
         adapters.put("lycanites-spawn-scan", new LycanitesSpawnScanAdapter());
+        adapters.put("lycanites-block-membership", new LycanitesBlockMembershipAdapter());
+        adapters.put("srpmixins-spawn-filter", new SrpSpawnFilterAdapter());
+        adapters.put("konkrete-locale-reverse-index", new KonkreteLocaleAdapter());
+        adapters.put("minecraft-chunk-compression-pipeline", new ChunkSaveCompressionAdapter(
+            ChunkSaveCompressionAdapter.Part.ANVIL_PIPELINE));
+        adapters.put("minecraft-region-compressed-write", new ChunkSaveCompressionAdapter(
+            ChunkSaveCompressionAdapter.Part.REGION_RAW_WRITE));
+        adapters.put("optifine-reflector-forge-direct-calls", new ForgeBlockStateDirectAdapter(
+            ForgeBlockStateDirectAdapter.Part.REFLECTOR_FORGE));
+        adapters.put("optifine-blockstate-direct-calls", new ForgeBlockStateDirectAdapter(
+            ForgeBlockStateDirectAdapter.Part.STATE_IMPLEMENTATION));
         adapters.put("lycanites-obj-display-list", new LycanitesObjRenderAdapter());
         adapters.put("lycanites-animator-identities", new LycanitesAnimatorAdapter());
         adapters.put("lycanites-part-indexed", new LycanitesModelObjPartAdapter());

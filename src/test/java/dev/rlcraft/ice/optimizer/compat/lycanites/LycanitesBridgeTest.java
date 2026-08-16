@@ -9,6 +9,9 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.util.ResourceLocation;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.pathfinding.PathNodeType;
 import net.minecraft.util.math.BlockPos;
@@ -103,6 +106,33 @@ public class LycanitesBridgeTest {
         org.junit.Assert.assertNotEquals(origin, negative);
         org.junit.Assert.assertNotEquals(origin, positive);
         org.junit.Assert.assertNotEquals(negative, positive);
+    }
+
+    @Test
+    public void blockMembershipIndexTracksNormalListMutationsWithoutChangingSemantics() {
+        enable(OptimizationModule.LYCANITES_BLOCK_MEMBERSHIP, "block-list");
+        List<ResourceLocation> original = new ArrayList<ResourceLocation>();
+        for (int i = 0; i < 12; i++) original.add(new ResourceLocation("test", "block_" + i));
+        try {
+            List<ResourceLocation> tracked = LycanitesBlockMembershipBridge.track(original);
+            org.junit.Assert.assertTrue(LycanitesBlockMembershipBridge.isIndexedForTest(tracked));
+            ResourceLocation replacement = new ResourceLocation("test", "replacement");
+            assertSame(original.get(3), tracked.get(3));
+            org.junit.Assert.assertTrue(tracked.contains(original.get(8)));
+            tracked.set(3, replacement);
+            org.junit.Assert.assertTrue(tracked.contains(replacement));
+            org.junit.Assert.assertFalse(tracked.contains(original.get(3)));
+            tracked.remove(replacement);
+            org.junit.Assert.assertFalse(tracked.contains(replacement));
+
+            List<ResourceLocation> view = tracked.subList(0, 2);
+            ResourceLocation viaView = new ResourceLocation("test", "via_view");
+            view.set(0, viaView);
+            org.junit.Assert.assertTrue(tracked.contains(viaView));
+        } finally {
+            OptimizerRegistry.breaker(OptimizationModule.LYCANITES_BLOCK_MEMBERSHIP)
+                .configure(false, 3);
+        }
     }
 
     private static void enable(OptimizationModule module, String target) {
