@@ -165,6 +165,10 @@ shadowJar {
     relocate 'org.agrona', 'dev.rlcraft.ice.shadow.agrona'
     relocate 'com.github.benmanes.caffeine', 'dev.rlcraft.ice.shadow.caffeine'
     relocate 'net.jpountz', 'dev.rlcraft.ice.shadow.lz4'
+    // WorldServer implements this ABI during the early CoreMod phase. Keep the
+    // class exclusively in the core JAR so LaunchWrapper can resolve it before
+    // the regular mod JAR is added to the runtime class path.
+    exclude 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
     rename { String fileName -> fileName == 'mcmod-optimizer.info' ? 'mcmod.info' : fileName }
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
     manifest {
@@ -180,7 +184,7 @@ shadowJar {
     }
 }
 
-task optimizerCoreJar(type: Jar, dependsOn: hooksClasses) {
+task optimizerCoreJar(type: Jar, dependsOn: [hooksClasses, classes]) {
     baseName = 'ice-rlcraft-optimizer-core'
     version = project.version
     classifier = ''
@@ -188,6 +192,9 @@ task optimizerCoreJar(type: Jar, dependsOn: hooksClasses) {
     from(sourceSets.hooks.output) {
         include 'dev/rlcraft/ice/hooks/**'
         include 'optimizer-targets.properties'
+    }
+    from(sourceSets.main.output) {
+        include 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
     }
     manifest {
         attributes([
@@ -272,12 +279,23 @@ task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar]) {
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerLoadingPlugin.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceClientOptimizerTransformer.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class', 'optimizer core JAR')
         requireEntry(core, 'optimizer-targets.properties', 'optimizer core JAR')
         if (readManifestAttribute(optimizerCoreJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin') {
             throw new GradleException('optimizer core JAR declares the wrong FMLCorePlugin')
         }
         if (core.any { it.contains('IceProfiler') || it.contains('ProbeProtocol') }) {
             throw new GradleException('optimizer core JAR contains profiler hook classes')
+        }
+        if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class')) {
+            throw new GradleException('optimizer JAR contains the early CoreMod PendingTickAccessor ABI')
+        }
+
+        Set<String> optimizerClasses = optimizer.findAll { it.endsWith('.class') } as Set<String>
+        Set<String> coreClasses = core.findAll { it.endsWith('.class') } as Set<String>
+        optimizerClasses.retainAll(coreClasses)
+        if (!optimizerClasses.isEmpty()) {
+            throw new GradleException("optimizer main/core JARs contain duplicate classes: ${optimizerClasses}")
         }
     }
 }

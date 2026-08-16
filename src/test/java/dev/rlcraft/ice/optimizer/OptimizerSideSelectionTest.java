@@ -12,8 +12,10 @@ public final class OptimizerSideSelectionTest {
         assertTrue(server.enabled(OptimizationModule.CORE_RUNTIME));
         assertTrue(server.enabled(OptimizationModule.SRP_PATH_NODE_CACHE));
         assertTrue(server.enabled(OptimizationModule.SRP_TARGET_SEARCH));
+        assertTrue(server.enabled(OptimizationModule.VANILLA_SAVE_TICK_INDEX));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_PATH_NODE_CACHE));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_REGISTRY_LOOKUP));
+        assertTrue(server.enabled(OptimizationModule.LYCANITES_SPAWN_SCAN));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_EFFECT_CACHE));
         assertTrue(server.enabled(OptimizationModule.ICEANDFIRE_PARTICLE_SCRATCH));
         assertTrue(server.enabled(OptimizationModule.OTG_BO4_IO));
@@ -42,6 +44,8 @@ public final class OptimizerSideSelectionTest {
         ClientOptimizerConfig client = ClientOptimizerConfig.capture();
         assertTrue(client.enabled(OptimizationModule.SRP_STATIC_MESH));
         assertTrue(client.enabled(OptimizationModule.SRP_PATH_NODE_CACHE));
+        assertTrue(client.enabled(OptimizationModule.VANILLA_SAVE_TICK_INDEX));
+        assertTrue(client.enabled(OptimizationModule.LYCANITES_SPAWN_SCAN));
         assertTrue(client.enabled(OptimizationModule.LYCANITES_OBJ_RENDER));
         assertTrue(client.enabled(OptimizationModule.OTG_BO4_LAYOUT));
         assertTrue(client.enabled(OptimizationModule.BETTER_CAVES_NOISE));

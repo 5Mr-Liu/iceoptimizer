@@ -54,7 +54,8 @@ ice-rlcraft-optimizer-core-0.8.0.jar
 ### 主要优化
 
 - **SRParasites**：热点模型静态分支批处理、单次寻路节点缓存、最近目标线性选择及部分姿态/粒子路径。
-- **Lycanites Mobs**：寻路节点缓存、注册表单次探测、OBJ/VBO 稳定分组、动画与效果热路径。
+- **Lycanites Mobs**：寻路节点缓存、注册表单次探测、OBJ/VBO 稳定分组、动画/效果热路径及低分配刷怪位置扫描。
+- **原版世界保存**：仅在同步全量区块保存范围内建立计划刻临时索引，避免每个区块重复扫描世界级集合。
 - **Mo' Bends / Ice and Fire**：父链、四元数、姿态查询及低分配粒子参数路径。
 - **FoamFix / Xaero**：纹理上传暂存、PBO/Fence 和非阻塞 GPU 计时路径。
 - **RenderLib / OreLib / Better Foliage / Dynamic Trees**：方块实体合并、GL 状态快照、AO 暂存和连接数据复用。
@@ -155,7 +156,8 @@ Open the vanilla F3 debug screen after startup to see the compact `ICE Opt` and 
 ### Main optimization areas
 
 - **SRParasites**: hot model branch batching, per-search path-node caching, stable linear target selection, and selected pose/particle paths.
-- **Lycanites Mobs**: path-node caching, single registry probes, stable OBJ/VBO grouping, animation, and effect hot paths.
+- **Lycanites Mobs**: path-node caching, single registry probes, stable OBJ/VBO grouping, animation/effect hot paths, and low-allocation spawn-position scans.
+- **Vanilla world saves**: a temporary scheduled-tick index scoped only to synchronous full chunk saves, avoiding repeated world-wide collection scans for every chunk.
 - **Mo' Bends / Ice and Fire**: parent topology, quaternion matrices, pose lookup, and low-allocation particle arguments.
 - **FoamFix / Xaero**: texture upload staging, PBO/Fence paths, and non-blocking GPU timing.
 - **RenderLib / OreLib / Better Foliage / Dynamic Trees**: tile-entity merging, GL state snapshots, AO scratch reuse, and connection memoization.

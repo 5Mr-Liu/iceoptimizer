@@ -109,13 +109,19 @@ public class LycanitesOptimizationAdapterTest {
                 new ByteLoader(dependencies).define(PROCESSOR_CLASS, transformedProcessor).getName());
 
             byte[] manager = read(jar, MANAGER_CLASS);
-            assertEquals(MANAGER_SHA, CoreClassFingerprint.sha256(manager));
+            String managerFingerprint = CoreClassFingerprint.sha256(manager);
+            assertTrue(MANAGER_SHA.equals(managerFingerprint)
+                || OptimizerTargetCatalog.find(MANAGER_CLASS).hasReviewedFingerprint(managerFingerprint));
             byte[] transformedManager = new IceClientOptimizerTransformer().transform(
                 MANAGER_CLASS, MANAGER_CLASS, manager);
             assertFalse(Arrays.equals(manager, transformedManager));
-            assertEquals(2, countCalls(transformedManager, Opcodes.INVOKESTATIC,
+            int normalizedLookups = countCalls(transformedManager, Opcodes.INVOKESTATIC,
                 LycanitesObjectManagerAdapter.BRIDGE, "lookup",
-                LycanitesObjectManagerAdapter.BRIDGE_DESCRIPTOR));
+                LycanitesObjectManagerAdapter.BRIDGE_DESCRIPTOR);
+            int exactLookups = countCalls(transformedManager, Opcodes.INVOKESTATIC,
+                LycanitesObjectManagerAdapter.BRIDGE, "lookupExact",
+                LycanitesObjectManagerAdapter.BRIDGE_DESCRIPTOR);
+            assertEquals(2, normalizedLookups + exactLookups);
             assertEquals(MANAGER_CLASS,
                 new ByteLoader(dependencies).define(MANAGER_CLASS, transformedManager).getName());
         } finally {

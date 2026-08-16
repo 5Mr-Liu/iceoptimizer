@@ -73,11 +73,23 @@ public final class OptimizerConfig {
         public boolean srpPoseCache = true;
         public boolean srpParticleCollision = true;
 
+        @Config.Comment({
+            "During one synchronous full save, index the unchanged scheduled-tick sets once per mutation version.",
+            "Chunk order, tick order, NBT content, save timing and all world writes remain on the original server thread."
+        })
+        public boolean vanillaSaveTickIndex = true;
+
         @Config.Comment("Cache Lycanites block-state and node-type queries only inside one CreatureNodeProcessor search.")
         public boolean lycanitesPathNodeCache = true;
 
         @Config.Comment("Remove redundant containsKey plus get probes from Lycanites' hot block/effect registries.")
         public boolean lycanitesRegistryLookup = true;
+
+        @Config.Comment({
+            "Reduce temporary maps and duplicate pure block-state reads in the reviewed Lycanites spawn scan.",
+            "Unreviewed subclasses, fluid blocks and unusual mutable configuration lists use the original reads."
+        })
+        public boolean lycanitesSpawnScan = true;
 
         @Config.Comment("Cache stable Lycanites OBJ/VBO render groups in exact OpenGL display lists with bounded GPU accounting.")
         public boolean lycanitesObjRender = true;

@@ -15,6 +15,8 @@ public final class OptimizerConfigTest {
 
     @Test
     public void reviewedCombatOptimizationsAreEnabledByDefault() {
+        assertTrue(OptimizerConfig.settings.vanillaSaveTickIndex);
+        assertTrue(OptimizerConfig.settings.lycanitesSpawnScan);
         assertTrue(OptimizerConfig.settings.lycanitesObjRender);
         assertTrue(OptimizerConfig.settings.lycanitesModelAnimation);
         assertTrue(OptimizerConfig.settings.lycanitesEffectCache);

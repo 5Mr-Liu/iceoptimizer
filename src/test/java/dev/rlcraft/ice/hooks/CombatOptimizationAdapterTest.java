@@ -165,7 +165,11 @@ public class CombatOptimizationAdapterTest {
         IceClientOptimizerTransformer transformer = new IceClientOptimizerTransformer();
         for (Map.Entry<String, String> target : targets.entrySet()) {
             byte[] original = read(jar, target.getKey());
-            assertEquals(target.getValue(), CoreClassFingerprint.sha256(original));
+            String fingerprint = CoreClassFingerprint.sha256(original);
+            TargetSpec targetSpec = OptimizerTargetCatalog.find(target.getKey());
+            assertTrue("unreviewed target fingerprint: " + target.getKey() + " @ " + fingerprint,
+                target.getValue().equals(fingerprint)
+                    || targetSpec != null && targetSpec.hasReviewedFingerprint(fingerprint));
             byte[] transformed = transformer.transform(target.getKey(), target.getKey(), original);
             assertFalse("target was left unchanged: " + target.getKey(), Arrays.equals(original, transformed));
             new ClassReader(transformed);

@@ -23,8 +23,10 @@ final class OptimizerModuleSelection {
             case SRP_TARGET_SEARCH: return source.srpTargetSearch;
             case SRP_POSE_CACHE: return source.srpPoseCache;
             case SRP_PARTICLE_COLLISION: return source.srpParticleCollision;
+            case VANILLA_SAVE_TICK_INDEX: return source.vanillaSaveTickIndex;
             case LYCANITES_PATH_NODE_CACHE: return source.lycanitesPathNodeCache;
             case LYCANITES_REGISTRY_LOOKUP: return source.lycanitesRegistryLookup;
+            case LYCANITES_SPAWN_SCAN: return source.lycanitesSpawnScan;
             case LYCANITES_OBJ_RENDER: return source.lycanitesObjRender;
             case LYCANITES_MODEL_ANIMATION: return source.lycanitesModelAnimation;
             case LYCANITES_EFFECT_CACHE: return source.lycanitesEffectCache;

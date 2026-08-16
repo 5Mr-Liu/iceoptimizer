@@ -17,8 +17,11 @@ final class OptimizerAdapterRegistry {
         adapters.put("srp-model-static-branches", new SrpKirinStaticMeshAdapter());
         adapters.put("srp-parasite-navigator", new SrpParasiteNavigatorAdapter());
         adapters.put("srp-target-linear-select", new SrpTargetSearchAdapter());
+        adapters.put("minecraft-pending-tick-index", new MinecraftSaveTickAdapter());
+        adapters.put("minecraft-full-save-scope", new MinecraftSaveTickAdapter());
         adapters.put("lycanites-path-search-cache", new LycanitesNodeProcessorAdapter());
         adapters.put("lycanites-registry-single-probe", new LycanitesObjectManagerAdapter());
+        adapters.put("lycanites-spawn-scan", new LycanitesSpawnScanAdapter());
         adapters.put("lycanites-obj-display-list", new LycanitesObjRenderAdapter());
         adapters.put("lycanites-animator-identities", new LycanitesAnimatorAdapter());
         adapters.put("lycanites-part-indexed", new LycanitesModelObjPartAdapter());
