@@ -48,6 +48,7 @@ final class OptimizerAdapterRegistry {
         adapters.put("betterfoliage-optifine-colors", new BetterFoliageOptifineColorAdapter());
         adapters.put("qualitytools-stable-attributes", new QualityToolsAttributeAdapter());
         adapters.put("quark-item-sync-state", new QuarkItemSyncAdapter());
+        adapters.put("vanilla-chunk-render-pipeline", new VanillaChunkRenderAdapter());
         ADAPTERS = Collections.unmodifiableMap(adapters);
     }
 

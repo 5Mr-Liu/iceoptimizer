@@ -1,8 +1,8 @@
 package dev.rlcraft.ice.optimizer.client;
 
 import dev.rlcraft.ice.optimizer.ModuleStatus;
-import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
-import dev.rlcraft.ice.optimizer.lock.PackLockState;
+import dev.rlcraft.ice.optimizer.OptimizationModule;
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderStatus;
 import dev.rlcraft.ice.optimizer.runtime.RenderQueueStatus;
 import dev.rlcraft.ice.optimizer.runtime.WorkerStatus;
 import java.util.ArrayList;
@@ -21,16 +21,31 @@ public final class F3OptimizerSummary {
 
     public static List<String> format(ClientOptimizerStatus status) {
         if (status == null) return Collections.emptyList();
-        int operational = 0;
+        int patched = 0;
+        int hit = 0;
+        long errors = 0L;
         for (ModuleStatus module : status.getModules()) {
-            if (module.isOperational()) operational++;
+            OptimizationModule id = module.getModule();
+            if (id == OptimizationModule.CORE_RUNTIME || id == OptimizationModule.RENDER_SUBMISSION) continue;
+            if (module.getPatchedTargets() > 0) patched++;
+            if (module.getState() == dev.rlcraft.ice.optimizer.ModuleState.ACTIVE
+                || module.getState() == dev.rlcraft.ice.optimizer.ModuleState.DEGRADED) hit++;
+            errors += module.getFailures();
+            errors += module.getRejected();
         }
-        PackLockStatus lock = status.getPackLock();
-        String lockState = lock == null ? "UNKNOWN"
-            : lock.getState() == PackLockState.CAPABILITY ? "STRUCTURAL" : lock.getState().name();
-        List<String> lines = new ArrayList<String>(2);
-        lines.add(String.format(Locale.ROOT, "ICE Opt: %s | ACTIVE %d/%d",
-            lockState, operational, status.getModules().size()));
+        String core = status.isCoreModPresent() ? "OK" : "MISSING";
+        List<String> lines = new ArrayList<String>(3);
+        lines.add(String.format(Locale.ROOT, "ICE Opt: CORE %s | HIT %d | PATCH %d | ERR %d",
+            core, hit, patched, errors));
+
+        ChunkRenderStatus chunk = status.getChunkRender();
+        if (chunk != null) {
+            lines.add(String.format(Locale.ROOT,
+                "ICE Chunk: W %d>%d B%d | Sort %d | GPU %s %d/%d",
+                chunk.getVanillaWorkers(), chunk.getEffectiveWorkers(), chunk.getRenderBuilders(),
+                chunk.getSortedQuads(), chunk.getGpuBackend(), chunk.getGpuUploads(),
+                chunk.getUploadFallbacks()));
+        }
 
         WorkerStatus workers = status.getWorkers();
         RenderQueueStatus render = status.getRenderQueue();

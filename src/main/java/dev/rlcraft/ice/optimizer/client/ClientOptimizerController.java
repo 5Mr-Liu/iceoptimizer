@@ -7,6 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.IReloadableResourceManager;
 import net.minecraft.client.resources.IResourceManager;
 import net.minecraft.client.resources.IResourceManagerReloadListener;
+import net.minecraft.util.text.TextComponentString;
 import net.minecraftforge.client.event.RenderGameOverlayEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
@@ -17,6 +18,7 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
     private final Minecraft minecraft = Minecraft.getMinecraft();
     private Object lastWorld;
     private boolean reloadListenerRegistered;
+    private boolean missingCoreWarningSent;
 
     private ClientOptimizerController() {
     }
@@ -37,6 +39,12 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.START) return;
         ClientOptimizerRuntime.INSTANCE.beginClientTick();
+        if (!missingCoreWarningSent && minecraft.player != null
+            && !ClientOptimizerRuntime.INSTANCE.status().isCoreModPresent()) {
+            missingCoreWarningSent = true;
+            minecraft.player.sendMessage(new TextComponentString(
+                "§c[ICE] Optimizer Core JAR 未加载 / missing；字节码优化当前没有生效。"));
+        }
         Object world = minecraft.world;
         if (world != lastWorld) {
             lastWorld = world;

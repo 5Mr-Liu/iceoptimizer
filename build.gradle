@@ -169,6 +169,8 @@ shadowJar {
     // class exclusively in the core JAR so LaunchWrapper can resolve it before
     // the regular mod JAR is added to the runtime class path.
     exclude 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class'
     rename { String fileName -> fileName == 'mcmod-optimizer.info' ? 'mcmod.info' : fileName }
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
     manifest {
@@ -195,6 +197,8 @@ task optimizerCoreJar(type: Jar, dependsOn: [hooksClasses, classes]) {
     }
     from(sourceSets.main.output) {
         include 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class'
     }
     manifest {
         attributes([
@@ -204,6 +208,18 @@ task optimizerCoreJar(type: Jar, dependsOn: [hooksClasses, classes]) {
             'Implementation-Version': project.version,
             'Implementation-Vendor': project.mod_vendor
         ])
+    }
+}
+
+task optimizerBundleZip(type: Zip, dependsOn: ['reobfShadowJar', optimizerCoreJar]) {
+    baseName = 'ice-rlcraft-optimizer-bundle'
+    version = project.version
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    from({ shadowJar.archivePath })
+    from({ optimizerCoreJar.archivePath })
+    from('packaging/optimizer-install.txt') {
+        rename { 'INSTALL.txt' }
     }
 }
 
@@ -257,7 +273,7 @@ def requireEntry = { Set<String> entries, String entry, String artifact ->
     if (!entries.contains(entry)) throw new GradleException("${artifact} is missing ${entry}")
 }
 
-task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar]) {
+task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar, optimizerBundleZip]) {
     doLast {
         Set<String> optimizer = readJarEntries(shadowJar.archivePath)
         Set<String> core = readJarEntries(optimizerCoreJar.archivePath)
@@ -280,6 +296,8 @@ task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar]) {
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/hooks/IceClientOptimizerTransformer.class', 'optimizer core JAR')
         requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class', 'optimizer core JAR')
+        requireEntry(core, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class', 'optimizer core JAR')
         requireEntry(core, 'optimizer-targets.properties', 'optimizer core JAR')
         if (readManifestAttribute(optimizerCoreJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin') {
             throw new GradleException('optimizer core JAR declares the wrong FMLCorePlugin')
@@ -290,6 +308,15 @@ task verifyOptimizerJars(dependsOn: [reobfShadowJar, optimizerCoreJar]) {
         if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class')) {
             throw new GradleException('optimizer JAR contains the early CoreMod PendingTickAccessor ABI')
         }
+        if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class')) {
+            throw new GradleException('optimizer JAR contains early CoreMod chunk-render ABI classes')
+        }
+
+        Set<String> bundle = readJarEntries(optimizerBundleZip.archivePath)
+        requireEntry(bundle, shadowJar.archivePath.name, 'optimizer bundle ZIP')
+        requireEntry(bundle, optimizerCoreJar.archivePath.name, 'optimizer bundle ZIP')
+        requireEntry(bundle, 'INSTALL.txt', 'optimizer bundle ZIP')
 
         Set<String> optimizerClasses = optimizer.findAll { it.endsWith('.class') } as Set<String>
         Set<String> coreClasses = core.findAll { it.endsWith('.class') } as Set<String>

@@ -15,7 +15,10 @@ public class ModuleCircuitBreakerTest {
         breaker.targetObserved("example.Target", "0123456789abcdef", true);
         assertEquals(ModuleState.VERIFIED, breaker.snapshot().getState());
         breaker.patchInstalled("example.Target", "0123456789abcdef");
+        assertEquals(ModuleState.VERIFIED, breaker.snapshot().getState());
         assertTrue(breaker.isOperational());
+        breaker.recordSuccess();
+        assertEquals(ModuleState.ACTIVE, breaker.snapshot().getState());
         breaker.recordFailure(new IllegalStateException("first"));
         assertEquals(ModuleState.DEGRADED, breaker.snapshot().getState());
         breaker.recordFailure(new IllegalStateException("second"));

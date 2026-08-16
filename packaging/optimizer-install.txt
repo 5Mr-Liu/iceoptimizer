@@ -1,0 +1,9 @@
+ICE RLCraft Optimizer installation
+==================================
+
+Copy BOTH JAR files from this ZIP into the Minecraft instance's mods folder.
+Do not extract only the main optimizer JAR: the optimizer-core JAR contains the
+required early bytecode transformer.
+
+安装方法：把 ZIP 内的两个 JAR 一起放入实例的 mods 目录。
+不能只安装主 JAR；optimizer-core JAR 是实际安装底层字节码优化的必需组件。

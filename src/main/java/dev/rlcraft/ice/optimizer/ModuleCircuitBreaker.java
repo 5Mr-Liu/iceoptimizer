@@ -78,9 +78,9 @@ public final class ModuleCircuitBreaker {
     public synchronized void patchInstalled(String className, String fingerprint) {
         if (patchedTargets.get() == 0) patchedTargets.incrementAndGet();
         if (packLockRejected) return;
-        detail = className + " @ " + fingerprint;
+        detail = "补丁已安装，等待首次运行：" + className + " @ " + fingerprint;
         if (state.get() != ModuleState.DISABLED && state.get() != ModuleState.TRIPPED) {
-            state.set(ModuleState.ACTIVE);
+            state.set(ModuleState.VERIFIED);
         }
     }
 
@@ -97,7 +97,14 @@ public final class ModuleCircuitBreaker {
         successes.incrementAndGet();
         consecutiveFailures.set(0);
         if (packLockRejected) return;
-        if (state.compareAndSet(ModuleState.DEGRADED, ModuleState.ACTIVE)) detail = "已从瞬时错误恢复";
+        ModuleState current = state.get();
+        if (current == ModuleState.DEGRADED) {
+            state.set(ModuleState.ACTIVE);
+            detail = "已从瞬时错误恢复";
+        } else if (current == ModuleState.VERIFIED) {
+            state.set(ModuleState.ACTIVE);
+            detail = "已实际执行优化路径";
+        }
     }
 
     public synchronized void recordRejected(String reason) {

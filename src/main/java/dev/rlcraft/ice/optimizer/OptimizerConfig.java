@@ -15,7 +15,7 @@ public final class OptimizerConfig {
     }
 
     public static final class Display {
-        @Config.Comment("Append two compact optimizer status lines only while Minecraft's F3 debug screen is open.")
+        @Config.Comment("Append compact optimizer, chunk-pipeline and queue status lines only while Minecraft's F3 debug screen is open.")
         public boolean showF3Summary = true;
     }
 
@@ -72,6 +72,25 @@ public final class OptimizerConfig {
 
         public boolean srpPoseCache = true;
         public boolean srpParticleCollision = true;
+
+        @Config.Comment({
+            "Reserve CPU capacity for the client and integrated-server main threads instead of letting",
+            "vanilla chunk rebuild workers consume every logical processor. The original priority queue",
+            "and chunk results are unchanged; only worker and reusable builder counts are bounded."
+        })
+        public boolean vanillaChunkDispatch = true;
+
+        @Config.Comment({
+            "Replace BufferBuilder's boxed stable translucent-quad sort with an equivalent primitive stable sort.",
+            "Distances, tie order and final vertex bytes remain identical."
+        })
+        public boolean vanillaChunkSort = true;
+
+        @Config.Comment({
+            "Use a bounded fenced staging ring and GPU buffer copies for chunk VBO uploads when OpenGL supports it.",
+            "Busy slots, unsupported drivers and any error immediately use vanilla glBufferData."
+        })
+        public boolean vanillaChunkVboUpload = true;
 
         @Config.Comment({
             "During one synchronous full save, index the unchanged scheduled-tick sets once per mutation version.",

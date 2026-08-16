@@ -9,6 +9,8 @@ import dev.rlcraft.ice.optimizer.common.OptimizerBootstrapResult;
 import dev.rlcraft.ice.optimizer.bridge.ClientRuntimeAccess;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.compat.skull.SkullProfileBridge;
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderTelemetry;
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderStatus;
 import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import dev.rlcraft.ice.optimizer.lock.PackLockState;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
@@ -26,6 +28,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     public static final ClientOptimizerRuntime INSTANCE = new ClientOptimizerRuntime();
 
     private volatile boolean initialized;
+    private volatile boolean coreModPresent;
     private ClientOptimizerConfig config;
     private ClientEpochs epochs;
     private BoundedRenderQueue renderQueue;
@@ -40,6 +43,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         if (initialized) return;
         config = ClientOptimizerConfig.capture();
         OptimizerBootstrapResult bootstrap = CommonOptimizerBootstrap.initialize(gameDirectory, config);
+        coreModPresent = bootstrap.isCoreModPresent();
         packLock = bootstrap.getPackLock();
         if (!config.isEnabled()) {
             initialized = true;
@@ -59,7 +63,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         initialized = true;
         IceMod.LOGGER.info("ICE RLCraft 客户端优化运行时启动：{} 个工作线程，CPU 队列 {}，渲染队列 {}，兼容策略 {}",
             config.getWorkerThreads(), config.getWorkerQueueCapacity(), config.getRenderQueueCapacity(), packLock.getState());
-        if (!bootstrap.isCoreModPresent()) {
+        if (!coreModPresent) {
             IceMod.LOGGER.error("ICE Optimizer Core JAR 未加载；客户端将安全运行，但字节码优化不会生效");
         }
         if (!packLock.permitsPatches()) IceMod.LOGGER.warn("ICE 外部优化补丁保持关闭：{}", packLock.getDetail());
@@ -147,14 +151,25 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         epochs = null;
         OptimizerRegistry.shutdown("客户端优化运行时已停止");
         initialized = false;
+        coreModPresent = false;
     }
 
     public ClientOptimizerStatus status() {
-        return new ClientOptimizerStatus(initialized, packLock,
+        return new ClientOptimizerStatus(initialized, coreModPresent, packLock,
             workers == null ? null : workers.snapshot(),
             renderQueue == null ? null : renderQueue.snapshot(),
             cacheBudget == null ? null : cacheBudget.snapshot(),
-            epochs == null ? null : epochs.snapshot(), OptimizerRegistry.snapshot());
+            epochs == null ? null : epochs.snapshot(), safeChunkRenderStatus(),
+            OptimizerRegistry.snapshot());
+    }
+
+    private ChunkRenderStatus safeChunkRenderStatus() {
+        if (!coreModPresent) return new ChunkRenderStatus(0, 0, 0, 0L, 0L, 0L, "CORE-MISSING");
+        try {
+            return ChunkRenderTelemetry.snapshot();
+        } catch (LinkageError incompatibleCore) {
+            return new ChunkRenderStatus(0, 0, 0, 0L, 0L, 0L, "CORE-ABI");
+        }
     }
 
 }

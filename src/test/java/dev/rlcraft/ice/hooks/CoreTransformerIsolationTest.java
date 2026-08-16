@@ -4,6 +4,8 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkBufferAccessor;
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkVertexBufferAccessor;
 import dev.rlcraft.ice.optimizer.compat.save.PendingTickAccessor;
 import dev.rlcraft.ice.optimizer.lock.ClassFingerprint;
 import java.lang.reflect.Method;
@@ -22,6 +24,10 @@ import org.objectweb.asm.Opcodes;
 public class CoreTransformerIsolationTest {
     private static final String PENDING_TICK_ACCESSOR =
         "dev.rlcraft.ice.optimizer.compat.save.PendingTickAccessor";
+    private static final String CHUNK_BUFFER_ACCESSOR =
+        "dev.rlcraft.ice.optimizer.compat.chunk.ChunkBufferAccessor";
+    private static final String CHUNK_VBO_ACCESSOR =
+        "dev.rlcraft.ice.optimizer.compat.chunk.ChunkVertexBufferAccessor";
 
     @Test
     public void optimizerCoreInitializesWithoutTheMainRuntime() throws Exception {
@@ -29,6 +35,10 @@ public class CoreTransformerIsolationTest {
             .getCodeSource().getLocation();
         URL earlyAbiClasses = PendingTickAccessor.class.getProtectionDomain()
             .getCodeSource().getLocation();
+        assertEquals(earlyAbiClasses, ChunkBufferAccessor.class.getProtectionDomain()
+            .getCodeSource().getLocation());
+        assertEquals(earlyAbiClasses, ChunkVertexBufferAccessor.class.getProtectionDomain()
+            .getCodeSource().getLocation());
         URL targetResource = IceOptimizerTransformer.class
             .getResource("/optimizer-targets.properties");
         List<URL> roots = new ArrayList<URL>();
@@ -49,6 +59,12 @@ public class CoreTransformerIsolationTest {
             assertEquals("the transformed-class ABI must be defined by the isolated core loader",
                 loader, accessor.getClassLoader());
             assertEquals(4, accessor.getDeclaredMethods().length);
+            Class<?> chunkBuffer = Class.forName(CHUNK_BUFFER_ACCESSOR, true, loader);
+            Class<?> chunkVbo = Class.forName(CHUNK_VBO_ACCESSOR, true, loader);
+            assertEquals(loader, chunkBuffer.getClassLoader());
+            assertEquals(loader, chunkVbo.getClassLoader());
+            assertEquals(4, chunkBuffer.getDeclaredMethods().length);
+            assertEquals(5, chunkVbo.getDeclaredMethods().length);
 
             String target = "com.dhanantry.scapeandrunparasites.client.model.entity.pure.ModelEsor";
             byte[] unknown = emptyClass(target.replace('.', '/'));
@@ -125,7 +141,9 @@ public class CoreTransformerIsolationTest {
         protected synchronized Class<?> loadClass(String name, boolean resolve)
             throws ClassNotFoundException {
             if (name.startsWith("dev.rlcraft.ice.hooks.")
-                || PENDING_TICK_ACCESSOR.equals(name)) {
+                || PENDING_TICK_ACCESSOR.equals(name)
+                || CHUNK_BUFFER_ACCESSOR.equals(name)
+                || CHUNK_VBO_ACCESSOR.equals(name)) {
                 Class<?> loaded = findLoadedClass(name);
                 if (loaded == null) loaded = findClass(name);
                 if (resolve) resolveClass(loaded);
