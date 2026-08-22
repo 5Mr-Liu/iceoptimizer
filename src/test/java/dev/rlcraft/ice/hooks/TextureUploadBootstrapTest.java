@@ -1,8 +1,11 @@
 package dev.rlcraft.ice.hooks;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import dev.rlcraft.ice.optimizer.bridge.UnsafeLegacyReplayException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -60,6 +63,26 @@ public final class TextureUploadBootstrapTest {
             0, new int[][] { { 1 } }, 1, 1, 0, 0, false, false, false));
     }
 
+    @Test
+    public void unsafeRestoreFailureEscapesInsteadOfReplayingOriginalUpload() {
+        assertTrue(TextureUploadBootstrap.install(UnsafeBridge.class));
+        UnsafeLegacyReplayException expected = UnsafeBridge.failure;
+        try {
+            TextureUploadBootstrap.tryUploadLevel(0, new int[] { 1 }, 1, 1,
+                0, 0, false, false, false);
+            fail("unsafe level replay marker was swallowed");
+        } catch (UnsafeLegacyReplayException actual) {
+            assertSame(expected, actual);
+        }
+        try {
+            TextureUploadBootstrap.tryUpload(0, new int[][] { { 1 } }, 1, 1,
+                0, 0, false, false, false);
+            fail("unsafe batch replay marker was swallowed");
+        } catch (UnsafeLegacyReplayException actual) {
+            assertSame(expected, actual);
+        }
+    }
+
     public static final class WorkingBridge {
         public static boolean tryUploadLevel(int mipLevel, int[] data, int width, int height,
                                              int originX, int originY, boolean linearFiltering,
@@ -89,6 +112,29 @@ public final class TextureUploadBootstrapTest {
                                         int originX, int originY, boolean linearFiltering,
                                         boolean clamped, boolean mipFiltering) {
             throw new IllegalStateException("synthetic batch failure");
+        }
+    }
+
+    public static final class UnsafeBridge {
+        private static final UnsafeLegacyReplayException failure =
+            new UnsafeLegacyReplayException("unknown PBO binding",
+                new IllegalStateException("restore"));
+
+        public static boolean tryUploadLevel(int mipLevel, int[] data,
+                                             int width, int height,
+                                             int originX, int originY,
+                                             boolean linearFiltering,
+                                             boolean clamped,
+                                             boolean mipFiltering) {
+            throw failure;
+        }
+
+        public static boolean tryUpload(int maxMips, int[][] data, int width,
+                                        int height, int originX, int originY,
+                                        boolean linearFiltering,
+                                        boolean clamped,
+                                        boolean mipFiltering) {
+            throw failure;
         }
     }
 }

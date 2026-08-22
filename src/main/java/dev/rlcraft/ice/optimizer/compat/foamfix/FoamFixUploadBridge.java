@@ -1,10 +1,13 @@
 package dev.rlcraft.ice.optimizer.compat.foamfix;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
+import dev.rlcraft.ice.optimizer.bridge.UnsafeLegacyReplayException;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
+import dev.rlcraft.ice.optimizer.render.resource.LwjglRetirementFence;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
@@ -26,6 +29,7 @@ public final class FoamFixUploadBridge {
     private static final int PIXEL_UNPACK_BUFFER_BINDING = 35055;
     private static final int STREAM_DRAW = 35040;
     private static final int MAX_STAGING_BYTES = 16 * 1024 * 1024;
+    private static final long NATIVE_BUFFER_OBJECT_CHARGE = 4L * 1024L;
     private static final int MIN_BATCH_PBO_BYTES = 256 * 1024;
     private static final int SLOT_COUNT = 3;
     private static final PboSlot[] SLOTS = new PboSlot[SLOT_COUNT];
@@ -34,8 +38,18 @@ public final class FoamFixUploadBridge {
     private static int stagingBytes;
     private static int slotCursor;
     private static long knownContextGeneration = Long.MIN_VALUE;
+    private static ContextCapabilities knownCapabilities;
     private static boolean activated;
     private static volatile boolean coreBridgeInstalled;
+    private static final PboDriver LWJGL_PBO_DRIVER = new PboDriver() {
+        @Override public int create() { return GL15.glGenBuffers(); }
+        @Override public void allocate(int bytes) {
+            GL15.glBufferData(PIXEL_UNPACK_BUFFER, (long) bytes, STREAM_DRAW);
+        }
+        @Override public void delete(int bufferId) {
+            GL15.glDeleteBuffers(bufferId);
+        }
+    };
 
     private FoamFixUploadBridge() {
     }
@@ -109,14 +123,18 @@ public final class FoamFixUploadBridge {
         try {
             ContextCapabilities capabilities = GLContext.getCapabilities();
             if (!supportsPbo(capabilities)) return false;
-            ensureContext();
+            ensureContext(capabilities);
             PboSlot slot = acquirePboSlot(capabilities);
             if (slot == null) return false;
             IntBuffer pixels = preparePixels(data, width, height, mips, totalInts);
             if (pixels == null) return false;
             previousPbo = GL11.glGetInteger(PIXEL_UNPACK_BUFFER_BINDING);
-            GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
+            // Publish recovery intent before entering LWJGL.  If the binding
+            // call throws with an outcome-uncertain driver state, the catch
+            // path must still restore the caller's unpack binding before it
+            // may replay the byte-identical Legacy upload.
             bindingChanged = true;
+            GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, slot.bufferId);
             if (!slot.ensureCapacity(totalBytes)) {
                 GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
                 bindingChanged = false;
@@ -136,17 +154,28 @@ public final class FoamFixUploadBridge {
             OptimizerBridge.success(MODULE_ORDINAL);
             return true;
         } catch (Throwable error) {
+            Throwable failure = error;
+            boolean bindingRestored = !bindingChanged;
             try {
-                if (bindingChanged) GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
-            } catch (Throwable ignored) {
+                if (bindingChanged) {
+                    GL15.glBindBuffer(PIXEL_UNPACK_BUFFER, previousPbo);
+                    bindingRestored = true;
+                }
+            } catch (Throwable restoreFailure) {
+                failure = append(failure, restoreFailure);
             }
-            OptimizerBridge.failure(MODULE_ORDINAL, error);
+            OptimizerBridge.failure(MODULE_ORDINAL, failure);
+            if (!bindingRestored) {
+                throw new UnsafeLegacyReplayException(
+                    "PBO binding restore failed; original texture upload cannot be replayed safely",
+                    failure);
+            }
             return false;
         }
     }
 
     private static IntBuffer preparePixels(int[][] data, int width, int height, int mips, int totalInts) {
-        ensureContext();
+        ensureContext(GLContext.getCapabilities());
         int requiredBytes = totalInts * 4;
         if (!ensureStagingCapacity(requiredBytes)) return null;
         staging.clear();
@@ -240,10 +269,12 @@ public final class FoamFixUploadBridge {
         return null;
     }
 
-    private static void ensureContext() {
+    private static void ensureContext(ContextCapabilities capabilities) {
         long generation = OptimizerBridge.currentGlContextGeneration();
-        if (knownContextGeneration == generation) return;
+        if (knownContextGeneration == generation
+            && knownCapabilities == capabilities) return;
         knownContextGeneration = generation;
+        knownCapabilities = capabilities;
         for (int i = 0; i < SLOTS.length; i++) {
             PboSlot slot = SLOTS[i];
             if (slot != null) slot.abandon();
@@ -252,61 +283,149 @@ public final class FoamFixUploadBridge {
         slotCursor = 0;
     }
 
+    /** Releases stale ownership after the previously observed GL Context is gone. */
+    public static void contextLost(long lostGeneration) {
+        if (knownContextGeneration != lostGeneration) return;
+        for (int i = 0; i < SLOTS.length; i++) {
+            PboSlot slot = SLOTS[i];
+            if (slot != null) slot.abandon();
+            SLOTS[i] = null;
+        }
+        knownContextGeneration = Long.MIN_VALUE;
+        knownCapabilities = null;
+        slotCursor = 0;
+    }
+
+    /** Releases PBO and staging ownership at the client render-thread boundary. */
+    public static void shutdown() {
+        boolean contextValid = false;
+        try {
+            contextValid = knownCapabilities != null
+                && GLContext.getCapabilities() == knownCapabilities
+                && OptimizerBridge.currentGlContextGeneration()
+                    == knownContextGeneration;
+        } catch (Throwable unavailable) {
+            FatalErrors.rethrowIfFatal(unavailable);
+        }
+        Throwable failure = null;
+        boolean retainedUncertainOwnership = false;
+        for (int i = 0; i < SLOTS.length; i++) {
+            PboSlot slot = SLOTS[i];
+            if (slot == null) continue;
+            if (contextValid) {
+                try { slot.destroy(); }
+                catch (Throwable error) { failure = append(failure, error); }
+                if (slot.isReleased()) SLOTS[i] = null;
+                else retainedUncertainOwnership = true;
+            } else {
+                slot.abandon();
+                SLOTS[i] = null;
+            }
+        }
+        staging = null;
+        stagingBytes = 0;
+        CacheBudget.Reservation direct = stagingReservation;
+        stagingReservation = null;
+        if (direct != null) direct.close();
+        slotCursor = 0;
+        activated = false;
+        if (!retainedUncertainOwnership) {
+            knownContextGeneration = Long.MIN_VALUE;
+            knownCapabilities = null;
+        }
+        if (failure != null) OptimizerBridge.failure(MODULE, failure);
+    }
+
     private static int roundedCapacity(int requiredBytes) {
         int target = 64 * 1024;
         while (target < requiredBytes && target < MAX_STAGING_BYTES) target <<= 1;
         return Math.min(MAX_STAGING_BYTES, Math.max(requiredBytes, target));
     }
 
-    private static int waitResult(ContextCapabilities capabilities, GLSync fence) {
-        return capabilities.OpenGL32
-            ? GL32.glClientWaitSync(fence, 0, 0L)
-            : ARBSync.glClientWaitSync(fence, 0, 0L);
+    interface PboDriver {
+        int create();
+        void allocate(int bytes);
+        void delete(int bufferId);
     }
 
-    private static GLSync fence(ContextCapabilities capabilities) {
-        return capabilities.OpenGL32
-            ? GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
-            : ARBSync.glFenceSync(ARBSync.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    }
-
-    private static void deleteFence(ContextCapabilities capabilities, GLSync fence) {
-        if (capabilities.OpenGL32) GL32.glDeleteSync(fence);
-        else ARBSync.glDeleteSync(fence);
-    }
-
-    private static final class PboSlot {
-        private final int bufferId = GL15.glGenBuffers();
-        private GLSync fence;
+    static final class PboSlot {
+        private final int bufferId;
+        private final CacheBudget.Reservation objectReservation;
+        private final CacheBudget budget;
+        private final PboDriver driver;
+        private LwjglRetirementFence fence;
+        private LwjglRetirementFence uncertainFence;
         private int capacityBytes;
         private CacheBudget.Reservation reservation;
+        private CacheBudget.Reservation uncertainReservation;
         private boolean poisoned;
+        private boolean deleteAttempted;
+        private boolean bufferDeleted;
+
+        private PboSlot() {
+            this(ClientOptimizerRuntime.INSTANCE.cacheBudget(),
+                LWJGL_PBO_DRIVER);
+        }
+
+        PboSlot(CacheBudget budget, PboDriver driver) {
+            if (budget == null || driver == null) {
+                throw new IllegalStateException("PBO runtime unavailable");
+            }
+            CacheBudget.Reservation objectCharge = budget.tryReserve(
+                BudgetKind.GPU, NATIVE_BUFFER_OBJECT_CHARGE);
+            if (objectCharge == null) {
+                throw new IllegalStateException("PBO object budget exhausted");
+            }
+            int created;
+            try { created = driver.create(); }
+            catch (Throwable error) {
+                // The allocator may have created an unnamed driver object;
+                // retain the token to cap retry leakage.
+                throw error;
+            }
+            if (created <= 0) {
+                objectCharge.close();
+                throw new IllegalStateException("PBO glGenBuffers failed");
+            }
+            bufferId = created;
+            objectReservation = objectCharge;
+            this.budget = budget;
+            this.driver = driver;
+        }
 
         private boolean isReady(ContextCapabilities capabilities) {
             if (poisoned) return false;
             if (fence == null) return true;
-            int result = waitResult(capabilities, fence);
-            if (result == ARBSync.GL_ALREADY_SIGNALED || result == ARBSync.GL_CONDITION_SATISFIED) {
-                deleteFence(capabilities, fence);
+            if (fence.isSignaled()) {
+                LwjglRetirementFence completed = fence;
                 fence = null;
+                // Native sync deletion is outcome-uncertain; clear the Java
+                // publication first so a throwing delete is never retried.
+                try { completed.destroy(); }
+                catch (Throwable error) {
+                    uncertainFence = completed;
+                    poisoned = true;
+                    throw error;
+                }
                 return true;
-            }
-            if (result == ARBSync.GL_WAIT_FAILED) {
-                poisoned = true;
-                throw new IllegalStateException("PBO Fence 状态读取失败");
             }
             return false;
         }
 
-        private boolean ensureCapacity(int requiredBytes) {
+        boolean ensureCapacity(int requiredBytes) {
             if (capacityBytes >= requiredBytes) return true;
             int targetBytes = roundedCapacity(requiredBytes);
-            CacheBudget.Reservation replacement = ClientOptimizerRuntime.INSTANCE.tryReserve(BudgetKind.GPU, targetBytes);
+            CacheBudget.Reservation replacement = budget.tryReserve(
+                BudgetKind.GPU, targetBytes);
             if (replacement == null) return false;
             try {
-                GL15.glBufferData(PIXEL_UNPACK_BUFFER, (long) targetBytes, STREAM_DRAW);
+                driver.allocate(targetBytes);
             } catch (Throwable error) {
-                replacement.close();
+                // The old or the replacement store may now be live. Keep both
+                // reservations until context loss and permanently poison the
+                // bounded slot instead of bypassing the GPU hard limit.
+                uncertainReservation = replacement;
+                poisoned = true;
                 throw error;
             }
             CacheBudget.Reservation previous = reservation;
@@ -317,7 +436,8 @@ public final class FoamFixUploadBridge {
         }
 
         private void markSubmitted(ContextCapabilities capabilities) {
-            fence = fence(capabilities);
+            fence = LwjglRetirementFence.tryAfterCurrentCommands(
+                ClientOptimizerRuntime.INSTANCE.cacheBudget());
             if (fence == null) throw new IllegalStateException("无法创建 PBO 同步 Fence");
         }
 
@@ -325,12 +445,73 @@ public final class FoamFixUploadBridge {
             poisoned = true;
         }
 
-        private void abandon() {
+        void destroy() {
+            Throwable failure = null;
+            LwjglRetirementFence submitted = fence;
             fence = null;
+            if (submitted != null) try { submitted.destroy(); }
+            catch (Throwable error) {
+                uncertainFence = submitted;
+                poisoned = true;
+                failure = append(failure, error);
+            }
+            if (!bufferDeleted && !deleteAttempted) {
+                deleteAttempted = true;
+                try {
+                    driver.delete(bufferId);
+                    bufferDeleted = true;
+                    objectReservation.close();
+                    if (reservation != null) reservation.close();
+                    reservation = null;
+                    if (uncertainReservation != null) {
+                        uncertainReservation.close();
+                    }
+                    uncertainReservation = null;
+                    capacityBytes = 0;
+                } catch (Throwable error) {
+                    poisoned = true;
+                    failure = append(failure, error);
+                }
+            }
+            if (failure != null) rethrow(failure);
+        }
+
+        boolean isReleased() {
+            return bufferDeleted && fence == null && uncertainFence == null;
+        }
+
+        void abandon() {
+            LwjglRetirementFence abandonedFence = fence;
+            fence = null;
+            if (abandonedFence != null) abandonedFence.abandon();
+            LwjglRetirementFence uncertain = uncertainFence;
+            uncertainFence = null;
+            if (uncertain != null) uncertain.abandon();
             capacityBytes = 0;
             poisoned = false;
+            objectReservation.close();
             if (reservation != null) reservation.close();
             reservation = null;
+            if (uncertainReservation != null) uncertainReservation.close();
+            uncertainReservation = null;
         }
+    }
+
+    private static Throwable append(Throwable first, Throwable next) {
+        if (first == null) return next;
+        Throwable nextFatal = FatalErrors.findFatal(next);
+        if (nextFatal != null && FatalErrors.findFatal(first) == null) {
+            if (nextFatal != first) nextFatal.addSuppressed(first);
+            return nextFatal;
+        }
+        if (next != null && first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    private static void rethrow(Throwable failure) {
+        FatalErrors.rethrowIfFatal(failure);
+        if (failure instanceof RuntimeException) throw (RuntimeException) failure;
+        if (failure instanceof Error) throw (Error) failure;
+        throw new IllegalStateException("PBO resource release failed", failure);
     }
 }

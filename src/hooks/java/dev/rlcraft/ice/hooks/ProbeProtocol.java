@@ -9,6 +9,8 @@ final class ProbeProtocol {
     static final int CHUNK_GENERATION = 4;
     static final int CHUNK_SAVE = 6;
     static final int CHUNK_RENDER = 9;
+    static final int ITEM_USE_FINISH = 11;
+    static final int POTION_ITEM_FINISH = 12;
 
     private ProbeProtocol() {
     }

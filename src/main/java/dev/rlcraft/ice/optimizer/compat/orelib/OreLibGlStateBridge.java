@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.orelib;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.lang.reflect.Field;
 import java.util.Arrays;
@@ -174,6 +175,7 @@ public final class OreLibGlStateBridge {
     }
 
     private static void rejectAccess(Throwable error) {
+        FatalErrors.rethrowIfFatal(error);
         String message = error == null ? "未知反射错误" : error.getClass().getSimpleName()
             + (error.getMessage() == null ? "" : ": " + error.getMessage());
         reject("无法安全读取 GlStateManager 缓存：" + message);

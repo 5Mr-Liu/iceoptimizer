@@ -27,6 +27,7 @@ final class OptimizerRegistryLink {
             method.invoke(null, arguments);
             return true;
         } catch (Throwable ignored) {
+            HookFatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }

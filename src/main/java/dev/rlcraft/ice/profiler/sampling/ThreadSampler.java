@@ -2,6 +2,7 @@ package dev.rlcraft.ice.profiler.sampling;
 
 import dev.rlcraft.ice.IceProfilerMod;
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.core.FixedRingBuffer;
 import dev.rlcraft.ice.profiler.core.ProfilerLimits;
 import java.lang.management.ManagementFactory;
@@ -84,6 +85,7 @@ public final class ThreadSampler {
             sampleOnce();
             consecutiveFailures = 0;
         } catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
             consecutiveFailures++;
             if (consecutiveFailures == 1 || consecutiveFailures == 3) {
                 IceProfilerMod.LOGGER.warn("ICE 线程采样器连续失败 {} 次", consecutiveFailures, error);
@@ -154,6 +156,7 @@ public final class ThreadSampler {
             try {
                 return hotspotBean.getThreadCpuTime(ids);
             } catch (RuntimeException ignored) {
+                FatalErrors.rethrowIfFatal(ignored);
                 // Fall through to the standard scalar API on non-HotSpot or
                 // partially implemented management beans.
             }
@@ -171,6 +174,7 @@ public final class ThreadSampler {
         try {
             return hotspotBean.getThreadAllocatedBytes(ids);
         } catch (RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return null;
         }
     }
@@ -191,6 +195,7 @@ public final class ThreadSampler {
                 return (com.sun.management.ThreadMXBean) threadBean;
             }
         } catch (RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Optional HotSpot extension; sampling continues without it.
         }
         return null;
@@ -203,6 +208,7 @@ public final class ThreadSampler {
                 hotspotBean.setThreadAllocatedMemoryEnabled(true);
             }
         } catch (RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             IceProfilerMod.LOGGER.debug("无法启用线程分配字节采集");
         }
     }

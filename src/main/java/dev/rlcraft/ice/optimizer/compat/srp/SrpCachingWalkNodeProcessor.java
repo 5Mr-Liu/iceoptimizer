@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.srp;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import net.minecraft.entity.EntityLiving;
 import net.minecraft.pathfinding.PathNodeType;
@@ -121,7 +122,9 @@ public final class SrpCachingWalkNodeProcessor extends WalkNodeProcessor {
     }
 
     private void safeClear() {
-        try { rawTypes.clear(); } catch (Throwable ignored) { }
-        try { checkedTypes.clear(); } catch (Throwable ignored) { }
+        try { rawTypes.clear(); }
+        catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
+        try { checkedTypes.clear(); }
+        catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
     }
 }

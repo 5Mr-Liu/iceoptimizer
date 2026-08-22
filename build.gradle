@@ -19,10 +19,26 @@ version = project.mod_version
 group = project.mod_group
 archivesBaseName = 'ice-rlcraft-optimizer'
 
+def sourceDateEpochText = System.getenv('SOURCE_DATE_EPOCH')
+def sourceDateEpochSeconds = (sourceDateEpochText == null
+    || sourceDateEpochText.trim().isEmpty())
+    ? 0L : Long.parseLong(sourceDateEpochText.trim())
+if (sourceDateEpochSeconds < 0L) {
+    throw new GradleException('SOURCE_DATE_EPOCH must be non-negative')
+}
+def implementationTimestamp = new Date(Math.multiplyExact(
+    sourceDateEpochSeconds, 1000L)).format(
+        "yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
+
 sourceCompatibility = targetCompatibility = compileJava.sourceCompatibility = compileJava.targetCompatibility = '1.8'
 
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
+}
+
+tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask) {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
 }
 
 minecraft {
@@ -130,8 +146,23 @@ test {
     if (project.hasProperty('iceAndFireJar')) {
         systemProperty 'ice.iceandfire.jar', file(project.property('iceAndFireJar')).absolutePath
     }
+    if (project.hasProperty('fbpJar')) {
+        systemProperty 'ice.fbp.jar', file(project.property('fbpJar')).absolutePath
+    }
+    if (project.hasProperty('minecraftSrgJar')) {
+        systemProperty 'ice.minecraft.srg.jar', file(project.property('minecraftSrgJar')).absolutePath
+    }
+    if (project.hasProperty('minecraftClientJar')) {
+        systemProperty 'ice.minecraft.client.jar', file(project.property('minecraftClientJar')).absolutePath
+    }
+    if (project.hasProperty('notchSrg')) {
+        systemProperty 'ice.notch.srg', file(project.property('notchSrg')).absolutePath
+    }
     if (project.hasProperty('llibraryJar')) {
         systemProperty 'ice.llibrary.jar', file(project.property('llibraryJar')).absolutePath
+    }
+    if (project.hasProperty('ichunUtilJar')) {
+        systemProperty 'ice.ichunutil.jar', file(project.property('ichunUtilJar')).absolutePath
     }
     if (project.hasProperty('oreLibJar')) {
         systemProperty 'ice.orelib.jar', file(project.property('oreLibJar')).absolutePath
@@ -156,6 +187,9 @@ test {
     }
     if (project.hasProperty('otgJar')) {
         systemProperty 'ice.otg.jar', file(project.property('otgJar')).absolutePath
+    }
+    if (project.hasProperty('chunkAnimatorJar')) {
+        systemProperty 'ice.chunkanimator.jar', file(project.property('chunkAnimatorJar')).absolutePath
     }
     if (project.hasProperty('minecraftSrgJar')) {
         systemProperty 'ice.minecraft.srg.jar', file(project.property('minecraftSrgJar')).absolutePath
@@ -205,7 +239,7 @@ jar {
             'Implementation-Title': project.mod_name,
             'Implementation-Version': project.version,
             'Implementation-Vendor': project.mod_vendor,
-            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+            'Implementation-Timestamp': implementationTimestamp
         ])
     }
 }
@@ -228,16 +262,31 @@ shadowJar {
     exclude 'dev/rlcraft/ice/server/**'
     exclude 'assets/ice/lang/**'
     exclude 'mcmod-profiler.info'
-    // WorldServer implements this ABI during the early CoreMod phase. Keep the
-    // class exclusively in the core JAR so LaunchWrapper can resolve it before
-    // the regular mod JAR is added to the runtime class path.
+    // A transformed target may be defined before Forge exposes the regular mod
+    // JAR. Keep every ABI injected by the CoreMod exclusively in the core JAR
+    // so LaunchWrapper can resolve the target's interfaces at definition time.
     exclude 'dev/rlcraft/ice/optimizer/compat/save/PendingTickAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderListAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderInfoAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderChunkIndexAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainCompiledChunkAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityMaskAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/gl/EarlyGlStateTracker*.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker*.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/optifine/OptifineVboRegionAccess.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/hud/FontRenderCacheAccess.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/particle/ParticleRenderAccess.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesSpawnScanAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesRawNodeAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/iceandfire/IceAndFireRawNodeAccessor.class'
+    exclude 'dev/rlcraft/ice/optimizer/compat/mobends/MoBendsQuaternionAccess.class'
     exclude 'dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterCallbacks.class'
     rename { String fileName -> fileName == 'mcmod-optimizer.info' ? 'mcmod.info' : fileName }
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
@@ -249,7 +298,7 @@ shadowJar {
             'Implementation-Title': 'ICE RLCraft Optimizer',
             'Implementation-Version': project.version,
             'Implementation-Vendor': project.mod_vendor,
-            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+            'Implementation-Timestamp': implementationTimestamp
         ])
     }
 }
@@ -280,7 +329,7 @@ task profilerJar(type: Jar, dependsOn: classes) {
             'Implementation-Title': 'ICE Performance Recorder',
             'Implementation-Version': project.version,
             'Implementation-Vendor': project.mod_vendor,
-            'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+            'Implementation-Timestamp': implementationTimestamp
         ])
     }
 }
@@ -303,8 +352,23 @@ task optimizerCoreJar(type: Jar, dependsOn: [hooksClasses, classes]) {
         include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderListAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderInfoAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderChunkIndexAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainCompiledChunkAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityMaskAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/gl/EarlyGlStateTracker*.class'
+        include 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker*.class'
         include 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class'
         include 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/optifine/OptifineVboRegionAccess.class'
+        include 'dev/rlcraft/ice/optimizer/compat/hud/FontRenderCacheAccess.class'
+        include 'dev/rlcraft/ice/optimizer/compat/particle/ParticleRenderAccess.class'
+        include 'dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesSpawnScanAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesRawNodeAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/iceandfire/IceAndFireRawNodeAccessor.class'
+        include 'dev/rlcraft/ice/optimizer/compat/mobends/MoBendsQuaternionAccess.class'
         include 'dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterCallbacks.class'
     }
     manifest {
@@ -356,6 +420,103 @@ reobf {
     profilerJar { }
 }
 
+// ForgeGradle rewrites every entry timestamp while reobfuscating, even when
+// the input Jar task is reproducible.  Normalize the completed release JAR in
+// the same task so direct reobf invocations, bundles and pinned deployment
+// hashes all observe identical bytes for identical inputs.
+def normalizeReobfuscatedJar = { File archive ->
+    if (!archive.isFile()) {
+        throw new GradleException("Missing reobfuscated archive: ${archive}")
+    }
+
+    File temporary = new File(
+        archive.parentFile,
+        ".${archive.name}.${UUID.randomUUID()}.normalizing"
+    )
+    def input = new java.util.zip.ZipFile(archive)
+    try {
+        def entries = []
+        def enumeration = input.entries()
+        def names = new HashSet<String>()
+        while (enumeration.hasMoreElements()) {
+            def entry = enumeration.nextElement()
+            if (!names.add(entry.name)) {
+                throw new GradleException("Duplicate entry in ${archive.name}: ${entry.name}")
+            }
+            entries.add(entry)
+        }
+        entries.sort { left, right -> left.name <=> right.name }
+
+        def output = new java.util.jar.JarOutputStream(
+            new BufferedOutputStream(new FileOutputStream(temporary))
+        )
+        try {
+            output.setLevel(java.util.zip.Deflater.DEFAULT_COMPRESSION)
+            byte[] buffer = new byte[32 * 1024]
+            entries.each { sourceEntry ->
+                def targetEntry = new java.util.jar.JarEntry(sourceEntry.name)
+                targetEntry.setTime(0L)
+                targetEntry.setMethod(java.util.zip.ZipEntry.DEFLATED)
+                output.putNextEntry(targetEntry)
+                if (!sourceEntry.isDirectory()) {
+                    def stream = input.getInputStream(sourceEntry)
+                    try {
+                        int count
+                        while ((count = stream.read(buffer)) >= 0) {
+                            output.write(buffer, 0, count)
+                        }
+                    } finally {
+                        stream.close()
+                    }
+                }
+                output.closeEntry()
+            }
+        } finally {
+            output.close()
+        }
+    } catch (Throwable failure) {
+        temporary.delete()
+        throw failure
+    } finally {
+        input.close()
+    }
+
+    try {
+        java.nio.file.Files.move(
+            temporary.toPath(),
+            archive.toPath(),
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
+    } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+        java.nio.file.Files.move(
+            temporary.toPath(),
+            archive.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
+    } finally {
+        temporary.delete()
+    }
+}
+
+tasks.matching { it.name == 'reobfShadowJar' }.all {
+    doLast {
+        normalizeReobfuscatedJar(shadowJar.archivePath)
+    }
+}
+
+tasks.matching { it.name == 'reobfProfilerJar' }.all {
+    doLast {
+        normalizeReobfuscatedJar(profilerJar.archivePath)
+    }
+}
+
+tasks.matching { it.name == 'reobfJar' }.all {
+    doLast {
+        normalizeReobfuscatedJar(jar.archivePath)
+    }
+}
+
 def readJarEntries = { File archive ->
     if (!archive.isFile()) throw new GradleException("Missing split artifact: ${archive}")
     def entries = new LinkedHashSet<String>()
@@ -398,6 +559,42 @@ def readManifestAttribute = { File archive, String name ->
     }
 }
 
+def jarContainsUtf8 = { File archive, String needle ->
+    byte[] expected = needle.getBytes('UTF-8')
+    def zip = new java.util.zip.ZipFile(archive)
+    try {
+        def enumeration = zip.entries()
+        while (enumeration.hasMoreElements()) {
+            def entry = enumeration.nextElement()
+            if (entry.isDirectory() || !entry.name.endsWith('.class')) continue
+            byte[] bytes
+            def input = zip.getInputStream(entry)
+            try {
+                def output = new ByteArrayOutputStream()
+                byte[] buffer = new byte[4096]
+                int count
+                while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count)
+                bytes = output.toByteArray()
+            } finally {
+                input.close()
+            }
+            for (int offset = 0; offset <= bytes.length - expected.length; offset++) {
+                boolean matches = true
+                for (int index = 0; index < expected.length; index++) {
+                    if (bytes[offset + index] != expected[index]) {
+                        matches = false
+                        break
+                    }
+                }
+                if (matches) return true
+            }
+        }
+        return false
+    } finally {
+        zip.close()
+    }
+}
+
 def requireEntry = { Set<String> entries, String entry, String artifact ->
     if (!entries.contains(entry)) throw new GradleException("${artifact} is missing ${entry}")
 }
@@ -420,6 +617,8 @@ task verifySplitJars(dependsOn: [reobfShadowJar, reobfProfilerJar, optimizerCore
         requireEntry(optimizer, 'mcmod.info', 'optimizer JAR')
         requireEntry(profiler, 'dev/rlcraft/ice/IceProfilerMod.class', 'profiler JAR')
         requireEntry(profiler, 'dev/rlcraft/ice/profiler/core/ProfilerRuntime.class', 'profiler JAR')
+        requireEntry(profiler, 'dev/rlcraft/ice/profiler/FatalErrors.class', 'profiler JAR')
+        requireEntry(profiler, 'dev/rlcraft/ice/profiler/report/OptimizerRendererDiagnosticsReader.class', 'profiler JAR')
         requireEntry(profiler, 'dev/rlcraft/ice/profiler/sampling/ThreadSamplingPlan.class', 'profiler JAR')
         requireEntry(profiler, 'mcmod.info', 'profiler JAR')
         if (!readJarEntryText(shadowJar.archivePath, 'mcmod.info').contains('"modid": "iceoptimizer"')) {
@@ -442,6 +641,11 @@ task verifySplitJars(dependsOn: [reobfShadowJar, reobfProfilerJar, optimizerCore
                 it == 'dev/rlcraft/ice/IceMod.class'
         }
         if (!profilerLeaks.isEmpty()) throw new GradleException("profiler JAR contains optimizer classes: ${profilerLeaks}")
+        if (jarContainsUtf8(profilerJar.archivePath,
+            'dev/rlcraft/ice/optimizer/FatalErrors')) {
+            throw new GradleException(
+                'profiler JAR links the optimizer-only FatalErrors ABI')
+        }
 
         Set<String> optimizerClasses = optimizer.findAll { it.endsWith('.class') } as Set<String>
         Set<String> profilerClasses = profiler.findAll { it.endsWith('.class') } as Set<String>
@@ -462,8 +666,28 @@ task verifySplitJars(dependsOn: [reobfShadowJar, reobfProfilerJar, optimizerCore
         requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class', 'optimizer core JAR')
         requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class', 'optimizer core JAR')
         requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/ChunkDispatcherPolicyAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderListAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderInfoAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderChunkIndexAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainCompiledChunkAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityMaskAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyGlStateTracker.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyGlStateTracker$Snapshot.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker$1.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker$MatrixStack.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker$Snapshot.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker$State.class', 'optimizer core JAR')
         requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightAccessor.class', 'optimizer core JAR')
         requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/optifine/DynamicLightsMapAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/optifine/OptifineVboRegionAccess.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/hud/FontRenderCacheAccess.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/particle/ParticleRenderAccess.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesSpawnScanAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesRawNodeAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/iceandfire/IceAndFireRawNodeAccessor.class', 'optimizer core JAR')
+        requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/mobends/MoBendsQuaternionAccess.class', 'optimizer core JAR')
         requireEntry(optimizerCore, 'dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterCallbacks.class', 'optimizer core JAR')
         requireEntry(optimizerCore, 'optimizer-targets.properties', 'optimizer core JAR')
         requireEntry(profilerCore, 'dev/rlcraft/ice/hooks/IceProfilerLoadingPlugin.class', 'profiler core JAR')
@@ -489,8 +713,21 @@ task verifySplitJars(dependsOn: [reobfShadowJar, reobfProfilerJar, optimizerCore
         if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor.class')) {
             throw new GradleException('optimizer JAR contains the early CoreMod RegionFileRawWriteAccessor ABI')
         }
+        if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/iceandfire/IceAndFireRawNodeAccessor.class')) {
+            throw new GradleException('optimizer JAR contains the early CoreMod IceAndFireRawNodeAccessor ABI')
+        }
         if (optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkBufferAccessor.class') ||
-            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class')) {
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/ChunkVertexBufferAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderListAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderInfoAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/TerrainRenderChunkIndexAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/TerrainCompiledChunkAccessor.class') ||
+            optimizer.contains('dev/rlcraft/ice/optimizer/compat/chunk/TerrainVisibilityMaskAccessor.class') ||
+            optimizer.any { entry ->
+                entry.startsWith('dev/rlcraft/ice/optimizer/compat/gl/EarlyGlStateTracker') ||
+                    entry.startsWith('dev/rlcraft/ice/optimizer/compat/gl/EarlyMatrixStateTracker')
+            }) {
             throw new GradleException('optimizer JAR contains early CoreMod chunk-render ABI classes')
         }
 

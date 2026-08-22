@@ -2,15 +2,19 @@ package dev.rlcraft.ice.profiler.report;
 
 import dev.rlcraft.ice.IceProfilerMod;
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.analysis.Diagnosis;
 import dev.rlcraft.ice.profiler.capture.HitchCapture;
 import dev.rlcraft.ice.profiler.capture.HitchCluster;
 import dev.rlcraft.ice.profiler.capture.HitchTrigger;
 import dev.rlcraft.ice.profiler.jvm.JvmSnapshot;
+import dev.rlcraft.ice.profiler.metrics.ChunkChurnDimensionSnapshot;
+import dev.rlcraft.ice.profiler.metrics.ChunkChurnSnapshot;
 import dev.rlcraft.ice.profiler.metrics.TimelinePoint;
 import dev.rlcraft.ice.profiler.metrics.WorldGauge;
 import dev.rlcraft.ice.profiler.sampling.StackSample;
 import dev.rlcraft.ice.profiler.sampling.StackSampleFilter;
+import dev.rlcraft.ice.profiler.sampling.StackTraceRepository;
 import dev.rlcraft.ice.profiler.probe.ProbeMetric;
 import dev.rlcraft.ice.profiler.session.RecordingSession;
 import dev.rlcraft.ice.profiler.session.ReportExporter;
@@ -53,7 +57,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 public final class ReportWriter implements ReportExporter {
-    private static final int CAPTURE_VERSION = 3;
+    private static final int CAPTURE_VERSION = 4;
+    private static final int MAX_CHURN_DIMENSIONS = 64;
     private final File reportsRoot;
 
     public ReportWriter(File gameDirectory) {
@@ -67,8 +72,13 @@ public final class ReportWriter implements ReportExporter {
         File temporary = new File(reportsRoot, "." + finalDirectory.getName() + ".writing");
         if (temporary.exists()) deleteRecursivelySafe(temporary);
         ensureDirectory(temporary);
+        OptimizerRendererDiagnosticsReader.Snapshot rendererDiagnostics =
+            OptimizerRendererDiagnosticsReader.read();
         try {
-            writeSummary(session, new File(temporary, "summary.txt"));
+            writeSummary(session, new File(temporary, "summary.txt"),
+                rendererDiagnostics);
+            writeOptimizerRenderer(rendererDiagnostics,
+                new File(temporary, "optimizer-renderer.txt"));
             writeMetadata(session, new File(temporary, "session.properties"));
             if (IceConfig.reports.timelineCsv) writeTimeline(session, new File(temporary, "timeline.csv"));
             writeProbes(session, new File(temporary, "probes.csv"));
@@ -81,12 +91,14 @@ public final class ReportWriter implements ReportExporter {
                 if (directorySize(temporary) > softLimitBytes()) Files.deleteIfExists(detailed.toPath());
             }
             if (IceConfig.reports.html) writeHtml(session, new File(temporary, "report.html"));
-            Files.move(temporary.toPath(), finalDirectory.toPath(), StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-            Files.move(temporary.toPath(), finalDirectory.toPath());
-        } catch (IOException error) {
-            deleteRecursivelySafe(temporary);
-            throw error;
+            movePublished(temporary, finalDirectory);
+        } catch (Throwable error) {
+            try {
+                if (temporary.exists()) deleteRecursivelySafe(temporary);
+            } catch (Throwable cleanupFailure) {
+                error = appendFailure(error, cleanupFailure);
+            }
+            rethrowExportFailure("无法发布 ICE Recorder 报告", error);
         }
         if (IceConfig.reports.zip) writeZip(finalDirectory);
         enforceRetention();
@@ -100,7 +112,12 @@ public final class ReportWriter implements ReportExporter {
         List<File> result = new ArrayList<File>();
         for (File file : files) if (file.isDirectory() && !file.getName().startsWith(".")) result.add(file);
         Collections.sort(result, new Comparator<File>() {
-            @Override public int compare(File left, File right) { return Long.compare(right.lastModified(), left.lastModified()); }
+            @Override public int compare(File left, File right) {
+                int modified = Long.compare(right.lastModified(),
+                    left.lastModified());
+                return modified != 0 ? modified
+                    : right.getName().compareTo(left.getName());
+            }
         });
         return result;
     }
@@ -123,7 +140,9 @@ public final class ReportWriter implements ReportExporter {
 
     public File getReportsRoot() { return reportsRoot; }
 
-    private void writeSummary(RecordingSession session, File file) throws IOException {
+    private void writeSummary(RecordingSession session, File file,
+                              OptimizerRendererDiagnosticsReader.Snapshot renderer)
+        throws IOException {
         PrintWriter writer = utf8Writer(file);
         try {
             writer.println("ICE Profiler 性能诊断摘要");
@@ -135,6 +154,42 @@ public final class ReportWriter implements ReportExporter {
             writer.println("时间线点：" + session.getTimeline().size() + "，覆盖旧点：" + session.getTimelineOverwrites());
             writer.println("卡顿触发：" + session.getTriggerCount() + "，原因聚类：" + session.getClusters().size());
             writer.println("详细样本：" + session.getDetailedSampleCount() + "，因聚类上限仅计数的事件：" + session.getDiscardedClusterEvents());
+            StackTraceRepository.Statistics dictionary =
+                session.getDictionaryStatistics();
+            writer.println("栈字典容量后样本：" + dictionary.getOverflow()
+                + "，前缀合并：" + dictionary.getPrefixMerged()
+                + "，无法合并：" + dictionary.getDropped());
+            if (!dictionary.getHotspots().isEmpty()) {
+                writer.println("无法合并栈的有界热点摘要（估计值±最大误差）：");
+                int hotspotLimit = Math.min(16, dictionary.getHotspots().size());
+                for (int i = 0; i < hotspotLimit; i++) {
+                    StackTraceRepository.OverflowHotspot hotspot =
+                        dictionary.getHotspots().get(i);
+                    writer.println("  " + (i + 1) + ". " + hotspot.getPrefix()
+                        + "：" + hotspot.getEstimatedCount() + " ± "
+                        + hotspot.getMaximumError());
+                }
+            }
+            ChunkChurnAggregate churn = summarizeChunkChurn(session);
+            writer.println();
+            writer.println("服务端区块 churn 只读归因（1/5/30 秒为累计阈值）");
+            writer.println("------------------------------------------------");
+            writer.println("匹配 ChunkDataEvent.Load 的加载：" + churn.total(0)
+                + "；无匹配数据事件的加载：" + churn.total(1));
+            writer.println("卸载后重载 <=1/5/30 秒：" + churn.total(2) + "/"
+                + churn.total(3) + "/" + churn.total(4));
+            writer.println("加载后短寿命卸载 <=1/5/30 秒：" + churn.total(5) + "/"
+                + churn.total(6) + "/" + churn.total(7));
+            writer.println("有界状态表峰值：" + churn.maximumTrackedEntries
+                + "；容量淘汰：" + churn.stateEvictions);
+            for (Integer dimension : churn.sortedDimensions()) {
+                long[] values = churn.dimensions.get(dimension);
+                writer.println("  维度 " + dimensionLabel(dimension.intValue())
+                    + "：data/no-data=" + values[0] + "/" + values[1]
+                    + "，reload=" + values[2] + "/" + values[3] + "/" + values[4]
+                    + "，short-unload=" + values[5] + "/" + values[6] + "/" + values[7]);
+            }
+            writer.println("说明：无 ChunkDataEvent 可能是新生成、Dormant Chunk 或其他加载路径；这些计数本身不把 churn 归因于玩家、视距、模组 ticket 或 ICE。");
             writer.println();
             writer.println("结论（类别 → 模组 → 类/方法 → 证据 → 置信度）");
             writer.println("-----------------------------------------------");
@@ -154,8 +209,8 @@ public final class ReportWriter implements ReportExporter {
             }
             List<ProbeMetric> exact = aggregateProbes(session);
             if (!exact.isEmpty()) {
-                writer.println("精确探针热点（仅在安装 hooks JAR 且开启深度模式时存在）");
-                writer.println("----------------------------------------------------");
+                writer.println("精确探针热点（药水/物品完成边界低频常驻；其余探针需开启深度模式）");
+                writer.println("------------------------------------------------------------");
                 for (int i = 0; i < Math.min(15, exact.size()); i++) {
                     ProbeMetric metric = exact.get(i);
                     writer.println((i + 1) + ". " + metric.getProbeName() + " → " + metric.getSubjectClass()
@@ -163,7 +218,34 @@ public final class ReportWriter implements ReportExporter {
                 }
                 writer.println();
             }
+            if (renderer != null && !renderer.getSummary().isEmpty()) {
+                writer.println("现代渲染器实际命中摘要");
+                writer.println("----------------------");
+                writer.println(renderer.getSummary());
+                writer.println("完整后端状态与 Legacy 回退原因见 optimizer-renderer.txt。");
+                writer.println();
+            }
             writer.println("说明：ICE Profiler 只观察和记录，不跳过 Tick、不修改区块生成、实体、渲染或网络结果。");
+        } finally {
+            writer.close();
+        }
+    }
+
+    private void writeOptimizerRenderer(
+        OptimizerRendererDiagnosticsReader.Snapshot renderer, File file)
+        throws IOException {
+        PrintWriter writer = utf8Writer(file);
+        try {
+            if (renderer == null || renderer.getReport().isEmpty()) {
+                writer.println("ICE optimizer renderer diagnostics unavailable");
+                writer.println("optimizer_not_installed_or_not_yet_published=true");
+                if (renderer != null && !renderer.getSummary().isEmpty()) {
+                    writer.println("summary=" + renderer.getSummary());
+                }
+            } else {
+                writer.print(renderer.getReport());
+                if (!renderer.getReport().endsWith("\n")) writer.println();
+            }
         } finally {
             writer.close();
         }
@@ -181,6 +263,27 @@ public final class ReportWriter implements ReportExporter {
         properties.setProperty("serverP95Average", fmtRaw(summary.serverP95Average));
         properties.setProperty("serverMaximum", fmtRaw(summary.serverMaximum));
         properties.setProperty("heapAverageMiB", fmtRaw(summary.heapAverageMiB));
+        StackTraceRepository.Statistics dictionary =
+            session.getDictionaryStatistics();
+        properties.setProperty("dictionaryOverflow",
+            Long.toString(dictionary.getOverflow()));
+        properties.setProperty("dictionaryPrefixMerged",
+            Long.toString(dictionary.getPrefixMerged()));
+        properties.setProperty("dictionaryDropped",
+            Long.toString(dictionary.getDropped()));
+        ChunkChurnAggregate churn = summarizeChunkChurn(session);
+        properties.setProperty("chunkDataBackedLoads", Long.toString(churn.total(0)));
+        properties.setProperty("chunkLoadsWithoutDataEvent", Long.toString(churn.total(1)));
+        properties.setProperty("chunkReloadWithin1s", Long.toString(churn.total(2)));
+        properties.setProperty("chunkReloadWithin5s", Long.toString(churn.total(3)));
+        properties.setProperty("chunkReloadWithin30s", Long.toString(churn.total(4)));
+        properties.setProperty("chunkShortUnloadWithin1s", Long.toString(churn.total(5)));
+        properties.setProperty("chunkShortUnloadWithin5s", Long.toString(churn.total(6)));
+        properties.setProperty("chunkShortUnloadWithin30s", Long.toString(churn.total(7)));
+        properties.setProperty("chunkChurnStateEvictions", Long.toString(churn.stateEvictions));
+        properties.setProperty("chunkChurnMaximumTrackedEntries",
+            Integer.toString(churn.maximumTrackedEntries));
+        properties.setProperty("chunkChurnDimensions", churn.compactDimensions());
         properties.setProperty("topCause", session.getClusters().isEmpty() ? "无" : session.getClusters().get(0).getDiagnosis().getRootCause().getDisplayName());
         java.io.Writer output = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8));
         try { properties.store(output, "ICE Profiler session comparison data"); }
@@ -190,17 +293,25 @@ public final class ReportWriter implements ReportExporter {
     private void writeTimeline(RecordingSession session, File file) throws IOException {
         PrintWriter writer = utf8Writer(file);
         try {
-            writer.println("epoch_ms,elapsed_ms,fps,frame_avg_ms,frame_p95_ms,frame_p99_ms,frame_max_ms,gpu_frame_ms,client_tick_p95_ms,server_tick_avg_ms,server_tick_p95_ms,server_tick_p99_ms,server_tick_max_ms,heap_used_mib,heap_committed_mib,gc_count,gc_pause_ms,cpu_load,loaded_chunks,entities,tile_entities,chunk_loads,chunk_unloads,chunk_data_loads,chunk_data_saves,render_queue,upload_queue,in_packets,out_packets,in_bytes,out_bytes");
+            writer.println("epoch_ms,elapsed_ms,fps,frame_avg_ms,frame_p95_ms,frame_p99_ms,frame_max_ms,gpu_frame_ms,client_tick_p95_ms,server_tick_avg_ms,server_tick_p95_ms,server_tick_p99_ms,server_tick_max_ms,heap_used_mib,heap_committed_mib,gc_count,gc_pause_ms,cpu_load,loaded_chunks,entities,tile_entities,chunk_loads,chunk_unloads,chunk_data_loads,chunk_data_saves,render_queue,upload_queue,in_packets,out_packets,in_bytes,out_bytes,chunk_data_backed_loads,chunk_loads_without_data_event,chunk_reload_le_1s,chunk_reload_le_5s,chunk_reload_le_30s,chunk_short_unload_le_1s,chunk_short_unload_le_5s,chunk_short_unload_le_30s,chunk_churn_state_evictions,chunk_churn_tracked_entries,chunk_churn_dimensions");
             for (TimelinePoint point : session.getTimeline()) {
                 JvmSnapshot jvm = point.getJvm();
                 writer.printf(Locale.ROOT,
-                    "%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%d,%d,%.5f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
+                    "%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%d,%d,%.5f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
                     point.getEpochMillis(), point.getElapsedMillis(), point.getFramesPerSecond(),
                     point.getClientFrames().getAverageMs(), point.getClientFrames().getP95Ms(), point.getClientFrames().getP99Ms(), point.getClientFrames().getMaximumMs(),
                     point.getGpuFrameMillis(), point.getClientTicks().getP95Ms(), point.getServerTicks().getAverageMs(), point.getServerTicks().getP95Ms(), point.getServerTicks().getP99Ms(), point.getServerTicks().getMaximumMs(),
                     jvm.getHeapUsedBytes() / 1048576.0D, jvm.getHeapCommittedBytes() / 1048576.0D, jvm.getGcCountDelta(), jvm.getGcPauseMillisDelta(), jvm.getProcessCpuLoad(),
                     point.getLoadedChunks(), point.getEntities(), point.getTileEntities(), point.getChunkLoads(), point.getChunkUnloads(), point.getChunkDataLoads(), point.getChunkDataSaves(),
                     point.getRenderQueueSize(), point.getChunkUploadQueueSize(), point.getInboundPackets(), point.getOutboundPackets(), point.getInboundBytes(), point.getOutboundBytes());
+                ChunkChurnSnapshot churn = point.getChunkChurn();
+                writer.printf(Locale.ROOT, ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s%n",
+                    churn.getDataBackedLoads(), churn.getLoadsWithoutDataEvent(),
+                    churn.getReloadWithinOneSecond(), churn.getReloadWithinFiveSeconds(),
+                    churn.getReloadWithinThirtySeconds(), churn.getShortUnloadWithinOneSecond(),
+                    churn.getShortUnloadWithinFiveSeconds(), churn.getShortUnloadWithinThirtySeconds(),
+                    churn.getStateEvictions(), churn.getTrackedEntries(),
+                    csv(compactDimensions(churn)));
             }
         } finally { writer.close(); }
     }
@@ -456,6 +567,27 @@ public final class ReportWriter implements ReportExporter {
             out.writeInt(metric.getProbeId()); out.writeUTF(metric.getSubjectClass()); out.writeLong(metric.getCalls());
             out.writeLong(metric.getTotalNanos()); out.writeLong(metric.getMaximumNanos());
         }
+        writeChunkChurn(out, point.getChunkChurn());
+    }
+
+    private static void writeChunkChurn(DataOutputStream out,
+                                        ChunkChurnSnapshot churn)
+        throws IOException {
+        List<ChunkChurnDimensionSnapshot> dimensions = churn.getDimensions();
+        out.writeInt(dimensions.size());
+        for (ChunkChurnDimensionSnapshot dimension : dimensions) {
+            out.writeInt(dimension.getDimension());
+            out.writeLong(dimension.getDataBackedLoads());
+            out.writeLong(dimension.getLoadsWithoutDataEvent());
+            out.writeLong(dimension.getReloadWithinOneSecond());
+            out.writeLong(dimension.getReloadWithinFiveSeconds());
+            out.writeLong(dimension.getReloadWithinThirtySeconds());
+            out.writeLong(dimension.getShortUnloadWithinOneSecond());
+            out.writeLong(dimension.getShortUnloadWithinFiveSeconds());
+            out.writeLong(dimension.getShortUnloadWithinThirtySeconds());
+        }
+        out.writeLong(churn.getStateEvictions());
+        out.writeInt(churn.getTrackedEntries());
     }
 
     private static void writeDistribution(DataOutputStream out, DistributionSnapshot value) throws IOException {
@@ -465,23 +597,72 @@ public final class ReportWriter implements ReportExporter {
 
     private void writeZip(File directory) throws IOException {
         File zipFile = new File(reportsRoot, directory.getName() + ".zip");
-        ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)));
+        File temporary = new File(reportsRoot,
+            "." + directory.getName() + ".zip.writing");
+        Files.deleteIfExists(temporary.toPath());
         try {
-            File[] files = directory.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    if (!file.isFile()) continue;
-                    zip.putNextEntry(new ZipEntry(directory.getName() + "/" + file.getName()));
-                    InputStream input = new BufferedInputStream(new FileInputStream(file));
-                    try {
-                        byte[] buffer = new byte[8192];
-                        int read;
-                        while ((read = input.read(buffer)) >= 0) zip.write(buffer, 0, read);
-                    } finally { input.close(); }
-                    zip.closeEntry();
+            ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(
+                new FileOutputStream(temporary)));
+            try {
+                File[] files = directory.listFiles();
+                if (files != null) {
+                    for (File file : files) {
+                        if (!file.isFile()) continue;
+                        zip.putNextEntry(new ZipEntry(directory.getName() + "/"
+                            + file.getName()));
+                        InputStream input = new BufferedInputStream(
+                            new FileInputStream(file));
+                        try {
+                            byte[] buffer = new byte[8192];
+                            int read;
+                            while ((read = input.read(buffer)) >= 0) {
+                                zip.write(buffer, 0, read);
+                            }
+                        } finally { input.close(); }
+                        zip.closeEntry();
+                    }
                 }
+            } finally { zip.close(); }
+            movePublished(temporary, zipFile);
+        } catch (Throwable error) {
+            try { Files.deleteIfExists(temporary.toPath()); }
+            catch (Throwable cleanupFailure) {
+                error = appendFailure(error, cleanupFailure);
             }
-        } finally { zip.close(); }
+            rethrowExportFailure("无法写入 ICE Recorder ZIP", error);
+        }
+    }
+
+    private static void movePublished(File source, File target)
+        throws IOException {
+        try {
+            Files.move(source.toPath(), target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+            Files.move(source.toPath(), target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void rethrowExportFailure(String message, Throwable error)
+        throws IOException {
+        FatalErrors.rethrowIfFatal(error);
+        if (error instanceof IOException) throw (IOException) error;
+        if (error instanceof RuntimeException) throw (RuntimeException) error;
+        if (error instanceof Error) throw (Error) error;
+        throw new IOException(message, error);
+    }
+
+    private static Throwable appendFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        Throwable nextFatal = FatalErrors.findFatal(next);
+        if (nextFatal != null && FatalErrors.findFatal(first) == null) {
+            if (nextFatal != first) nextFatal.addSuppressed(first);
+            return nextFatal;
+        }
+        if (next != null && first != next) first.addSuppressed(next);
+        return first;
     }
 
     private void enforceRetention() {
@@ -539,6 +720,65 @@ public final class ReportWriter implements ReportExporter {
         return result;
     }
 
+    private static ChunkChurnAggregate summarizeChunkChurn(
+        RecordingSession session) {
+        ChunkChurnAggregate result = new ChunkChurnAggregate();
+        for (TimelinePoint point : session.getTimeline()) {
+            result.add(point.getChunkChurn());
+        }
+        return result;
+    }
+
+    private static String compactDimensions(ChunkChurnSnapshot snapshot) {
+        if (snapshot == null || snapshot.getDimensions().isEmpty()) return "";
+        List<ChunkChurnDimensionSnapshot> dimensions =
+            new ArrayList<ChunkChurnDimensionSnapshot>(snapshot.getDimensions());
+        Collections.sort(dimensions,
+            new Comparator<ChunkChurnDimensionSnapshot>() {
+                @Override public int compare(ChunkChurnDimensionSnapshot left,
+                                             ChunkChurnDimensionSnapshot right) {
+                    return Integer.compare(left.getDimension(), right.getDimension());
+                }
+            });
+        StringBuilder result = new StringBuilder(dimensions.size() * 48);
+        for (ChunkChurnDimensionSnapshot dimension : dimensions) {
+            if (result.length() > 0) result.append(';');
+            appendDimension(result, dimension.getDimension(), values(dimension));
+        }
+        return result.toString();
+    }
+
+    private static void appendDimension(StringBuilder target, int dimension,
+                                        long[] values) {
+        target.append(dimension == Integer.MIN_VALUE ? "overflow"
+            : Integer.toString(dimension)).append(':');
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) target.append('/');
+            target.append(values[i]);
+        }
+    }
+
+    private static long[] values(ChunkChurnDimensionSnapshot dimension) {
+        return new long[] {
+            dimension.getDataBackedLoads(),
+            dimension.getLoadsWithoutDataEvent(),
+            dimension.getReloadWithinOneSecond(),
+            dimension.getReloadWithinFiveSeconds(),
+            dimension.getReloadWithinThirtySeconds(),
+            dimension.getShortUnloadWithinOneSecond(),
+            dimension.getShortUnloadWithinFiveSeconds(),
+            dimension.getShortUnloadWithinThirtySeconds()
+        };
+    }
+
+    private static String dimensionLabel(int dimension) {
+        if (dimension == Integer.MIN_VALUE) return "其他维度（统计桶已满）";
+        if (dimension == -1) return "-1（下界）";
+        if (dimension == 0) return "0（主世界）";
+        if (dimension == 1) return "1（末地）";
+        return Integer.toString(dimension);
+    }
+
     private static List<ProbeMetric> aggregateProbes(RecordingSession session) {
         Map<String, long[]> totals = new LinkedHashMap<String, long[]>();
         Map<String, ProbeMetric> identities = new HashMap<String, ProbeMetric>();
@@ -547,8 +787,8 @@ public final class ReportWriter implements ReportExporter {
                 String key = metric.getProbeId() + "|" + metric.getSubjectClass();
                 long[] value = totals.get(key);
                 if (value == null) { value = new long[3]; totals.put(key, value); identities.put(key, metric); }
-                value[0] += metric.getCalls();
-                value[1] += metric.getTotalNanos();
+                value[0] = saturatedAdd(value[0], metric.getCalls());
+                value[1] = saturatedAdd(value[1], metric.getTotalNanos());
                 value[2] = Math.max(value[2], metric.getMaximumNanos());
             }
         }
@@ -581,7 +821,8 @@ public final class ReportWriter implements ReportExporter {
     }
 
     private static double parse(String value) {
-        try { return Double.parseDouble(value); } catch (Exception ignored) { return 0.0D; }
+        try { return Double.parseDouble(value); }
+        catch (NumberFormatException ignored) { return 0.0D; }
     }
 
     private long softLimitBytes() { return IceConfig.reports.maxSessionMiB * 1024L * 1024L; }
@@ -686,5 +927,76 @@ public final class ReportWriter implements ReportExporter {
         private double serverP95Average;
         private double serverMaximum;
         private double heapAverageMiB;
+    }
+
+    private static final class ChunkChurnAggregate {
+        private final Map<Integer, long[]> dimensions =
+            new HashMap<Integer, long[]>();
+        private long stateEvictions;
+        private int maximumTrackedEntries;
+
+        private void add(ChunkChurnSnapshot snapshot) {
+            if (snapshot == null) return;
+            stateEvictions = saturatedAdd(stateEvictions,
+                snapshot.getStateEvictions());
+            maximumTrackedEntries = Math.max(maximumTrackedEntries,
+                snapshot.getTrackedEntries());
+            for (ChunkChurnDimensionSnapshot dimension
+                : snapshot.getDimensions()) {
+                Integer key = Integer.valueOf(dimension.getDimension());
+                long[] aggregate = dimensions.get(key);
+                if (aggregate == null) {
+                    if (dimensions.size() >= MAX_CHURN_DIMENSIONS - 1
+                        && dimension.getDimension() != Integer.MIN_VALUE) {
+                        key = Integer.valueOf(Integer.MIN_VALUE);
+                        aggregate = dimensions.get(key);
+                    }
+                }
+                if (aggregate == null) {
+                    aggregate = new long[8];
+                    dimensions.put(key, aggregate);
+                }
+                long[] additions = values(dimension);
+                for (int i = 0; i < aggregate.length; i++) {
+                    aggregate[i] = saturatedAdd(aggregate[i], additions[i]);
+                }
+            }
+        }
+
+        private long total(int index) {
+            long result = 0L;
+            for (long[] dimension : dimensions.values()) {
+                result = saturatedAdd(result, dimension[index]);
+            }
+            return result;
+        }
+
+        private List<Integer> sortedDimensions() {
+            List<Integer> result = new ArrayList<Integer>(dimensions.keySet());
+            Collections.sort(result);
+            return result;
+        }
+
+        private String compactDimensions() {
+            StringBuilder result = new StringBuilder(dimensions.size() * 48);
+            for (Integer dimension : sortedDimensions()) {
+                if (result.length() > 0) result.append(';');
+                appendDimension(result, dimension.intValue(),
+                    dimensions.get(dimension));
+            }
+            return result.toString();
+        }
+
+        private static long saturatedAdd(long left, long right) {
+            if (right <= 0L) return left;
+            return left > Long.MAX_VALUE - right ? Long.MAX_VALUE
+                : left + right;
+        }
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        if (left < 0L) left = 0L;
+        if (right <= 0L) return left;
+        return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
     }
 }

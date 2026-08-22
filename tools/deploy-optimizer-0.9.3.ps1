@@ -10,14 +10,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$version = '0.10.0'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$mainName = "ice-rlcraft-optimizer-$version.jar"
-$coreName = "ice-rlcraft-optimizer-core-$version.jar"
-$sourceMain = Join-Path $projectRoot "build\libs\$mainName"
-$sourceCore = Join-Path $projectRoot "build\libs\$coreName"
-$expectedMainHash = '043211F64410E7B995A6A57CDFECEB044FC940C223A91E48B18BBD41FE162DEA'
-$expectedCoreHash = '058700EF00467F4BF73876C4F43B7112DF8270497D3143E206315877A369B94C'
+$sourceMain = Join-Path $projectRoot 'build\libs\ice-rlcraft-optimizer-0.9.3.jar'
+$sourceCore = Join-Path $projectRoot 'build\libs\ice-rlcraft-optimizer-core-0.9.3.jar'
+$expectedMainHash = '9CA3F0A5DE1ECFDD38255CA09C0A22DD333B6A1F473DD63EC5BFC1F4DDA40A5E'
+$expectedCoreHash = '6DFE40184EE5DC90DCF86063D57D04920704E2612EDB9360E49F515598C1E434'
 
 if ([string]::IsNullOrWhiteSpace($ModsDirectory)) {
     if ($Target -eq 'Server') {
@@ -61,7 +58,7 @@ $javaProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
     $_.ProcessName -in @('java', 'javaw')
 })
 if ($javaProcesses.Count -ne 0) {
-    throw "Minecraft or the dedicated server may still be running. Stop Java game processes before deploying ICE Optimizer $version."
+    throw 'Minecraft or the dedicated server is still running. Stop every Java game process before deploying ICE Optimizer 0.9.3.'
 }
 
 $legacyCombined = @(Get-ChildItem -LiteralPath $ModsDirectory -File | Where-Object {
@@ -71,10 +68,11 @@ if ($legacyCombined.Count -ne 0) {
     throw "Legacy combined ICE JAR(s) must be removed first: $($legacyCombined.Name -join ', ')"
 }
 
-$newMain = Join-Path $ModsDirectory $mainName
-$newCore = Join-Path $ModsDirectory $coreName
-$stageMain = "$newMain.deploying"
-$stageCore = "$newCore.deploying"
+$newMain = Join-Path $ModsDirectory 'ice-rlcraft-optimizer-0.9.3.jar'
+$newCore = Join-Path $ModsDirectory 'ice-rlcraft-optimizer-core-0.9.3.jar'
+$stageMain = Join-Path $ModsDirectory 'ice-rlcraft-optimizer-0.9.3.jar.deploying'
+$stageCore = Join-Path $ModsDirectory 'ice-rlcraft-optimizer-core-0.9.3.jar.deploying'
+
 foreach ($stage in @($stageMain, $stageCore)) {
     if (Test-Path -LiteralPath $stage) {
         throw "Unexpected unfinished deployment file exists: $stage"
@@ -85,7 +83,7 @@ $installed = @(Get-ChildItem -LiteralPath $ModsDirectory -File | Where-Object {
     $_.Name -match '^ice-rlcraft-optimizer(?:-core)?-[0-9].*\.jar$'
 })
 $unexpectedCurrent = @($installed | Where-Object {
-    $_.Name -notin @($mainName, $coreName)
+    $_.Name -notin @('ice-rlcraft-optimizer-0.9.3.jar', 'ice-rlcraft-optimizer-core-0.9.3.jar')
 })
 $alreadyCurrent =
     (Test-Path -LiteralPath $newMain -PathType Leaf) -and
@@ -95,12 +93,12 @@ $alreadyCurrent =
 if ($alreadyCurrent) {
     Assert-FileHash -Path $newMain -Expected $expectedMainHash
     Assert-FileHash -Path $newCore -Expected $expectedCoreHash
-    Write-Host "ICE RLCraft Optimizer $version is already deployed and verified for $Pack $Target." -ForegroundColor Green
+    Write-Host "ICE RLCraft Optimizer 0.9.3 is already deployed and verified for $Pack $Target." -ForegroundColor Green
     exit 0
 }
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$backupDirectory = Join-Path $projectRoot "rollback\optimizer-$Pack-$Target-before-$version-$timestamp"
+$backupDirectory = Join-Path $projectRoot "rollback\optimizer-$Pack-$Target-before-0.9.3-$timestamp"
 New-Item -ItemType Directory -Path $backupDirectory | Out-Null
 foreach ($file in $installed) {
     Copy-Item -LiteralPath $file.FullName -Destination $backupDirectory
@@ -133,9 +131,9 @@ catch {
     throw
 }
 
-Write-Host "ICE RLCraft Optimizer $version deployed successfully for $Pack $Target." -ForegroundColor Green
+Write-Host "ICE RLCraft Optimizer 0.9.3 deployed successfully for $Pack $Target." -ForegroundColor Green
 Write-Host "Mods: $ModsDirectory"
 Write-Host "Backup: $backupDirectory"
 Write-Host "Main SHA-256: $expectedMainHash"
 Write-Host "Core SHA-256: $expectedCoreHash"
-Write-Host 'Profiler JARs, existing ice-optimizer files and all saves were left untouched.'
+Write-Host 'Existing ice-optimizer files and all saves were left untouched.'

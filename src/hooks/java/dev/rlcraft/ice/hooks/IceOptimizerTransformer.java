@@ -64,6 +64,7 @@ public final class IceOptimizerTransformer implements IClassTransformer {
                         target.adapterId, target.moduleId, skipped.getMessage());
                 }
             } catch (Throwable error) {
+                HookFatalErrors.rethrowIfFatal(error);
                 for (String moduleId : target.moduleIds) {
                     OptimizerPatchJournal.targetObserved(moduleId, transformedName, fingerprint, false);
                 }

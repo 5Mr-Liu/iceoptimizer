@@ -13,8 +13,10 @@ import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import dev.rlcraft.ice.optimizer.runtime.RenderQueueStatus;
 import dev.rlcraft.ice.optimizer.runtime.WorkerStatus;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderStatus;
+import dev.rlcraft.ice.optimizer.render.backend.BackendStatus;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import org.junit.Test;
 
@@ -49,5 +51,28 @@ public final class F3OptimizerSummaryTest {
         assertEquals("ICE Opt: CORE OK | HIT 2 | PATCH 3 | MISS 1 | ERR 3", lines.get(0));
         assertEquals("ICE Chunk: W 16>8 B32 | Sort 120 | GPU GPU-COPY 9/2", lines.get(1));
         assertEquals("ICE Q: CPU 3/1024 | Render 7/2048", lines.get(2));
+    }
+
+    @Test
+    public void includesPublishedTerrainHitAndFallbackCounts() {
+        ModernRendererDiagnostics.resetForTest();
+        try {
+            ModernRendererDiagnostics.publish("renderer-report",
+                "Terrain U A/L 40/2 | D A/L 80/3 | MDI 12/640 | FB NO_ARENA_OWNERSHIP 3");
+            ModernRendererStatus modern = new ModernRendererStatus(true, "ready",
+                null, null, null,
+                new EnumMap<OptimizationModule, BackendStatus>(
+                    OptimizationModule.class));
+            ClientOptimizerStatus status = new ClientOptimizerStatus(true, true,
+                null, null, null, null, null, null, modern,
+                Collections.<ModuleStatus>emptyList());
+
+            List<String> lines = F3OptimizerSummary.format(status);
+
+            assertEquals("ICE Terrain U A/L 40/2 | D A/L 80/3 | MDI 12/640 | FB NO_ARENA_OWNERSHIP 3",
+                lines.get(lines.size() - 1));
+        } finally {
+            ModernRendererDiagnostics.resetForTest();
+        }
     }
 }

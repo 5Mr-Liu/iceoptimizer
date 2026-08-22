@@ -329,8 +329,9 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
             justPart ? "applyLocalTransform" : "applyCharacterTransform", "(F)V", false);
         code.visitVarInsn(Opcodes.ALOAD, 0);
         code.visitFieldInsn(Opcodes.GETFIELD, TARGET, "field_78811_r", "I");
-        code.visitMethodInsn(Opcodes.INVOKESTATIC, "net/minecraft/client/renderer/GlStateManager",
-            "func_179148_o", "(I)V", false);
+        code.visitMethodInsn(Opcodes.INVOKESTATIC,
+            "dev/rlcraft/ice/optimizer/compat/model/ModelMeshCaptureBridge",
+            "callList", "(I)V", false);
         code.visitVarInsn(Opcodes.ALOAD, 0);
         code.visitFieldInsn(Opcodes.GETFIELD, TARGET, "field_78805_m", "Ljava/util/List;");
         Label noChildren = new Label();

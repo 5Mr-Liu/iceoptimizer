@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.profiler.jvm;
 
 import dev.rlcraft.ice.IceProfilerMod;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -80,6 +81,7 @@ public final class JvmMonitor {
         try {
             collectNow();
         } catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
             long count = failures.incrementAndGet();
             if (count == 1L || (count & (count - 1L)) == 0L) {
                 IceProfilerMod.LOGGER.debug("ICE 后台 JVM 指标采集失败（累计 {} 次）", count, error);
@@ -138,6 +140,7 @@ public final class JvmMonitor {
                 Object value = processCpuLoadMethod.invoke(operatingSystemBean);
                 return value instanceof Number ? ((Number) value).doubleValue() : -1.0D;
             } catch (Throwable ignored) {
+                FatalErrors.rethrowIfFatal(ignored);
                 cpuLoadUnavailable = true;
                 return -1.0D;
             }
@@ -150,10 +153,12 @@ public final class JvmMonitor {
                 method.setAccessible(true);
                 return method;
             } catch (Throwable ignored) {
+                FatalErrors.rethrowIfFatal(ignored);
                 try {
                     Class<?> type = Class.forName("com.sun.management.OperatingSystemMXBean");
                     return type.getMethod("getProcessCpuLoad");
                 } catch (Throwable unavailable) {
+                    FatalErrors.rethrowIfFatal(unavailable);
                     return null;
                 }
             }

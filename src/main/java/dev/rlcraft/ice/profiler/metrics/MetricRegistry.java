@@ -31,9 +31,10 @@ public final class MetricRegistry {
     private final AtomicLong outboundBytes = new AtomicLong();
     private final Map<Integer, WorldGauge> worlds = new ConcurrentHashMap<Integer, WorldGauge>();
     private final JvmMonitor jvmMonitor = new JvmMonitor();
+    private final ChunkChurnTracker chunkChurn = new ChunkChurnTracker();
 
-    public void start() { jvmMonitor.start(); }
-    public void stop() { jvmMonitor.stop(); }
+    public void start() { chunkChurn.clear(); jvmMonitor.start(); }
+    public void stop() { jvmMonitor.stop(); chunkChurn.clear(); }
 
     public void recordClientFrame(long nanos) { clientFrames.record(nanos); frames.incrementAndGet(); }
     public void recordClientTick(long nanos) { clientTicks.record(nanos); }
@@ -47,6 +48,19 @@ public final class MetricRegistry {
     public void chunkUnloaded() { chunkUnloads.incrementAndGet(); }
     public void chunkDataLoaded() { chunkDataLoads.incrementAndGet(); }
     public void chunkDataSaved() { chunkDataSaves.incrementAndGet(); }
+    public void serverChunkLoaded(int dimension, int chunkX, int chunkZ, Object chunkIdentity) {
+        chunkLoads.incrementAndGet();
+        chunkChurn.loaded(dimension, chunkX, chunkZ, chunkIdentity);
+    }
+    public void serverChunkUnloaded(int dimension, int chunkX, int chunkZ) {
+        chunkUnloads.incrementAndGet();
+        chunkChurn.unloaded(dimension, chunkX, chunkZ);
+    }
+    public void serverChunkDataLoaded(int dimension, int chunkX, int chunkZ,
+                                      Object chunkIdentity) {
+        chunkDataLoads.incrementAndGet();
+        chunkChurn.dataLoaded(dimension, chunkX, chunkZ, chunkIdentity);
+    }
 
     public void recordPacket(boolean inbound) {
         if (inbound) {
@@ -70,6 +84,11 @@ public final class MetricRegistry {
 
     public void removeWorld(int dimension) {
         worlds.remove(Integer.valueOf(dimension));
+    }
+
+    public void removeServerWorld(int dimension) {
+        worlds.remove(Integer.valueOf(dimension));
+        chunkChurn.removeDimension(dimension);
     }
 
     public TimelinePoint snapshot(long sessionStartedMillis) {
@@ -101,7 +120,8 @@ public final class MetricRegistry {
             outboundBytes.getAndSet(0L),
             worldSnapshot,
             jvmMonitor.snapshot(),
-            ProbeBridge.drain()
+            ProbeBridge.drain(),
+            chunkChurn.drain()
         );
     }
 }

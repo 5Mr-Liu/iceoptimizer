@@ -6,10 +6,16 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
 /** Wraps one reviewed Lycanites OBJ/VBO group implementation in an exact cache gate. */
 final class LycanitesObjRenderAdapter implements OptimizerBytecodeAdapter {
+    private static final String TESSELLATOR_MODEL =
+        "com/lycanitesmobs/client/obj/TessellatorModel";
+    private static final String VBO_MODEL =
+        "com/lycanitesmobs/client/obj/VBOModel";
     static final String METHOD = "renderGroupImpl";
     static final String ORIGINAL = "rlcraftIce$renderGroupImplOriginal";
     static final String DESCRIPTOR =
@@ -46,6 +52,7 @@ final class LycanitesObjRenderAdapter implements OptimizerBytecodeAdapter {
             || (implementation.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE | Opcodes.ACC_STATIC)) != 0) {
             throw new IllegalStateException("Lycanites OBJ renderGroupImpl 调用图变化：methods=" + methods);
         }
+        validateReviewedImplementation(node.name, implementation);
         int wrapperAccess = implementation.access;
         implementation.name = ORIGINAL;
         implementation.access |= Opcodes.ACC_SYNTHETIC;
@@ -79,5 +86,47 @@ final class LycanitesObjRenderAdapter implements OptimizerBytecodeAdapter {
         ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_MAXS);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static void validateReviewedImplementation(String owner, MethodNode method) {
+        if (TESSELLATOR_MODEL.equals(owner)) {
+            require(method, "net/minecraft/client/renderer/Tessellator", "func_178181_a", 1);
+            require(method, "net/minecraft/client/renderer/BufferBuilder", "func_181668_a", 1);
+            require(method, "net/minecraft/client/renderer/BufferBuilder", "func_178977_d", 1);
+            require(method, "net/minecraft/client/renderer/BufferBuilder", "func_178965_a", 1);
+            require(method, "net/minecraft/client/renderer/GlStateManager", "func_187439_f", 1);
+            require(method, "net/minecraft/client/renderer/vertex/VertexFormatElement$EnumUsage",
+                "preDraw", 1);
+            require(method, "net/minecraft/client/renderer/vertex/VertexFormatElement$EnumUsage",
+                "postDraw", 1);
+            require(method, "com/lycanitesmobs/client/obj/Mesh", "getVbo", 0);
+            return;
+        }
+        if (VBO_MODEL.equals(owner)) {
+            require(method, "com/lycanitesmobs/client/obj/Mesh", "getVbo", 1);
+            require(method, "org/lwjgl/opengl/GL15", "glBindBuffer", 2);
+            require(method, "org/lwjgl/opengl/GL11", "glVertexPointer", 1);
+            require(method, "org/lwjgl/opengl/GL11", "glTexCoordPointer", 1);
+            require(method, "org/lwjgl/opengl/GL11", "glNormalPointer", 1);
+            require(method, "org/lwjgl/opengl/GL11", "glEnableClientState", 3);
+            require(method, "org/lwjgl/opengl/GL11", "glDisableClientState", 3);
+            require(method, "org/lwjgl/opengl/GL11", "glDrawArrays", 1);
+            require(method, "net/minecraft/client/renderer/GlStateManager", "func_179131_c", 2);
+            return;
+        }
+        throw new IllegalStateException("未认证的 Lycanites OBJ 实现：" + owner);
+    }
+
+    private static void require(MethodNode method, String owner, String name, int expected) {
+        int found = 0;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) instruction;
+            if (owner.equals(call.owner) && name.equals(call.name)) found++;
+        }
+        if (found != expected) {
+            throw new IllegalStateException("Lycanites OBJ 调用图变化：" + owner + '.' + name
+                + " expected=" + expected + ", found=" + found);
+        }
     }
 }

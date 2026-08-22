@@ -5,6 +5,8 @@ import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderStatus;
 import dev.rlcraft.ice.optimizer.runtime.RenderQueueStatus;
 import dev.rlcraft.ice.optimizer.runtime.WorkerStatus;
+import dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState;
+import dev.rlcraft.ice.optimizer.render.backend.BackendStatus;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -36,7 +38,7 @@ public final class F3OptimizerSummary {
             errors += module.getRejected();
         }
         String core = status.isCoreModPresent() ? "OK" : "MISSING";
-        List<String> lines = new ArrayList<String>(3);
+        List<String> lines = new ArrayList<String>(5);
         lines.add(String.format(Locale.ROOT,
             "ICE Opt: CORE %s | HIT %d | PATCH %d | MISS %d | ERR %d",
             core, hit, patched, missed, errors));
@@ -55,6 +57,28 @@ public final class F3OptimizerSummary {
         String cpuQueue = workers == null ? "OFF" : workers.getQueued() + "/" + workers.getQueueCapacity();
         String renderQueue = render == null ? "OFF" : render.getSize() + "/" + render.getCapacity();
         lines.add("ICE Q: CPU " + cpuQueue + " | Render " + renderQueue);
+
+        ModernRendererStatus modern = status.getModernRenderer();
+        if (modern != null) {
+            int active = 0;
+            int validating = 0;
+            int fallback = 0;
+            for (BackendStatus backend : modern.getBackends().values()) {
+                BackendLifecycleState state = backend.getState();
+                if (state == BackendLifecycleState.MODERN
+                    || state == BackendLifecycleState.REGRESSION_MONITOR) active++;
+                else if (state == BackendLifecycleState.QUARANTINED
+                    || state == BackendLifecycleState.LEGACY) fallback++;
+                else validating++;
+            }
+            lines.add("ICE GL: " + (modern.isInitialized() ? "READY" : "LEGACY")
+                + " | MODERN " + active + " | LEARN " + validating
+                + " | FALLBACK " + fallback);
+            String rendererSummary = ModernRendererDiagnostics.summary();
+            if (!rendererSummary.isEmpty()) {
+                lines.add("ICE " + rendererSummary);
+            }
+        }
         return Collections.unmodifiableList(lines);
     }
 }

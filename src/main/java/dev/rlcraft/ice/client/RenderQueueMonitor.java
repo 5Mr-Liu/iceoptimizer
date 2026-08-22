@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.client;
 
 import dev.rlcraft.ice.IceProfilerMod;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Collection;
@@ -40,6 +41,7 @@ final class RenderQueueMonitor {
             if (result[0] >= 0 || result[1] >= 0) failureLogged = false;
             return result;
         } catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
             retryAfterMillis = System.currentTimeMillis() + RETRY_MILLIS;
             if (!failureLogged) {
                 failureLogged = true;
@@ -89,6 +91,7 @@ final class RenderQueueMonitor {
             Object result = method.invoke(value);
             return result instanceof Number ? ((Number) result).intValue() : -1;
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return -1;
         }
     }

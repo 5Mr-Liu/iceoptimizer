@@ -19,7 +19,9 @@ public final class CacheBudget {
     }
 
     public Reservation tryReserve(BudgetKind kind, long bytes) {
-        if (kind == null || bytes <= 0L) return Reservation.EMPTY;
+        if (kind == null) throw new IllegalArgumentException("budget kind");
+        if (bytes < 0L) throw new IllegalArgumentException("negative budget bytes");
+        if (bytes == 0L) return Reservation.EMPTY;
         AtomicLong counter = used.get(kind);
         long limit = limits.get(kind);
         while (true) {
@@ -47,6 +49,19 @@ public final class CacheBudget {
             used.get(BudgetKind.GPU).get(), limits.get(BudgetKind.GPU), rejected.get());
     }
 
+    /**
+     * Verifies that a caller-supplied reservation can be transferred into a
+     * component which shares this budget.  Native resources sometimes need a
+     * hard reservation before the external API which creates their GL name is
+     * entered; adopting that reservation avoids a second charge after the
+     * name has already been created.
+     */
+    public boolean owns(Reservation reservation, BudgetKind kind, long bytes) {
+        return reservation != null && reservation.owner == this
+            && reservation.kind == kind && reservation.bytes == bytes
+            && !reservation.released.get();
+    }
+
     public static final class Reservation implements AutoCloseable {
         private static final Reservation EMPTY = new Reservation(null, null, 0L);
         private final CacheBudget owner;
@@ -61,6 +76,9 @@ public final class CacheBudget {
         }
 
         public long getBytes() { return bytes; }
+
+        /** Shared no-op reservation for zero-byte GL objects. */
+        public static Reservation empty() { return EMPTY; }
 
         @Override
         public void close() {

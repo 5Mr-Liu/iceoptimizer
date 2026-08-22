@@ -8,6 +8,21 @@ import org.junit.Test;
 
 public class ModuleCircuitBreakerTest {
     @Test
+    public void runtimeRendererTripIsStickyOnlyWithinItsGeneration() {
+        ModuleCircuitBreaker breaker = new ModuleCircuitBreaker(
+            OptimizationModule.MODERN_TERRAIN_BACKEND);
+        breaker.configure(true, 1);
+        breaker.beginRuntimeGeneration(11L);
+        breaker.recordFailure(new IllegalStateException("driver"));
+        assertFalse(breaker.isOperational());
+        breaker.beginRuntimeGeneration(11L);
+        assertFalse("same generation remains quarantined", breaker.isOperational());
+        breaker.beginRuntimeGeneration(12L);
+        assertTrue("new generation may execute a fresh capability self-test",
+            breaker.isOperational());
+    }
+
+    @Test
     public void exactTargetActivatesAndRepeatedErrorsTripOnlyThatModule() {
         ModuleCircuitBreaker breaker = new ModuleCircuitBreaker(OptimizationModule.SRP_STATIC_MESH);
         breaker.configure(true, 2);
@@ -91,5 +106,17 @@ public class ModuleCircuitBreakerTest {
         assertTrue(OptimizerRegistry.isOperational(module.ordinal()));
         breaker.recordFailure(new IllegalStateException("second"));
         assertFalse(OptimizerRegistry.isOperational(module.ordinal()));
+    }
+
+    @Test
+    public void registryPublishesAppendOnlyModulesThroughTheHighMask() {
+        OptimizationModule module = OptimizationModule.OPTIFINE_SHADER_IMAGE;
+        assertTrue(module.ordinal() >= Long.SIZE);
+        ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(module);
+        breaker.configure(true, 2);
+        assertTrue(OptimizerRegistry.isOperational(module));
+        int bit = module.ordinal() - Long.SIZE;
+        assertTrue((OptimizerRegistry.operationalMaskHighForTest()
+            & (1L << bit)) != 0L);
     }
 }

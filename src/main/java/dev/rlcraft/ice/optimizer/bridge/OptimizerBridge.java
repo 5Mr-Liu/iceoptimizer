@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.bridge;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.ModuleCircuitBreaker;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
@@ -24,6 +25,7 @@ public final class OptimizerBridge {
             OptimizationModule module = OptimizationModule.byId(moduleId);
             return module != null && isEnabled(module.ordinal());
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }
@@ -33,6 +35,7 @@ public final class OptimizerBridge {
         try {
             return OptimizerRegistry.isOperational(moduleOrdinal);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }
@@ -42,6 +45,7 @@ public final class OptimizerBridge {
             ClientRuntimeAccess runtime = clientRuntime;
             return runtime == null ? 0L : runtime.currentFrameId();
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
     }
@@ -51,6 +55,7 @@ public final class OptimizerBridge {
             ClientRuntimeAccess runtime = clientRuntime;
             return runtime == null ? 0L : runtime.currentClientTickId();
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
     }
@@ -60,6 +65,7 @@ public final class OptimizerBridge {
             ClientRuntimeAccess runtime = clientRuntime;
             return runtime == null ? 0L : runtime.currentWorldGeneration();
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
     }
@@ -69,6 +75,7 @@ public final class OptimizerBridge {
             ClientRuntimeAccess runtime = clientRuntime;
             return runtime == null ? 0L : runtime.currentResourceGeneration();
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
     }
@@ -78,6 +85,7 @@ public final class OptimizerBridge {
             ClientRuntimeAccess runtime = clientRuntime;
             return runtime == null ? 0L : runtime.currentGlContextGeneration();
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
     }
@@ -87,6 +95,7 @@ public final class OptimizerBridge {
             OptimizationModule module = OptimizationModule.byId(moduleId);
             if (module != null) success(module.ordinal());
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
@@ -96,6 +105,7 @@ public final class OptimizerBridge {
             ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
             if (breaker != null) breaker.recordSuccess();
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
@@ -105,6 +115,7 @@ public final class OptimizerBridge {
             OptimizationModule module = OptimizationModule.byId(moduleId);
             if (module != null) activate(module.ordinal(), detail);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
@@ -114,24 +125,29 @@ public final class OptimizerBridge {
             ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
             if (breaker != null) breaker.activate(detail);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
 
     public static void failure(String moduleId, Throwable error) {
+        FatalErrors.rethrowIfFatal(error);
         try {
             OptimizationModule module = OptimizationModule.byId(moduleId);
             if (module != null) failure(module.ordinal(), error);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
 
     public static void failure(int moduleOrdinal, Throwable error) {
+        FatalErrors.rethrowIfFatal(error);
         try {
             ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
             if (breaker != null) breaker.recordFailure(error);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
@@ -141,6 +157,7 @@ public final class OptimizerBridge {
             OptimizationModule module = OptimizationModule.byId(moduleId);
             if (module != null) incompatible(module.ordinal(), detail);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }
@@ -150,6 +167,7 @@ public final class OptimizerBridge {
             ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(moduleOrdinal);
             if (breaker != null) breaker.forceIncompatible(detail);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Fail open: bookkeeping must never break an adapted mod.
         }
     }

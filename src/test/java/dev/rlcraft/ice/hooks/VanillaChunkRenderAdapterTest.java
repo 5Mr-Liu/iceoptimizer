@@ -45,7 +45,8 @@ public final class VanillaChunkRenderAdapterTest {
                 byte[] transformed = original;
                 for (TargetSpec target : targets) {
                     OptimizerBytecodeAdapter adapter = OptimizerAdapterRegistry.find(target.adapterId);
-                    assertTrue(adapter instanceof VanillaChunkRenderAdapter);
+                    assertTrue(adapter instanceof VanillaChunkRenderAdapter
+                        || adapter instanceof ModernTerrainAdapter);
                     transformed = adapter.transform(sample.className, transformed, target);
                 }
                 assertFalse(Arrays.equals(original, transformed));
@@ -63,9 +64,10 @@ public final class VanillaChunkRenderAdapterTest {
     public void dispatcherCatalogKeepsPolicyAndUploadAsIndependentCapabilities() {
         List<TargetSpec> targets = OptimizerTargetCatalog.findAll(
             "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher");
-        assertEquals(2, targets.size());
+        assertEquals(3, targets.size());
         assertEquals("vanilla-chunk-dispatch-policy", targets.get(0).adapterId);
         assertEquals("vanilla-chunk-vbo-dispatch", targets.get(1).adapterId);
+        assertEquals("modern-terrain-upload-context", targets.get(2).adapterId);
     }
 
     @Test
@@ -147,6 +149,10 @@ public final class VanillaChunkRenderAdapterTest {
                     + "Lnet/minecraft/client/renderer/vertex/VertexBuffer;)Z"));
             assertTrue(hasMethod(transformed, VanillaChunkRenderAdapter.ORIGINAL_UPLOAD,
                 VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR));
+            assertEquals(1, countCalls(transformed, ModernTerrainAdapter.UPLOAD_CONTEXT,
+                "begin", "(Lnet/minecraft/util/BlockRenderLayer;"
+                    + "Lnet/minecraft/client/renderer/chunk/RenderChunk;"
+                    + "Lnet/minecraft/client/renderer/chunk/CompiledChunk;)V"));
         } else if (className.endsWith("BufferBuilder")) {
             assertTrue(hasInterface(transformed, VanillaChunkRenderAdapter.BUFFER_ACCESS));
             assertTrue(hasMethod(transformed, VanillaChunkRenderAdapter.ORIGINAL_SORT,

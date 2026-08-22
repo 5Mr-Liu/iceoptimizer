@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.profiler.analysis;
 
+import dev.rlcraft.ice.profiler.FatalErrors;
 import java.io.File;
 import java.net.JarURLConnection;
 import java.net.URL;
@@ -39,6 +40,7 @@ public final class ModResolver {
                 sources.put(source.getName().toLowerCase(Locale.ROOT), identity);
             }
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Unit tests and very early bootstrap can run before Forge's Loader is ready.
         }
     }
@@ -79,6 +81,7 @@ public final class ModResolver {
                 }
             }
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Attribution is best-effort and must never affect game loading.
         }
         return ModIdentity.UNKNOWN;
@@ -88,6 +91,7 @@ public final class ModResolver {
         try {
             return file.getCanonicalPath().replace('\\', '/').toLowerCase(Locale.ROOT);
         } catch (Exception ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return file.getAbsolutePath().replace('\\', '/').toLowerCase(Locale.ROOT);
         }
     }

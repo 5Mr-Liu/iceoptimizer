@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.save;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.io.BufferedOutputStream;
@@ -38,12 +39,16 @@ public final class ChunkSaveCompressionBridge {
     private static final int MAX_COMPRESSED_CHUNK_BYTES = 16 * 1024 * 1024;
     private static final int MAX_TRACKED_TASKS = 128;
     private static final int QUEUE_CAPACITY = 64;
+    private static final int INITIAL_COMPRESSION_WORKERS = 1;
+    private static final int MAX_COMPRESSION_WORKERS = 4;
     private static final long ORPHAN_NANOS = TimeUnit.SECONDS.toNanos(30L);
     private static final Object LOCK = new Object();
     private static final IdentityHashMap<NBTTagCompound, CompressionTask> TASKS =
         new IdentityHashMap<NBTTagCompound, CompressionTask>();
     private static final AtomicLong RESULT_BYTES = new AtomicLong();
     private static final AtomicBoolean ACTIVATED = new AtomicBoolean();
+    private static final AdaptiveWorkerPolicy WORKER_POLICY =
+        new AdaptiveWorkerPolicy();
     private static final ThreadLocal<DeflaterHolder> DEFLATERS =
         new ThreadLocal<DeflaterHolder>() {
             @Override protected DeflaterHolder initialValue() {
@@ -70,6 +75,7 @@ public final class ChunkSaveCompressionBridge {
         }
         try {
             pool.execute(task);
+            observeExecutor(false, false);
         } catch (RejectedExecutionException saturated) {
             synchronized (LOCK) {
                 if (TASKS.get(snapshot) == task) TASKS.remove(snapshot);
@@ -98,7 +104,9 @@ public final class ChunkSaveCompressionBridge {
         }
         if (task == null) return false;
         try {
+            boolean waitedForCompression = !task.isDone();
             task.await();
+            observeExecutor(waitedForCompression, false);
             CompressedResult result = task.result();
             if (result == null) return false;
             RegionFile region = RegionFileCache.createOrLoadRegionFile(
@@ -145,6 +153,11 @@ public final class ChunkSaveCompressionBridge {
             generation++;
             discarded = TASKS.values().toArray(new CompressionTask[TASKS.size()]);
             TASKS.clear();
+            WORKER_POLICY.reset();
+            ThreadPoolExecutor pool = executor;
+            if (pool != null && !pool.isShutdown()) {
+                resizeExecutorLocked(pool, INITIAL_COMPRESSION_WORKERS);
+            }
         }
         for (CompressionTask task : discarded) task.discard();
     }
@@ -159,12 +172,8 @@ public final class ChunkSaveCompressionBridge {
         if (pool != null) pool.shutdownNow();
     }
 
-    static int workerCountForTest(int processors, long maximumHeapBytes) {
-        int cpuBound = Math.max(1, Math.min(4, processors - 2));
-        long gib = 1024L * 1024L * 1024L;
-        int heapBound = maximumHeapBytes < 1536L * 1024L * 1024L ? 1
-            : maximumHeapBytes < 3L * gib ? 2 : 4;
-        return Math.max(1, Math.min(cpuBound, heapBound));
+    static int initialWorkerCountForTest() {
+        return INITIAL_COMPRESSION_WORKERS;
     }
 
     static byte[] compressForTest(NBTTagCompound value) throws IOException {
@@ -183,13 +192,47 @@ public final class ChunkSaveCompressionBridge {
     private static ThreadPoolExecutor ensureExecutorLocked() {
         ThreadPoolExecutor known = executor;
         if (known != null && !known.isShutdown()) return known;
-        int workers = workerCountForTest(Runtime.getRuntime().availableProcessors(),
-            Runtime.getRuntime().maxMemory());
-        known = new ThreadPoolExecutor(workers, workers, 0L, TimeUnit.MILLISECONDS,
+        WORKER_POLICY.reset();
+        known = new ThreadPoolExecutor(INITIAL_COMPRESSION_WORKERS,
+            MAX_COMPRESSION_WORKERS, 15L, TimeUnit.SECONDS,
             new ArrayBlockingQueue<Runnable>(QUEUE_CAPACITY), new CompressionThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
+        known.allowCoreThreadTimeOut(true);
         executor = known;
         return known;
+    }
+
+    /**
+     * Adjusts only from observed work pressure.  Hardware identity, processor
+     * count and maximum heap never select a worker tier.
+     */
+    private static void observeExecutor(boolean fileIoWaited,
+                                        boolean rejectedByResultPressure) {
+        synchronized (LOCK) {
+            ThreadPoolExecutor pool = executor;
+            if (pool == null || pool.isShutdown()) return;
+            long maximum = maximumResultBytes();
+            long retained = RESULT_BYTES.get();
+            boolean resultPressure = rejectedByResultPressure
+                || retained >= maximum - maximum / 4L;
+            int target = WORKER_POLICY.observe(pool.getQueue().size(),
+                pool.getActiveCount(), fileIoWaited, resultPressure);
+            resizeExecutorLocked(pool, target);
+        }
+    }
+
+    private static void resizeExecutorLocked(ThreadPoolExecutor pool,
+                                             int target) {
+        int bounded = Math.max(INITIAL_COMPRESSION_WORKERS,
+            Math.min(MAX_COMPRESSION_WORKERS, target));
+        if (pool.getCorePoolSize() == bounded) return;
+        try {
+            pool.setCorePoolSize(bounded);
+        } catch (Throwable resizeFailure) {
+            FatalErrors.rethrowIfFatal(resizeFailure);
+            WORKER_POLICY.forceTarget(pool.getCorePoolSize());
+            OptimizerBridge.failure(MODULE, resizeFailure);
+        }
     }
 
     private static void cleanupLocked(long now) {
@@ -208,18 +251,17 @@ public final class ChunkSaveCompressionBridge {
     private static CompressedResult compress(NBTTagCompound snapshot) throws IOException {
         BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
             COMPRESSION_BUFFER_BYTES, MAX_COMPRESSED_CHUNK_BYTES);
-        DataOutputStream data = new DataOutputStream(new BufferedOutputStream(
-            pooledDeflaterStream(bytes), COMPRESSION_BUFFER_BYTES));
-        try {
+        try (DataOutputStream data = new DataOutputStream(
+            new BufferedOutputStream(pooledDeflaterStream(bytes),
+                COMPRESSION_BUFFER_BYTES))) {
             CompressedStreamTools.write(snapshot, data);
-        } finally {
-            data.close();
         }
         return new CompressedResult(bytes.buffer(), bytes.length());
     }
 
     private static OutputStream pooledDeflaterStream(OutputStream output) {
         DeflaterHolder holder = DEFLATERS.get();
+        if (holder.deflater == null) holder.deflater = new Deflater();
         DeflaterLease lease;
         if (!holder.inUse) {
             holder.inUse = true;
@@ -230,19 +272,68 @@ public final class ChunkSaveCompressionBridge {
         try {
             return new PooledDeflaterOutputStream(output, lease);
         } catch (Throwable error) {
-            lease.release();
-            throw error;
+            Throwable failure = error;
+            try { lease.release(); }
+            catch (Throwable cleanupFailure) {
+                failure = appendFailure(failure, cleanupFailure);
+            }
+            rethrowUnchecked(failure);
+            return null;
         }
     }
 
+    static OutputStream pooledStreamForTest(OutputStream output,
+                                            Deflater deflater) {
+        return new PooledDeflaterOutputStream(output,
+            new DeflaterLease(null, deflater, true));
+    }
+
+    private static Throwable appendFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        Throwable nextFatal = FatalErrors.findFatal(next);
+        if (nextFatal != null && FatalErrors.findFatal(first) == null) {
+            if (nextFatal != first) nextFatal.addSuppressed(first);
+            return nextFatal;
+        }
+        if (next != null && first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    private static void rethrowUnchecked(Throwable failure) {
+        FatalErrors.rethrowIfFatal(failure);
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) throw (Error) failure;
+        throw new IllegalStateException("chunk compression cleanup failed",
+            failure);
+    }
+
+    private static void throwCloseFailure(Throwable failure)
+        throws IOException {
+        FatalErrors.rethrowIfFatal(failure);
+        if (failure instanceof IOException) throw (IOException) failure;
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) throw (Error) failure;
+        throw new IOException("chunk compression stream close failed",
+            failure);
+    }
+
     private static boolean reserveResultBytes(int bytes) {
-        long maximum = Math.max(32L * 1024L * 1024L,
-            Math.min(128L * 1024L * 1024L, Runtime.getRuntime().maxMemory() / 32L));
+        long maximum = maximumResultBytes();
         while (true) {
             long current = RESULT_BYTES.get();
-            if (bytes < 0 || current + bytes > maximum) return false;
+            if (bytes < 0 || current > maximum - bytes) return false;
             if (RESULT_BYTES.compareAndSet(current, current + bytes)) return true;
         }
+    }
+
+    private static long maximumResultBytes() {
+        return Math.max(32L * 1024L * 1024L,
+            Math.min(128L * 1024L * 1024L,
+                Runtime.getRuntime().maxMemory() / 32L));
     }
 
     private static final class CompressionTask implements Runnable {
@@ -251,6 +342,7 @@ public final class ChunkSaveCompressionBridge {
         private final long createdNanos = System.nanoTime();
         private final CountDownLatch completed = new CountDownLatch(1);
         private volatile boolean discarded;
+        private volatile boolean resultPressure;
         private volatile CompressedResult result;
 
         private CompressionTask(NBTTagCompound snapshot, long taskGeneration) {
@@ -272,10 +364,12 @@ public final class ChunkSaveCompressionBridge {
             } catch (OutputLimitException expectedLargeChunk) {
                 // Extended/oversized chunks retain vanilla's original stream.
             } catch (Throwable error) {
+                FatalErrors.rethrowIfFatal(error);
                 if (!discarded) OptimizerBridge.failure(MODULE, error);
             } finally {
                 snapshot = null;
                 completed.countDown();
+                observeExecutor(false, resultPressure);
             }
         }
 
@@ -284,7 +378,11 @@ public final class ChunkSaveCompressionBridge {
         }
 
         private synchronized void publish(CompressedResult compressed, boolean current) {
-            if (!current || discarded || !reserveResultBytes(compressed.reservedBytes)) return;
+            if (!current || discarded) return;
+            if (!reserveResultBytes(compressed.reservedBytes)) {
+                resultPressure = true;
+                return;
+            }
             result = compressed;
         }
 
@@ -313,7 +411,7 @@ public final class ChunkSaveCompressionBridge {
     private static final class CompressionThreadFactory implements ThreadFactory {
         private int sequence;
         @Override public synchronized Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable,
+            Thread thread = new Thread(new CompressionWorker(runnable),
                 "ICE Chunk Compressor " + (++sequence));
             thread.setDaemon(true);
             thread.setPriority(Math.max(Thread.MIN_PRIORITY, Thread.NORM_PRIORITY - 1));
@@ -321,8 +419,110 @@ public final class ChunkSaveCompressionBridge {
         }
     }
 
+    /** Ensures a timed-out/replaced pool thread does not defer native zlib cleanup to GC. */
+    private static final class CompressionWorker implements Runnable {
+        private final Runnable delegate;
+
+        private CompressionWorker(Runnable delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override public void run() {
+            Throwable failure = null;
+            try {
+                delegate.run();
+            } catch (Throwable error) {
+                failure = error;
+            }
+            try {
+                releaseThreadDeflater();
+            } catch (Throwable cleanupFailure) {
+                failure = appendFailure(failure, cleanupFailure);
+            }
+            if (failure != null) rethrowUnchecked(failure);
+        }
+    }
+
+    private static void releaseThreadDeflater() {
+        DeflaterHolder holder = DEFLATERS.get();
+        Deflater value = holder.deflater;
+        holder.deflater = null;
+        holder.inUse = false;
+        DEFLATERS.remove();
+        if (value != null) value.end();
+    }
+
+    /** Hysteretic, bounded queue/consumer-pressure controller. */
+    static final class AdaptiveWorkerPolicy {
+        private static final int SCALE_UP_SCORE = 8;
+        private static final int SCALE_DOWN_SCORE = 24;
+        private int targetWorkers = INITIAL_COMPRESSION_WORKERS;
+        private int pressureScore;
+        private int reliefScore;
+
+        int observe(int queuedTasks, int activeWorkers,
+                    boolean fileIoWaited, boolean resultPressure) {
+            int queued = Math.max(0, queuedTasks);
+            int active = Math.max(0, activeWorkers);
+            boolean saturated = queued >= targetWorkers
+                && active >= targetWorkers;
+            if (resultPressure) {
+                pressureScore = 0;
+                reliefScore = saturatingAdd(reliefScore, 4,
+                    SCALE_DOWN_SCORE);
+            } else if (fileIoWaited || saturated) {
+                pressureScore = saturatingAdd(pressureScore,
+                    fileIoWaited ? 2 : 1, SCALE_UP_SCORE);
+                reliefScore = 0;
+            } else if (queued == 0) {
+                pressureScore = Math.max(0, pressureScore - 1);
+                reliefScore = saturatingAdd(reliefScore, 1,
+                    SCALE_DOWN_SCORE);
+            } else {
+                pressureScore = Math.max(0, pressureScore - 1);
+                reliefScore = Math.max(0, reliefScore - 1);
+            }
+
+            if (pressureScore >= SCALE_UP_SCORE
+                && targetWorkers < MAX_COMPRESSION_WORKERS) {
+                targetWorkers++;
+                pressureScore = 0;
+                reliefScore = 0;
+            } else if (reliefScore >= SCALE_DOWN_SCORE
+                && targetWorkers > INITIAL_COMPRESSION_WORKERS) {
+                targetWorkers--;
+                pressureScore = 0;
+                reliefScore = 0;
+            }
+            return targetWorkers;
+        }
+
+        int targetWorkers() {
+            return targetWorkers;
+        }
+
+        void reset() {
+            targetWorkers = INITIAL_COMPRESSION_WORKERS;
+            pressureScore = 0;
+            reliefScore = 0;
+        }
+
+        void forceTarget(int workers) {
+            targetWorkers = Math.max(INITIAL_COMPRESSION_WORKERS,
+                Math.min(MAX_COMPRESSION_WORKERS, workers));
+            pressureScore = 0;
+            reliefScore = 0;
+        }
+
+        private static int saturatingAdd(int current, int increment,
+                                         int maximum) {
+            return current >= maximum - increment
+                ? maximum : current + increment;
+        }
+    }
+
     private static final class DeflaterHolder {
-        private Deflater deflater = new Deflater();
+        private Deflater deflater;
         private boolean inUse;
     }
 
@@ -351,7 +551,11 @@ public final class ChunkSaveCompressionBridge {
             try {
                 value.reset();
             } catch (Throwable broken) {
-                try { value.end(); } catch (Throwable ignored) { }
+                FatalErrors.rethrowIfFatal(broken);
+                try { value.end(); }
+                catch (Throwable ignored) {
+                    FatalErrors.rethrowIfFatal(ignored);
+                }
                 holder.deflater = new Deflater();
             } finally {
                 holder.inUse = false;
@@ -371,11 +575,16 @@ public final class ChunkSaveCompressionBridge {
         @Override public void close() throws IOException {
             if (closed) return;
             closed = true;
+            Throwable failure = null;
             try {
                 super.close();
-            } finally {
-                lease.release();
             }
+            catch (Throwable closeFailure) { failure = closeFailure; }
+            try { lease.release(); }
+            catch (Throwable cleanupFailure) {
+                failure = appendFailure(failure, cleanupFailure);
+            }
+            if (failure != null) throwCloseFailure(failure);
         }
     }
 

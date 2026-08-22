@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.skull;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.mojang.authlib.GameProfile;
@@ -128,6 +129,7 @@ public final class SkullProfileBridge {
                                 .recordRejected("头颅资料未返回有效 UUID/纹理，已短期负缓存");
                         }
                     } catch (Throwable error) {
+                        FatalErrors.rethrowIfFatal(error);
                         if (configurationGeneration == generation) {
                             cacheNegative(key);
                             OptimizerRegistry.breaker(OptimizationModule.SKULL_PROFILE_ASYNC)
@@ -162,6 +164,7 @@ public final class SkullProfileBridge {
         try {
             return OptimizerRegistry.isOperational(OptimizationModule.SKULL_PROFILE_ASYNC);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }

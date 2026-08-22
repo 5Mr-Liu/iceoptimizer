@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.runtime;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.optimizer.ClientOptimizerConfig;
@@ -29,5 +30,25 @@ public class BoundedRenderQueueTest {
         assertEquals(1, queue.drain(1000000L, 64));
         assertEquals(1, value.get());
         assertEquals(1L, queue.snapshot().getStale());
+    }
+
+    @Test
+    public void closeRejectsEveryProducerAfterTheFinalDrain() {
+        OptimizerRegistry.configure(ClientOptimizerConfig.capture());
+        ClientEpochs epochs = new ClientEpochs();
+        BoundedRenderQueue queue = new BoundedRenderQueue(epochs, 64);
+        EpochToken token = epochs.snapshot();
+        assertTrue(queue.offer(OptimizationModule.RENDER_SUBMISSION, token,
+            EpochMask.WORLD, new Runnable() {
+                @Override public void run() { }
+            }));
+        assertEquals(1, queue.closeAndDiscard());
+        assertTrue(queue.isClosed());
+        assertFalse(queue.offer(OptimizationModule.RENDER_SUBMISSION, token,
+            EpochMask.WORLD, new Runnable() {
+                @Override public void run() { }
+            }));
+        assertEquals(0, queue.drain(1_000_000L, 64));
+        assertEquals(0, queue.snapshot().getSize());
     }
 }

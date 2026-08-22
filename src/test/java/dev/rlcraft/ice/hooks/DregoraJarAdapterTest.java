@@ -48,7 +48,8 @@ public class DregoraJarAdapterTest {
         }),
         group("ice.dregora.iceandfire.jar", new String[][] {
             { "com.github.alexthe666.iceandfire.client.model.animator.IceAndFireTabulaModelAnimator", "572679de21b7b9f6f17cbd0f53eca956fbded5f4de4900adf66686111aa65aa1" },
-            { "com.github.alexthe666.iceandfire.entity.EntitySeaSerpent", "26bb05701a6723db7715809218bdc57bc4aea1efb1f77d807376b53a6e8a69e9" }
+            { "com.github.alexthe666.iceandfire.entity.EntitySeaSerpent", "26bb05701a6723db7715809218bdc57bc4aea1efb1f77d807376b53a6e8a69e9" },
+            { "com.github.alexthe666.iceandfire.entity.ai.ExperimentalWalkNodeProcessor", "69a6de4249a0af9fb59ba91cd8644e45d5bdd93697a3827f278f33eea6f6f076" }
         })
     };
 

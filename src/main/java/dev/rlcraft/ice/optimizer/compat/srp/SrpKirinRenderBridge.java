@@ -1,7 +1,11 @@
 package dev.rlcraft.ice.optimizer.compat.srp;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
+import dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker;
+import dev.rlcraft.ice.optimizer.compat.model.ModelMeshCaptureBridge;
+import dev.rlcraft.ice.optimizer.compat.renderlib.RenderLibRenderBridge;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import java.lang.reflect.Field;
@@ -11,6 +15,7 @@ import net.minecraft.client.model.ModelRenderer;
 import net.minecraft.client.renderer.GLAllocation;
 import net.minecraft.client.renderer.GlStateManager;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GLContext;
 
 /**
  * Adaptive exact branch batching for the reviewed SRP 1.9.11 model trees.
@@ -34,6 +39,7 @@ public final class SrpKirinRenderBridge {
     private static Field displayListField;
     private static boolean fieldsResolved;
     private static long knownContextGeneration = Long.MIN_VALUE;
+    private static Object knownContextCapabilities;
     private static volatile boolean activated;
     private static volatile boolean recoveryPending;
 
@@ -48,7 +54,11 @@ public final class SrpKirinRenderBridge {
             resolveFields();
             synchronized (CACHE_LOCK) {
                 long generation = OptimizerBridge.currentGlContextGeneration();
-                if (generation != knownContextGeneration) resetForContext(generation);
+                Object capabilities = GLContext.getCapabilities();
+                if (generation != knownContextGeneration
+                    || capabilities != knownContextCapabilities) {
+                    resetForContext(generation, capabilities);
+                }
                 if (root.isHidden || !root.showModel) return true;
 
                 entry = CACHE.get(root);
@@ -80,8 +90,13 @@ public final class SrpKirinRenderBridge {
             return true;
         } catch (Throwable error) {
             recoveryPending = true;
-            OptimizerBridge.failure(MODULE, error);
-            if (entry != null) discardRoot(root, entry, true);
+            Throwable failure = error;
+            if (entry != null) try {
+                discardRoot(root, entry, true);
+            } catch (Throwable cleanupFailure) {
+                failure = appendFailure(failure, cleanupFailure);
+            }
+            OptimizerBridge.failure(MODULE, failure);
             return renderStarted;
         }
     }
@@ -134,8 +149,14 @@ public final class SrpKirinRenderBridge {
         if (reservation == null) return null;
         int displayList = 0;
         boolean compiling = false;
+        boolean allocationReturned = false;
         try {
             displayList = GLAllocation.generateDisplayLists(1);
+            allocationReturned = true;
+            if (displayList <= 0) {
+                throw new IllegalStateException(
+                    "SRP display-list allocation failed");
+            }
             GlStateManager.glNewList(displayList, GL11.GL_COMPILE);
             compiling = true;
             emitBody(capture.snapshot, scale);
@@ -145,13 +166,28 @@ public final class SrpKirinRenderBridge {
                 generation, reservation);
         } catch (Throwable error) {
             if (compiling) {
-                try { GlStateManager.glEndList(); } catch (Throwable ignored) { }
+                try { GlStateManager.glEndList(); }
+                catch (Throwable cleanup) {
+                    error = appendFailure(error, cleanup);
+                }
             }
+            boolean deleted = false;
             if (displayList > 0) {
-                try { GLAllocation.deleteDisplayLists(displayList); } catch (Throwable ignored) { }
+                try {
+                    GLAllocation.deleteDisplayLists(displayList);
+                    deleted = true;
+                } catch (Throwable cleanup) {
+                    error = appendFailure(error, cleanup);
+                }
             }
-            reservation.close();
-            throw error;
+            if (deleted || allocationReturned && displayList <= 0) {
+                try { reservation.close(); }
+                catch (Throwable cleanup) {
+                    error = appendFailure(error, cleanup);
+                }
+            }
+            rethrow(error);
+            return null;
         }
     }
 
@@ -182,6 +218,7 @@ public final class SrpKirinRenderBridge {
     private static void emitFullRender(NodeSnapshot node, float scale) {
         if (!node.visible) return;
         GlStateManager.translate(node.offsetX, node.offsetY, node.offsetZ);
+        Throwable failure = null;
         try {
             if (node.rotateAngleX == 0.0F && node.rotateAngleY == 0.0F && node.rotateAngleZ == 0.0F) {
                 if (node.rotationPointX == 0.0F && node.rotationPointY == 0.0F && node.rotationPointZ == 0.0F) {
@@ -189,31 +226,52 @@ public final class SrpKirinRenderBridge {
                 } else {
                     GlStateManager.translate(node.rotationPointX * scale, node.rotationPointY * scale,
                         node.rotationPointZ * scale);
+                    Throwable translatedFailure = null;
                     try { emitBody(node, scale); }
-                    finally {
+                    catch (Throwable error) { translatedFailure = error; }
+                    try {
                         GlStateManager.translate(-node.rotationPointX * scale, -node.rotationPointY * scale,
                             -node.rotationPointZ * scale);
                     }
+                    catch (Throwable cleanupFailure) {
+                        translatedFailure = appendMatrixFailure(
+                            translatedFailure, cleanupFailure);
+                    }
+                    if (translatedFailure != null) rethrow(translatedFailure);
                 }
             } else {
                 GlStateManager.pushMatrix();
+                Throwable matrixFailure = null;
                 try {
                     applyRotation(node.rotationPointX, node.rotationPointY, node.rotationPointZ,
                         node.rotateAngleX, node.rotateAngleY, node.rotateAngleZ, scale);
                     emitBody(node, scale);
-                } finally {
-                    GlStateManager.popMatrix();
                 }
+                catch (Throwable error) { matrixFailure = error; }
+                try { GlStateManager.popMatrix(); }
+                catch (Throwable cleanupFailure) {
+                    matrixFailure = appendMatrixFailure(matrixFailure,
+                        cleanupFailure);
+                }
+                if (matrixFailure != null) rethrow(matrixFailure);
             }
-        } finally {
+        } catch (Throwable error) {
+            failure = error;
+        }
+        try {
             GlStateManager.translate(-node.offsetX, -node.offsetY, -node.offsetZ);
         }
+        catch (Throwable cleanupFailure) {
+            failure = appendMatrixFailure(failure, cleanupFailure);
+        }
+        if (failure != null) rethrow(failure);
     }
 
     private static void renderNode(NodeRecord record, float scale) {
         ModelRenderer node = record.node;
         if (!visible(node)) return;
         GlStateManager.translate(node.offsetX, node.offsetY, node.offsetZ);
+        Throwable failure = null;
         try {
             if (node.rotateAngleX == 0.0F && node.rotateAngleY == 0.0F && node.rotateAngleZ == 0.0F) {
                 if (node.rotationPointX == 0.0F && node.rotationPointY == 0.0F && node.rotationPointZ == 0.0F) {
@@ -221,35 +279,120 @@ public final class SrpKirinRenderBridge {
                 } else {
                     GlStateManager.translate(node.rotationPointX * scale, node.rotationPointY * scale,
                         node.rotationPointZ * scale);
+                    Throwable translatedFailure = null;
                     try { renderBody(record, scale); }
-                    finally {
+                    catch (Throwable error) { translatedFailure = error; }
+                    try {
                         GlStateManager.translate(-node.rotationPointX * scale, -node.rotationPointY * scale,
                             -node.rotationPointZ * scale);
                     }
+                    catch (Throwable cleanupFailure) {
+                        translatedFailure = appendMatrixFailure(
+                            translatedFailure, cleanupFailure);
+                    }
+                    if (translatedFailure != null) rethrow(translatedFailure);
                 }
             } else {
                 GlStateManager.pushMatrix();
+                Throwable matrixFailure = null;
                 try {
                     applyRotation(node.rotationPointX, node.rotationPointY, node.rotationPointZ,
                         node.rotateAngleX, node.rotateAngleY, node.rotateAngleZ, scale);
                     renderBody(record, scale);
-                } finally {
-                    GlStateManager.popMatrix();
                 }
+                catch (Throwable error) { matrixFailure = error; }
+                try { GlStateManager.popMatrix(); }
+                catch (Throwable cleanupFailure) {
+                    matrixFailure = appendMatrixFailure(matrixFailure,
+                        cleanupFailure);
+                }
+                if (matrixFailure != null) rethrow(matrixFailure);
             }
-        } finally {
+        } catch (Throwable error) {
+            failure = error;
+        }
+        try {
             GlStateManager.translate(-node.offsetX, -node.offsetY, -node.offsetZ);
         }
+        catch (Throwable cleanupFailure) {
+            failure = appendMatrixFailure(failure, cleanupFailure);
+        }
+        if (failure != null) rethrow(failure);
     }
 
     private static void renderBody(NodeRecord record, float scale) {
         BatchEntry batch = record.batch;
         if (batch != null) {
+            if (RenderLibRenderBridge.candidateAllowed()) {
+                emitModernBody(batch.snapshot, scale);
+                return;
+            }
             GlStateManager.callList(batch.displayList);
             return;
         }
-        GlStateManager.callList(record.displayList);
+        ModelMeshCaptureBridge.callList(record.displayList);
         for (NodeRecord child : record.children) renderNode(child, scale);
+    }
+
+    private static void emitModernBody(NodeSnapshot node, float scale) {
+        ModelMeshCaptureBridge.callList(node.displayList);
+        for (NodeSnapshot child : node.children) emitModernFullRender(child, scale);
+    }
+
+    private static void emitModernFullRender(NodeSnapshot node, float scale) {
+        if (!node.visible) return;
+        GlStateManager.translate(node.offsetX, node.offsetY, node.offsetZ);
+        Throwable failure = null;
+        try {
+            if (node.rotateAngleX == 0.0F && node.rotateAngleY == 0.0F
+                && node.rotateAngleZ == 0.0F) {
+                if (node.rotationPointX == 0.0F && node.rotationPointY == 0.0F
+                    && node.rotationPointZ == 0.0F) {
+                    emitModernBody(node, scale);
+                } else {
+                    GlStateManager.translate(node.rotationPointX * scale,
+                        node.rotationPointY * scale, node.rotationPointZ * scale);
+                    Throwable translatedFailure = null;
+                    try { emitModernBody(node, scale); }
+                    catch (Throwable error) { translatedFailure = error; }
+                    try {
+                        GlStateManager.translate(-node.rotationPointX * scale,
+                            -node.rotationPointY * scale,
+                            -node.rotationPointZ * scale);
+                    }
+                    catch (Throwable cleanupFailure) {
+                        translatedFailure = appendMatrixFailure(
+                            translatedFailure, cleanupFailure);
+                    }
+                    if (translatedFailure != null) rethrow(translatedFailure);
+                }
+            } else {
+                GlStateManager.pushMatrix();
+                Throwable matrixFailure = null;
+                try {
+                    applyRotation(node.rotationPointX, node.rotationPointY,
+                        node.rotationPointZ, node.rotateAngleX, node.rotateAngleY,
+                        node.rotateAngleZ, scale);
+                    emitModernBody(node, scale);
+                }
+                catch (Throwable error) { matrixFailure = error; }
+                try { GlStateManager.popMatrix(); }
+                catch (Throwable cleanupFailure) {
+                    matrixFailure = appendMatrixFailure(matrixFailure,
+                        cleanupFailure);
+                }
+                if (matrixFailure != null) rethrow(matrixFailure);
+            }
+        } catch (Throwable error) {
+            failure = error;
+        }
+        try {
+            GlStateManager.translate(-node.offsetX, -node.offsetY, -node.offsetZ);
+        }
+        catch (Throwable cleanupFailure) {
+            failure = appendMatrixFailure(failure, cleanupFailure);
+        }
+        if (failure != null) rethrow(failure);
     }
 
     private static void applyRotation(float pointX, float pointY, float pointZ,
@@ -260,17 +403,87 @@ public final class SrpKirinRenderBridge {
         if (angleX != 0.0F) GlStateManager.rotate(angleX * 57.295776F, 1.0F, 0.0F, 0.0F);
     }
 
-    private static void resetForContext(long generation) {
+    private static void resetForContext(long generation, Object capabilities) {
         for (RootEntry entry : CACHE.values()) entry.release(false);
         CACHE.clear();
         knownContextGeneration = generation;
+        knownContextCapabilities = capabilities;
+    }
+
+    /**
+     * Releases resource-qualified outer lists while the owning GL context is
+     * still current.  Cache records are detached before deletion begins so an
+     * outcome-uncertain delete is never retried with the same native name.
+     */
+    public static void reset() {
+        long currentGeneration = OptimizerBridge.currentGlContextGeneration();
+        Object currentCapabilities = null;
+        try {
+            currentCapabilities = GLContext.getCapabilities();
+        } catch (Throwable unavailable) {
+            FatalErrors.rethrowIfFatal(unavailable);
+        }
+        clearCachedRoots(currentGeneration == knownContextGeneration
+                && currentCapabilities != null
+                && currentCapabilities == knownContextCapabilities,
+            currentGeneration, currentCapabilities);
+    }
+
+    /**
+     * Abandons old-context names without issuing GL calls.  This boundary is
+     * invoked as soon as the render lifecycle observes Context replacement,
+     * rather than retaining model roots and reservations until another SRP
+     * entity happens to render.
+     */
+    public static void contextLost(long lostGeneration) {
+        if (knownContextGeneration != lostGeneration) return;
+        clearCachedRoots(false, Long.MIN_VALUE, null);
+    }
+
+    private static void clearCachedRoots(boolean deleteLists,
+                                         long nextContextGeneration,
+                                         Object nextContextCapabilities) {
+        Throwable failure = null;
+        synchronized (CACHE_LOCK) {
+            RootEntry[] entries = CACHE.values().toArray(
+                new RootEntry[CACHE.size()]);
+            CACHE.clear();
+            knownContextGeneration = nextContextGeneration;
+            knownContextCapabilities = nextContextCapabilities;
+            for (RootEntry entry : entries) {
+                try {
+                    entry.release(deleteLists
+                        && entry.contextGeneration == nextContextGeneration);
+                } catch (Throwable error) {
+                    failure = appendFailure(failure, error);
+                }
+            }
+        }
+        activated = false;
+        if (failure != null) {
+            recoveryPending = true;
+            OptimizerBridge.failure(MODULE, failure);
+            FatalErrors.rethrowIfFatal(failure);
+        }
     }
 
     private static void discardRoot(ModelRenderer root, RootEntry entry, boolean deleteLists) {
         synchronized (CACHE_LOCK) {
             if (CACHE.get(root) != entry) return;
             CACHE.remove(root);
-            entry.release(deleteLists && entry.contextGeneration == knownContextGeneration);
+            entry.release(deleteLists
+                && entry.contextGeneration == knownContextGeneration
+                && isKnownContextCurrent());
+        }
+    }
+
+    private static boolean isKnownContextCurrent() {
+        try {
+            return knownContextCapabilities != null
+                && GLContext.getCapabilities() == knownContextCapabilities;
+        } catch (Throwable unavailable) {
+            FatalErrors.rethrowIfFatal(unavailable);
+            return false;
         }
     }
 
@@ -304,6 +517,32 @@ public final class SrpKirinRenderBridge {
 
     private static int raw(float value) {
         return Float.floatToRawIntBits(value);
+    }
+
+    private static Throwable appendFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        Throwable nextFatal = FatalErrors.findFatal(next);
+        if (nextFatal != null && FatalErrors.findFatal(first) == null) {
+            if (nextFatal != first) nextFatal.addSuppressed(first);
+            return nextFatal;
+        }
+        if (next != null && first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    private static Throwable appendMatrixFailure(Throwable first,
+                                                 Throwable next) {
+        EarlyMatrixStateTracker.invalidate();
+        return appendFailure(first, next);
+    }
+
+    private static void rethrow(Throwable failure) {
+        FatalErrors.rethrowIfFatal(failure);
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) throw (Error) failure;
+        throw new IllegalStateException("SRP render batching failed", failure);
     }
 
     private static boolean same(float left, float right) {
@@ -462,8 +701,17 @@ public final class SrpKirinRenderBridge {
         }
 
         private void releaseAllBatches(boolean deleteLists) {
-            releaseBatch(deleteLists);
-            for (NodeRecord child : children) child.releaseAllBatches(deleteLists);
+            Throwable failure = null;
+            try { releaseBatch(deleteLists); }
+            catch (Throwable error) {
+                failure = appendFailure(failure, error);
+            }
+            for (NodeRecord child : children) try {
+                child.releaseAllBatches(deleteLists);
+            } catch (Throwable error) {
+                failure = appendFailure(failure, error);
+            }
+            if (failure != null) rethrow(failure);
         }
 
         private static int increment(int value) {
@@ -501,7 +749,9 @@ public final class SrpKirinRenderBridge {
 
         private void release(boolean deleteList) {
             if (deleteList && contextGeneration == knownContextGeneration) {
-                try { GLAllocation.deleteDisplayLists(displayList); } catch (Throwable ignored) { }
+                // A throwing delete is outcome-uncertain. Do not retry the
+                // same display-list name and keep its budget token poisoned.
+                GLAllocation.deleteDisplayLists(displayList);
             }
             reservation.close();
         }

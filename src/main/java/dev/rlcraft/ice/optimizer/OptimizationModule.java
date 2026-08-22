@@ -55,7 +55,61 @@ public enum OptimizationModule {
     SRP_SPAWN_FILTER("srp-spawn-filter", "SRPMixins 刷怪过滤编译路径", true),
     KONKRETE_LOCALE_LOOKUP("konkrete-locale-lookup", "Konkrete 本地化反向索引"),
     VANILLA_CHUNK_COMPRESSION("vanilla-chunk-compression", "区块 NBT 并行压缩与顺序写盘", true),
-    FORGE_BLOCKSTATE_DIRECT_CALLS("forge-blockstate-direct-calls", "区块光照/AO Forge 直调");
+    FORGE_BLOCKSTATE_DIRECT_CALLS("forge-blockstate-direct-calls", "区块光照/AO Forge 直调"),
+    // Modern renderer modules are runtime-managed. Keep every entry below the
+    // append-only boundary: injected ordinal call sites depend on every older
+    // value retaining its ordinal.
+    MODERN_FRAME_COORDINATOR("modern-frame-coordinator", "现代渲染帧协调器"),
+    MODERN_TERRAIN_BACKEND("modern-terrain-backend", "现代地形双后端"),
+    MODERN_VISIBILITY_HZB("modern-visibility-hzb", "连续可见性与保守 HZB"),
+    MODERN_ENTITY_BACKEND("modern-entity-backend", "现代实体 Packet 后端"),
+    MODERN_TESR_BACKEND("modern-tesr-backend", "现代 TESR Packet 后端"),
+    MODERN_PARTICLE_BACKEND("modern-particle-backend", "现代粒子实例流"),
+    MODERN_TEXTURE_STREAM("modern-texture-stream", "现代动画纹理上传流"),
+    MODERN_HUD_STREAM("modern-hud-stream", "现代字体与 HUD 动态流"),
+    OPTIFINE_REGION_BACKEND("optifine-region-backend", "OptiFine Region 兼容后端"),
+    OPTIFINE_SHADER_BRIDGE("optifine-shader-bridge", "OptiFine ShaderPack 认证桥"),
+    LEGACY_GL_ISLAND("legacy-gl-island", "Legacy GL 兼容岛"),
+    RENDER_VALIDATION("render-validation", "现代渲染正确性与收益验证"),
+    // Separate CPU visibility fuse: HZB failure must never disable the exact
+    // RenderGlobal traversal replacement, and vice versa.
+    MODERN_VISIBILITY_GRID("modern-visibility-grid", "连续区块可见性与 CPU 层级"),
+    // FBP has observable internal Tessellator flushes and therefore owns a
+    // separate structural fuse from the standard billboard backend.
+    FBP_PARTICLE_ADAPTER("fbp-particle-adapter", "FBP 粒子内部提交边界适配"),
+    // Persistent atlas mapping is separately fused: its failure must leave the
+    // ordinary PBO animation stream operational.
+    MODERN_TEXTURE_PERSISTENT_RING("modern-texture-persistent-ring",
+        "动画纹理 Persistent PBO ring"),
+    // MDI command streaming has an independent online benefit loop and fuse;
+    // failure falls back to the already-certified terrain multi-draw path.
+    MODERN_TERRAIN_MDI("modern-terrain-mdi", "地形 MDI 命令 ring"),
+    // Persistent Arena writes are measured independently from terrain draw
+    // batching; a shared-memory or driver regression keeps subdata active.
+    MODERN_TERRAIN_PERSISTENT_MAPPING("modern-terrain-persistent-mapping",
+        "地形 Arena Persistent Mapping"),
+    // Visibility suppression owns the final ordinal/mask bit and is isolated
+    // from both the PBO stream and its persistent mapping strategy.
+    MODERN_TEXTURE_VISIBILITY("modern-texture-visibility",
+        "动画纹理可见性与同步追帧"),
+    // ShaderPack certification is split into four independently trippable
+    // domains. A broken compiler/driver path must not disable state capture,
+    // image validation, activation rollback, or any unrelated renderer.
+    OPTIFINE_SHADER_COMPILE("optifine-shader-compile",
+        "OptiFine Shader 临时编译认证"),
+    OPTIFINE_SHADER_STATE("optifine-shader-state",
+        "OptiFine Shader 状态认证"),
+    OPTIFINE_SHADER_IMAGE("optifine-shader-image",
+        "OptiFine Shader 离屏图像认证"),
+    OPTIFINE_SHADER_ACTIVATION("optifine-shader-activation",
+        "OptiFine Shader 安全激活与回滚"),
+    // Keep non-renderer additions append-only as well. Runtime renderer
+    // classification below is an explicit closed range so later server-side
+    // modules cannot accidentally inherit renderer-generation semantics.
+    OTG_SYNC_FILE_CACHE("otg-sync-file-cache",
+        "OTG 同步配置与 BO3 NBT 安全缓存", true),
+    ICEANDFIRE_PATH_NODE_CACHE("iceandfire-path-node-cache",
+        "Ice and Fire 单次寻路缓存", true);
 
     private static final Map<String, OptimizationModule> MODULES_BY_ID;
     private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;
@@ -106,6 +160,16 @@ public enum OptimizationModule {
 
     public boolean isDedicatedServerSupported() {
         return dedicatedServerSupported;
+    }
+
+    /**
+     * Runtime-managed renderer modules have no single target class whose ASM
+     * installation can serve as their readiness gate. Their own capability,
+     * output and benefit state machines remain the activation authority.
+     */
+    public boolean isRuntimeManagedRenderer() {
+        return ordinal() >= MODERN_FRAME_COORDINATOR.ordinal()
+            && ordinal() <= OPTIFINE_SHADER_ACTIVATION.ordinal();
     }
 
     public static OptimizationModule byId(String id) {

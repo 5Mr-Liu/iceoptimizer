@@ -11,7 +11,7 @@ import org.agrona.collections.Long2ObjectHashMap;
 
 /**
  * A mutation-versioned, read-only scheduled-tick index scoped to one synchronous
- * full ChunkProviderServer save. It never removes entries or changes save order.
+ * ChunkProviderServer save or unload pass. It never removes entries or changes save order.
  */
 public final class SaveTickIndexBridge {
     private static final String MODULE = "vanilla-save-tick-index";
@@ -26,17 +26,17 @@ public final class SaveTickIndexBridge {
     private SaveTickIndexBridge() {
     }
 
-    /** Called at the exact entry of ChunkProviderServer.saveChunks(boolean). */
+    /** Called at the exact entry of ChunkProviderServer.saveChunks(boolean) or tick(). */
     public static long begin(Object provider, Object world, boolean all) {
         try {
             ScopeStack stack = SCOPES.get();
             boolean masksOuterScope = stack.hasScope();
-            boolean enabled = all && OptimizerBridge.isEnabled(MODULE);
+            boolean enabled = OptimizerBridge.isEnabled(MODULE);
             boolean active = enabled && world instanceof PendingTickAccessor;
             if (enabled && !active && !missingAccessorReported) {
                 missingAccessorReported = true;
                 OptimizerBridge.incompatible(MODULE,
-                    "WorldServer 计划刻访问器未安装；全量保存保持原始逐区块扫描");
+                    "WorldServer 计划刻访问器未安装；同步保存保持原始逐区块扫描");
             }
             if (!active && !masksOuterScope) return 0L;
             return stack.push(provider, world, active);
@@ -53,7 +53,7 @@ public final class SaveTickIndexBridge {
         try {
             if (!SCOPES.get().pop(token)) {
                 OptimizerBridge.incompatible(MODULE,
-                    "全量保存作用域发生非预期重入；计划刻索引已停用");
+                    "同步保存作用域发生非预期重入；计划刻索引已停用");
             }
         } catch (Throwable error) {
             recoveryPending = true;
@@ -69,6 +69,9 @@ public final class SaveTickIndexBridge {
         }
         Scope scope = SCOPES.get().current(world);
         if (scope == null || !scope.active) {
+            return world.ice$originalPendingBlockUpdates(chunk, false);
+        }
+        if (scope.deferFirstQuery()) {
             return world.ice$originalPendingBlockUpdates(chunk, false);
         }
 
@@ -88,6 +91,7 @@ public final class SaveTickIndexBridge {
     static List<NextTickListEntry> pendingForChunk(PendingTickAccessor world, int chunkX, int chunkZ) {
         Scope scope = SCOPES.get().current(world);
         if (scope == null || !scope.active) return null;
+        if (scope.deferFirstQuery()) return null;
         return scope.pendingFor(world, chunkX, chunkZ);
     }
 
@@ -99,7 +103,7 @@ public final class SaveTickIndexBridge {
         if (activated) return;
         activated = true;
         OptimizerBridge.activate(MODULE,
-            "计划刻按原 TreeSet/List 顺序建立仅限本次同步全量保存的只读索引");
+            "计划刻按原 TreeSet/List 顺序为同步增量、全量与卸载保存建立临时只读索引");
     }
 
     private static long chunkKey(int x, int z) {
@@ -151,6 +155,7 @@ public final class SaveTickIndexBridge {
         private Object provider;
         private Object world;
         private boolean active;
+        private int queryCount;
         private long indexedVersion = Long.MIN_VALUE;
         private Long2ObjectHashMap<ArrayList<NextTickListEntry>> index;
         private int assignments;
@@ -160,9 +165,14 @@ public final class SaveTickIndexBridge {
             provider = saveProvider;
             world = saveWorld;
             active = enabled;
+            queryCount = 0;
             indexedVersion = Long.MIN_VALUE;
             assignments = 0;
             if (index != null) index.clear();
+        }
+
+        private boolean deferFirstQuery() {
+            return queryCount++ == 0;
         }
 
         private List<NextTickListEntry> pendingFor(PendingTickAccessor accessor, int chunkX, int chunkZ) {

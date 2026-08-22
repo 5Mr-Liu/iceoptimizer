@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.entity;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -79,6 +80,7 @@ public final class QualityToolsAttributeBridge {
         try {
             OptimizerBridge.failure(MODULE, error);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
         }
     }
 

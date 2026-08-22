@@ -2,6 +2,7 @@ package dev.rlcraft.ice.profiler.network;
 
 import dev.rlcraft.ice.IceProfilerMod;
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.core.ProfilerRuntime;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -33,6 +34,7 @@ public final class NetworkObserver {
                         channel.pipeline().addBefore("packet_handler", PACKET_HANDLER, new PacketCounter());
                     }
                 } catch (Throwable error) {
+                    FatalErrors.rethrowIfFatal(error);
                     IceProfilerMod.LOGGER.debug("无法安装只读网络计数器", error);
                 }
             }
@@ -42,13 +44,13 @@ public final class NetworkObserver {
     private static final class WireCounter extends ChannelDuplexHandler {
         @Override public void channelRead(ChannelHandlerContext context, Object message) throws Exception {
             try { if (message instanceof ByteBuf) ProfilerRuntime.INSTANCE.metrics().recordNetworkBytes(true, ((ByteBuf) message).readableBytes()); }
-            catch (Throwable ignored) { }
+            catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
             super.channelRead(context, message);
         }
 
         @Override public void write(ChannelHandlerContext context, Object message, ChannelPromise promise) throws Exception {
             try { if (message instanceof ByteBuf) ProfilerRuntime.INSTANCE.metrics().recordNetworkBytes(false, ((ByteBuf) message).readableBytes()); }
-            catch (Throwable ignored) { }
+            catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
             super.write(context, message, promise);
         }
     }
@@ -56,13 +58,13 @@ public final class NetworkObserver {
     private static final class PacketCounter extends ChannelDuplexHandler {
         @Override public void channelRead(ChannelHandlerContext context, Object message) throws Exception {
             try { if (message instanceof Packet) ProfilerRuntime.INSTANCE.metrics().recordPacket(true); }
-            catch (Throwable ignored) { }
+            catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
             super.channelRead(context, message);
         }
 
         @Override public void write(ChannelHandlerContext context, Object message, ChannelPromise promise) throws Exception {
             try { if (message instanceof Packet) ProfilerRuntime.INSTANCE.metrics().recordPacket(false); }
-            catch (Throwable ignored) { }
+            catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
             super.write(context, message, promise);
         }
     }

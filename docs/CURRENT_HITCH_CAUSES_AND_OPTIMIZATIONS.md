@@ -1,17 +1,28 @@
 # RLCraft 当前卡顿原因与 ICE 优化对应表
 
-更新时间：2026-08-16
-对应版本：ICE RLCraft Optimizer `0.10.0`
+更新时间：2026-08-21
+对应版本：ICE RLCraft Optimizer `1.0`
 
 ## 1. 统计结论
 
-本文基于目前收集的普通 RLCraft、联机服务器和 RLCraft Dregora Session，以及 ICE `0.10.0` 的实际目标目录整理。
+本文基于目前收集的普通 RLCraft、联机服务器和 RLCraft Dregora Session，以及 ICE `1.0` 的实际目标目录整理。
 
 - 已确认 5 大类卡顿。
 - 当前优化器包含 47 个独立模块 ID、66 个唯一目标类、68 个目标能力。
 - 另有 9 类问题仍是部分缓解或尚未处理。
 - Session 中的 folded stack 数值表示热点出现频率。不同模式可以命中同一条调用栈，因此不能相加为百分比或直接等同于 CPU 时间。
-- 最新 0.9.4 反优化证据来自 Dregora `20260816-213345-630` 与 `20260816-213429-790`；其中动画纹理链出现数百次 `glFenceSync`，区块保存仍包含同步 NBT/Deflate，Konkrete 与 OptiFine Reflector 也进入主线程样本。0.10.0 针对这些实际路径修正。
+- 最新 0.9.4 反优化证据来自 Dregora `20260816-213345-630` 与 `20260816-213429-790`；其中动画纹理链出现数百次 `glFenceSync`，区块保存仍包含同步 NBT/Deflate，Konkrete 与 OptiFine Reflector 也进入主线程样本。1.0 包含针对这些实际路径的修正。
+
+### 1.1 2026-08-21 后续 Session 结论
+
+最新 11 个真实 Session（`20260821-074642-415` 至 `20260821-075642-658`）解释了“新区块加载明显变快，但某些地点 FPS 提升不多”的现象：冷加载与稳态帧率是两组不同瓶颈。
+
+- OTG 文件路径确有两轮反优化：早期实现每次查询重读整文件 SHA-256；随后版本虽复用摘要，却仍在每次命中调用 canonical/toRealPath、父目录真实路径与多次 readAttributes，最新实机中 `FileMutationTracker.observe` 最坏达到约 `25.99 s`。修复后首次/变更后仍完整认证 canonical path、file key、size、mtime 与 SHA-256；受监视目录的稳定热命中只规范化逻辑路径、排空 WatchService 并比较内存序列和配置代际，零真实路径解析、属性读取和文件打开，同大小同 mtime 重写仍由目录事件触发失效。
+- 现代渲染路径当时实际上没有接管：Arena upload 为 `0 / 245725`、Arena draw 为 `0 / 355516`，MDI 为 0，主要回退为 `NO_ARENA_OWNERSHIP=355516`。根因是 LWJGL 2 多值 `glGet*v` 包装器要求至少 16 个缓冲元素，而 FBO/状态工作区只提供 2 或 4；integer、boolean、float 三类查询均已修复。
+- Timer Query 的通用 8 ms 自测窗口也会把排在既有 GPU 工作后的正常 Timestamp 误判为 timeout；现在仅该能力使用 250 ms 有界退休窗口。
+- 代表性低帧 Session `20260821-075558-770` 的平均 FPS 为 `35.9`，帧平均/P95 为 `29.18/42.33 ms`，GPU 平均约 `17.02 ms`，服务端 P95 约 `38.65 ms`；同时约有 `1421` 个实体、`15693` 个方块实体，上传队列平均/峰值约 `11.3/24`。即使磁盘与 OTG 已变快，这些 GPU、实体/TESR、服务端 Tick 和区块上传压力仍会限制同一地点的 FPS。
+
+上述代码修复已通过自动回归和发布构建，并在用户批准后于 2026-08-21 部署到真实 Dregora；旧四包已保存在工作区 `rollback/client-Dregora-before-1.0-20260821-234005394`。部署本身不能替代同路线的实机画面与性能 A/B。
 
 ## 2. 最新记录热点分布
 
@@ -105,7 +116,7 @@ MinecraftServer.saveAllWorlds
 
 这次约 484 ms CPU 和 92 MiB 分配主要发生在服务端主线程同步构造 NBT，而不是等待磁盘。ICE 只消除同一次全量保存中对未变化计划刻集合的重复扫描；每次计划刻增删都会递增版本，后续区块查询先重建索引。`SelectedSelectionKeySetSelector.select` 和 `ThreadedFileIOBase.sleep` 是旁路线程空闲，不再参与主根因投票。
 
-0.10.0 进一步只移动“快照完成之后”的纯工作：主线程仍执行所有 Chunk、实体、方块实体、Capability 和事件序列化逻辑并生成同一 `NBTTagCompound`；有界 Worker 对该不可变快照执行二进制写出和 zlib Deflate，FILE_IO 线程按原 pending Map 顺序写 RegionFile。队列满、结果过大、关闭取消、世界代际变化或目标结构不兼容时使用原压缩流。
+1.0 只移动“快照完成之后”的纯工作：主线程仍执行所有 Chunk、实体、方块实体、Capability 和事件序列化逻辑并生成同一 `NBTTagCompound`；有界 Worker 对该不可变快照执行二进制写出和 zlib Deflate，FILE_IO 线程按原 pending Map 顺序写 RegionFile。队列满、结果过大、关闭取消、世界代际变化或目标结构不兼容时使用原压缩流。
 
 ## 4. 客户端区块重建
 
@@ -153,7 +164,7 @@ FastTextureAtlasSprite.uploadTextureMaxMips
 → glTexSubImage2D
 ```
 
-0.9.4 的实际 Session 显示通用单级桥把小纹理变成数百次 `glFenceSync`，在部分驱动上反而成为主要渲染税。0.10.0 因此让单级入口始终返回原路径；只有 FoamFix 已聚合的完整 mip 批次达到 256 KiB 才尝试 PBO，显卡不支持、槽位忙或预算不足时执行未修改的 FoamFix 方法。
+0.9.4 的实际 Session 显示通用单级桥把小纹理变成数百次 `glFenceSync`，在部分驱动上反而成为主要渲染税。1.0 因此让单级入口始终返回原路径；只有 FoamFix 已聚合的完整 mip 批次达到 256 KiB 才尝试 PBO，显卡不支持、槽位忙或预算不足时执行未修改的 FoamFix 方法。
 
 ### 5.2 Xaero
 
@@ -371,7 +382,7 @@ ICE 不通过以下方式换取性能：
 
 ## 12. 后续验证方式
 
-安装 `0.10.0` 的 optimizer Main/Core 后，可按相同存档、路线、视距和 JVM 参数重新记录；需要取证时再独立安装 profiler Main/Core。重点比较：
+安装 `1.0` 的 optimizer Main/Core 后，可按相同存档、路线、视距和 JVM 参数重新记录；需要取证时再独立安装 profiler Main/Core。重点比较：
 
 - 客户端帧 P95、P99 和最大值。
 - 服务端 MSPT P95、P99 和最大值。

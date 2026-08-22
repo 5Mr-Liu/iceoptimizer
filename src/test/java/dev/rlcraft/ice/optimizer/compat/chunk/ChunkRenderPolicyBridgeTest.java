@@ -10,27 +10,22 @@ import org.junit.Test;
 
 public final class ChunkRenderPolicyBridgeTest {
     @Test
-    public void reservesMainThreadCapacityAcrossCpuSizes() {
-        assertEquals(1, ChunkRenderPolicyBridge.computeWorkerCount(1, 16));
-        assertEquals(1, ChunkRenderPolicyBridge.computeWorkerCount(2, 2));
-        assertEquals(3, ChunkRenderPolicyBridge.computeWorkerCount(4, 4));
-        assertEquals(6, ChunkRenderPolicyBridge.computeWorkerCount(8, 8));
-        assertEquals(8, ChunkRenderPolicyBridge.computeWorkerCount(16, 16));
-        assertEquals(12, ChunkRenderPolicyBridge.computeWorkerCount(32, 24));
-        assertEquals(16, ChunkRenderPolicyBridge.computeWorkerCount(32, 32));
-        assertEquals(16, ChunkRenderPolicyBridge.computeWorkerCount(64, 64));
-        assertEquals(6, ChunkRenderPolicyBridge.computeWorkerCount(6, 32));
+    public void fixedSafeCapDoesNotTierByLogicalProcessorCount() {
+        assertEquals(1, ChunkRenderPolicyBridge.computeWorkerCount(1, 1));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(2, 2));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(4, 4));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(8, 8));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 64));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 1));
     }
 
     @Test
-    public void limitsWorkersByAvailableJvmHeapInsteadOfAssumingOnePcSize() {
+    public void heapSizeCannotSelectAWorkerTier() {
         long mib = 1024L * 1024L;
         assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 1024L * mib));
-        assertEquals(4, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 2048L * mib));
-        assertEquals(6, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 3072L * mib));
-        assertEquals(8, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 4096L * mib));
-        assertEquals(12, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 6144L * mib));
-        assertEquals(16, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 8192L * mib));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 2048L * mib));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 8192L * mib));
+        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 1, Long.MAX_VALUE));
     }
 
     @Test

@@ -4,6 +4,7 @@ import java.util.EnumSet;
 
 /** Immutable runtime copy of Forge's mutable configuration object. */
 public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
+    private static final int SAFE_INITIAL_WORKERS = 1;
     private final boolean enabled;
     private final boolean strictPackLock;
     private final boolean developmentDiskOutput;
@@ -25,8 +26,8 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
         enabled = source.enabled;
         strictPackLock = source.strictPackLock;
         developmentDiskOutput = source.developmentDiskOutput;
-        int automaticThreads = Math.max(1, Math.min(6, Runtime.getRuntime().availableProcessors() - 2));
-        workerThreads = source.workerThreads <= 0 ? automaticThreads : Math.max(1, Math.min(12, source.workerThreads));
+        workerThreads = source.workerThreads <= 0 ? SAFE_INITIAL_WORKERS
+            : Math.max(1, Math.min(12, source.workerThreads));
         workerQueueCapacity = Math.max(64, source.workerQueueCapacity);
         renderQueueCapacity = Math.max(64, source.renderQueueCapacity);
         renderDrainBudgetNanos = Math.max(100L, source.renderDrainBudgetMicros) * 1000L;

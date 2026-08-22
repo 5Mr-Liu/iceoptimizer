@@ -28,6 +28,7 @@ public final class TimelinePoint {
     private final List<WorldGauge> worlds;
     private final JvmSnapshot jvm;
     private final List<ProbeMetric> probes;
+    private final ChunkChurnSnapshot chunkChurn;
 
     public TimelinePoint(
         long epochMillis,
@@ -51,6 +52,36 @@ public final class TimelinePoint {
         JvmSnapshot jvm,
         List<ProbeMetric> probes
     ) {
+        this(epochMillis, elapsedMillis, clientFrames, clientTicks, serverTicks,
+            framesPerSecond, renderQueueSize, chunkUploadQueueSize, gpuFrameMillis,
+            chunkLoads, chunkUnloads, chunkDataLoads, chunkDataSaves,
+            inboundPackets, outboundPackets, inboundBytes, outboundBytes,
+            worlds, jvm, probes, ChunkChurnSnapshot.EMPTY);
+    }
+
+    public TimelinePoint(
+        long epochMillis,
+        long elapsedMillis,
+        DistributionSnapshot clientFrames,
+        DistributionSnapshot clientTicks,
+        DistributionSnapshot serverTicks,
+        int framesPerSecond,
+        int renderQueueSize,
+        int chunkUploadQueueSize,
+        double gpuFrameMillis,
+        long chunkLoads,
+        long chunkUnloads,
+        long chunkDataLoads,
+        long chunkDataSaves,
+        long inboundPackets,
+        long outboundPackets,
+        long inboundBytes,
+        long outboundBytes,
+        List<WorldGauge> worlds,
+        JvmSnapshot jvm,
+        List<ProbeMetric> probes,
+        ChunkChurnSnapshot chunkChurn
+    ) {
         this.epochMillis = epochMillis;
         this.elapsedMillis = Math.max(0L, elapsedMillis);
         this.clientFrames = clientFrames;
@@ -71,6 +102,7 @@ public final class TimelinePoint {
         this.worlds = Collections.unmodifiableList(new ArrayList<WorldGauge>(worlds));
         this.jvm = jvm;
         this.probes = Collections.unmodifiableList(new ArrayList<ProbeMetric>(probes));
+        this.chunkChurn = chunkChurn == null ? ChunkChurnSnapshot.EMPTY : chunkChurn;
     }
 
     public long getEpochMillis() { return epochMillis; }
@@ -93,6 +125,7 @@ public final class TimelinePoint {
     public List<WorldGauge> getWorlds() { return worlds; }
     public JvmSnapshot getJvm() { return jvm; }
     public List<ProbeMetric> getProbes() { return probes; }
+    public ChunkChurnSnapshot getChunkChurn() { return chunkChurn; }
 
     public TimelinePoint rebase(long sessionStartedMillis) {
         return new TimelinePoint(
@@ -115,7 +148,8 @@ public final class TimelinePoint {
             outboundBytes,
             worlds,
             jvm,
-            probes
+            probes,
+            chunkChurn
         );
     }
 

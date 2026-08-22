@@ -21,9 +21,11 @@ public final class OptimizerSideSelectionTest {
         assertTrue(server.enabled(OptimizationModule.SRP_SPAWN_FILTER));
         assertTrue(server.enabled(OptimizationModule.LYCANITES_EFFECT_CACHE));
         assertTrue(server.enabled(OptimizationModule.ICEANDFIRE_PARTICLE_SCRATCH));
+        assertTrue(server.enabled(OptimizationModule.ICEANDFIRE_PATH_NODE_CACHE));
         assertTrue(server.enabled(OptimizationModule.OTG_BO4_IO));
         assertTrue(server.enabled(OptimizationModule.OTG_CONFIG_PARSER));
         assertTrue(server.enabled(OptimizationModule.OTG_BO4_LAYOUT));
+        assertTrue(server.enabled(OptimizationModule.OTG_SYNC_FILE_CACHE));
         assertTrue(server.enabled(OptimizationModule.BETTER_CAVES_NOISE));
         assertTrue(server.enabled(OptimizationModule.QUALITY_TOOLS_ATTRIBUTES));
         assertTrue(server.enabled(OptimizationModule.QUARK_ITEM_SYNC));
@@ -64,7 +66,9 @@ public final class OptimizerSideSelectionTest {
         assertTrue(client.enabled(OptimizationModule.LYCANITES_BLOCK_MEMBERSHIP));
         assertTrue(client.enabled(OptimizationModule.SRP_SPAWN_FILTER));
         assertTrue(client.enabled(OptimizationModule.LYCANITES_OBJ_RENDER));
+        assertTrue(client.enabled(OptimizationModule.ICEANDFIRE_PATH_NODE_CACHE));
         assertTrue(client.enabled(OptimizationModule.OTG_BO4_LAYOUT));
+        assertTrue(client.enabled(OptimizationModule.OTG_SYNC_FILE_CACHE));
         assertTrue(client.enabled(OptimizationModule.BETTER_CAVES_NOISE));
         assertTrue(client.enabled(OptimizationModule.BETTER_FOLIAGE_OPTIFINE_COLORS));
         assertTrue(client.enabled(OptimizationModule.QUALITY_TOOLS_ATTRIBUTES));

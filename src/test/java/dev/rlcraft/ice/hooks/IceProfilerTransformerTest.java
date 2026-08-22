@@ -53,6 +53,64 @@ public class IceProfilerTransformerTest {
         world.getMethod("a", entity, boolean.class).invoke(instance, entity.newInstance(), Boolean.TRUE);
     }
 
+    @Test
+    public void instrumentsTheWholeProductionItemFinishBoundary() {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, "vp", null,
+            "java/lang/Object", null);
+        addConstructor(writer);
+        MethodVisitor finish = writer.visitMethod(Opcodes.ACC_PROTECTED,
+            "v", "()V", null, null);
+        finish.visitCode();
+        finish.visitInsn(Opcodes.RETURN);
+        finish.visitMaxs(0, 1);
+        finish.visitEnd();
+        writer.visitEnd();
+
+        byte[] transformed = new IceProfilerTransformer().transform("vp",
+            "net.minecraft.entity.EntityLivingBase", writer.toByteArray());
+        String constants = new String(transformed,
+            StandardCharsets.ISO_8859_1);
+        assertTrue(constants.contains("enterItemFinish"));
+        new ClassReader(transformed);
+    }
+
+    @Test
+    public void instrumentsTheNestedProductionPotionBody() {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, "ain", null,
+            "java/lang/Object", null);
+        addConstructor(writer);
+        MethodVisitor finish = writer.visitMethod(Opcodes.ACC_PUBLIC, "a",
+            "(Laip;Lamu;Lvp;)Laip;", null, null);
+        finish.visitCode();
+        finish.visitVarInsn(Opcodes.ALOAD, 1);
+        finish.visitInsn(Opcodes.ARETURN);
+        finish.visitMaxs(1, 4);
+        finish.visitEnd();
+        writer.visitEnd();
+
+        byte[] transformed = new IceProfilerTransformer().transform("ain",
+            "net.minecraft.item.ItemPotion", writer.toByteArray());
+        String constants = new String(transformed,
+            StandardCharsets.ISO_8859_1);
+        assertTrue(constants.contains("vanilla_item_potion"));
+        assertTrue(constants.contains("enterNamed"));
+        new ClassReader(transformed);
+    }
+
+    private static void addConstructor(ClassWriter writer) {
+        MethodVisitor constructor = writer.visitMethod(Opcodes.ACC_PUBLIC,
+            "<init>", "()V", null, null);
+        constructor.visitCode();
+        constructor.visitVarInsn(Opcodes.ALOAD, 0);
+        constructor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object",
+            "<init>", "()V", false);
+        constructor.visitInsn(Opcodes.RETURN);
+        constructor.visitMaxs(1, 1);
+        constructor.visitEnd();
+    }
+
     private static byte[] emptyClass(String name) {
         ClassWriter writer = new ClassWriter(0);
         writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, name, null, "java/lang/Object", null);

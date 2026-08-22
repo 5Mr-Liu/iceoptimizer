@@ -8,6 +8,7 @@ import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
+import net.minecraft.world.chunk.Chunk;
 import net.minecraftforge.event.world.ChunkDataEvent;
 import net.minecraftforge.event.world.ChunkEvent;
 import net.minecraftforge.event.world.WorldEvent;
@@ -66,7 +67,7 @@ public final class ServerProfilerController {
         for (WorldServer world : server.worlds) {
             if (world == null) continue;
             int dimension = world.provider.getDimension();
-            if (remove) ProfilerRuntime.INSTANCE.metrics().removeWorld(dimension);
+            if (remove) ProfilerRuntime.INSTANCE.metrics().removeServerWorld(dimension);
             else ProfilerRuntime.INSTANCE.metrics().updateWorld(dimension, world.getChunkProvider().getLoadedChunkCount(),
                 world.loadedEntityList.size(), world.loadedTileEntityList.size());
         }
@@ -74,17 +75,26 @@ public final class ServerProfilerController {
 
     @SubscribeEvent
     public void onChunkLoad(ChunkEvent.Load event) {
-        if (IceConfig.server.chunkEventCounters && !event.getWorld().isRemote) ProfilerRuntime.INSTANCE.metrics().chunkLoaded();
+        if (!IceConfig.server.chunkEventCounters || event.getWorld().isRemote) return;
+        Chunk chunk = event.getChunk();
+        ProfilerRuntime.INSTANCE.metrics().serverChunkLoaded(
+            event.getWorld().provider.getDimension(), chunk.x, chunk.z, chunk);
     }
 
     @SubscribeEvent
     public void onChunkUnload(ChunkEvent.Unload event) {
-        if (IceConfig.server.chunkEventCounters && !event.getWorld().isRemote) ProfilerRuntime.INSTANCE.metrics().chunkUnloaded();
+        if (!IceConfig.server.chunkEventCounters || event.getWorld().isRemote) return;
+        Chunk chunk = event.getChunk();
+        ProfilerRuntime.INSTANCE.metrics().serverChunkUnloaded(
+            event.getWorld().provider.getDimension(), chunk.x, chunk.z);
     }
 
     @SubscribeEvent
     public void onChunkDataLoad(ChunkDataEvent.Load event) {
-        if (IceConfig.server.chunkEventCounters && !event.getWorld().isRemote) ProfilerRuntime.INSTANCE.metrics().chunkDataLoaded();
+        if (!IceConfig.server.chunkEventCounters || event.getWorld().isRemote) return;
+        Chunk chunk = event.getChunk();
+        ProfilerRuntime.INSTANCE.metrics().serverChunkDataLoaded(
+            event.getWorld().provider.getDimension(), chunk.x, chunk.z, chunk);
     }
 
     @SubscribeEvent
@@ -95,6 +105,8 @@ public final class ServerProfilerController {
     @SubscribeEvent
     public void onWorldUnload(WorldEvent.Unload event) {
         World world = event.getWorld();
-        if (!world.isRemote) ProfilerRuntime.INSTANCE.metrics().removeWorld(world.provider.getDimension());
+        if (!world.isRemote) {
+            ProfilerRuntime.INSTANCE.metrics().removeServerWorld(world.provider.getDimension());
+        }
     }
 }

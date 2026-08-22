@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.chunk;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -94,12 +95,17 @@ public final class ChunkPrimitiveSortBridge {
                 ints.put(scratch.raw, source * quadStride, quadStride);
             }
         } catch (Throwable error) {
-            ints.position(0);
-            ints.limit(requiredInts);
-            ints.put(scratch.raw, 0, requiredInts);
-            ints.limit(ints.capacity());
-            ints.position(requiredInts);
-            throw error;
+            Throwable failure = error;
+            try {
+                ints.position(0);
+                ints.limit(requiredInts);
+                ints.put(scratch.raw, 0, requiredInts);
+                ints.limit(ints.capacity());
+                ints.position(requiredInts);
+            } catch (Throwable restoreFailure) {
+                failure = appendFailure(failure, restoreFailure);
+            }
+            rethrow(failure);
         }
         ints.limit(ints.capacity());
         ints.position(requiredInts);
@@ -165,6 +171,26 @@ public final class ChunkPrimitiveSortBridge {
             result = next;
         }
         return result;
+    }
+
+    private static Throwable appendFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        Throwable nextFatal = FatalErrors.findFatal(next);
+        if (nextFatal != null && FatalErrors.findFatal(first) == null) {
+            if (nextFatal != first) nextFatal.addSuppressed(first);
+            return nextFatal;
+        }
+        if (next != null && first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    private static void rethrow(Throwable failure) {
+        FatalErrors.rethrowIfFatal(failure);
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) throw (Error) failure;
+        throw new IllegalStateException("chunk primitive sort failed", failure);
     }
 
     private static final class Scratch {

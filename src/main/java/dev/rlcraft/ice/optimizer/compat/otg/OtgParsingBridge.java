@@ -2,6 +2,7 @@ package dev.rlcraft.ice.optimizer.compat.otg;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import java.util.LinkedList;
@@ -97,6 +98,7 @@ public final class OtgParsingBridge {
         try {
             return OptimizerRegistry.isOperational(OptimizationModule.OTG_CONFIG_PARSER);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }

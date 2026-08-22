@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.client;
 
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.core.ProfilerRuntime;
 import dev.rlcraft.ice.profiler.core.ProfilerStatus;
 import dev.rlcraft.ice.profiler.metrics.TimelinePoint;
@@ -186,6 +187,7 @@ public final class ClientProfilerController {
             Object value = loadedChunksField.get(minecraft.world.getChunkProvider());
             return value instanceof Map ? ((Map<?, ?>) value).size() : 0;
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             chunkCountUnavailable = true;
             return 0;
         }

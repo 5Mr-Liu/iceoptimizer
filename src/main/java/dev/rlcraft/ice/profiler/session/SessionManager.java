@@ -2,6 +2,7 @@ package dev.rlcraft.ice.profiler.session;
 
 import dev.rlcraft.ice.IceProfilerMod;
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.analysis.ModResolver;
 import dev.rlcraft.ice.profiler.capture.HitchCluster;
 import dev.rlcraft.ice.profiler.capture.HitchTrigger;
@@ -106,6 +107,7 @@ public final class SessionManager {
                     lastExportError = "";
                     IceProfilerMod.LOGGER.info("ICE Recorder 报告已写入 {}", lastReport);
                 } catch (Throwable error) {
+                    FatalErrors.rethrowIfFatal(error);
                     lastExportError = error.toString();
                     IceProfilerMod.LOGGER.error("ICE Recorder 无法导出会话 " + session.getId(), error);
                 }

@@ -3,6 +3,7 @@ package dev.rlcraft.ice.hooks;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -18,6 +19,11 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.FieldVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TryCatchBlockNode;
 
 /** Real-bytecode regression coverage for the save and Lycanites scan hitch fixes. */
 public final class HitchFixAdapterTest {
@@ -96,12 +102,86 @@ public final class HitchFixAdapterTest {
         } else {
             assertTrue(hasMethod(transformed, MinecraftSaveTickAdapter.ORIGINAL_SAVE_METHOD,
                 MinecraftSaveTickAdapter.SAVE_DESCRIPTOR));
-            assertEquals(1, countCalls(transformed, MinecraftSaveTickAdapter.BRIDGE,
-                "begin", "(Ljava/lang/Object;Ljava/lang/Object;Z)J"));
+            assertTrue(hasMethod(transformed, MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
+                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR));
             assertEquals(2, countCalls(transformed, MinecraftSaveTickAdapter.BRIDGE,
+                "begin", "(Ljava/lang/Object;Ljava/lang/Object;Z)J"));
+            assertEquals(4, countCalls(transformed, MinecraftSaveTickAdapter.BRIDGE,
                 "end", "(J)V"));
+            assertCatchAllFinallyWrapper(transformed,
+                MinecraftSaveTickAdapter.SAVE_METHOD,
+                MinecraftSaveTickAdapter.SAVE_DESCRIPTOR,
+                MinecraftSaveTickAdapter.ORIGINAL_SAVE_METHOD);
+            assertCatchAllFinallyWrapper(transformed,
+                MinecraftSaveTickAdapter.PROVIDER_TICK_METHOD,
+                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
+                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD);
+            assertEquals(1, countCallsInMethod(transformed,
+                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
+                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
+                MinecraftSaveTickAdapter.PROVIDER_TARGET, "func_73242_b",
+                "(Lnet/minecraft/world/chunk/Chunk;)V"));
+            assertEquals(1, countCallsInMethod(transformed,
+                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
+                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
+                MinecraftSaveTickAdapter.PROVIDER_TARGET, "func_73243_a",
+                "(Lnet/minecraft/world/chunk/Chunk;)V"));
+            assertEquals(1, countCallsInMethod(transformed,
+                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
+                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
+                "it/unimi/dsi/fastutil/longs/Long2ObjectMap", "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;"));
         }
         return transformed;
+    }
+
+    private static void assertCatchAllFinallyWrapper(byte[] bytes,
+                                                     String methodName,
+                                                     String descriptor,
+                                                     String originalName) {
+        ClassNode node = new ClassNode(Opcodes.ASM5);
+        new ClassReader(bytes).accept(node, 0);
+        MethodNode wrapper = null;
+        for (MethodNode method : node.methods) {
+            if (methodName.equals(method.name) && descriptor.equals(method.desc)) {
+                wrapper = method;
+            }
+        }
+        assertNotNull(methodName, wrapper);
+        assertEquals(methodName, 1, wrapper.tryCatchBlocks.size());
+        TryCatchBlockNode block = wrapper.tryCatchBlocks.get(0);
+        assertNull(methodName + " must use a catch-all finally", block.type);
+        int start = wrapper.instructions.indexOf(block.start);
+        int end = wrapper.instructions.indexOf(block.end);
+        int handler = wrapper.instructions.indexOf(block.handler);
+        assertTrue(methodName, start >= 0 && start < end && end <= handler);
+
+        int original = -1;
+        int beginCalls = 0;
+        int endCalls = 0;
+        int throwsAfterHandler = 0;
+        for (AbstractInsnNode instruction : wrapper.instructions.toArray()) {
+            if (instruction instanceof MethodInsnNode) {
+                MethodInsnNode call = (MethodInsnNode) instruction;
+                if (MinecraftSaveTickAdapter.PROVIDER_TARGET.equals(call.owner)
+                    && originalName.equals(call.name)
+                    && descriptor.equals(call.desc)) {
+                    original = wrapper.instructions.indexOf(instruction);
+                }
+                if (MinecraftSaveTickAdapter.BRIDGE.equals(call.owner)
+                    && "begin".equals(call.name)) beginCalls++;
+                if (MinecraftSaveTickAdapter.BRIDGE.equals(call.owner)
+                    && "end".equals(call.name)) endCalls++;
+            } else if (instruction.getOpcode() == Opcodes.ATHROW
+                && wrapper.instructions.indexOf(instruction) > handler) {
+                throwsAfterHandler++;
+            }
+        }
+        assertTrue(methodName + " original call must be protected",
+            original > start && original < end);
+        assertEquals(methodName, 1, beginCalls);
+        assertEquals(methodName, 2, endCalls);
+        assertEquals(methodName, 1, throwsAfterHandler);
     }
 
     private static byte[] read(JarFile jar, String className) throws Exception {
@@ -167,6 +247,29 @@ public final class HitchFixAdapterTest {
                     @Override public void visitMethodInsn(int opcode, String actualOwner,
                                                           String actualName, String actualDescriptor,
                                                           boolean itf) {
+                        if (owner.equals(actualOwner) && name.equals(actualName)
+                            && descriptor.equals(actualDescriptor)) count[0]++;
+                    }
+                };
+            }
+        }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        return count[0];
+    }
+
+    private static int countCallsInMethod(byte[] bytes, final String methodName,
+                                          final String methodDescriptor, final String owner,
+                                          final String name, final String descriptor) {
+        final int[] count = new int[1];
+        new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM5) {
+            @Override public MethodVisitor visitMethod(int access, String actualMethodName,
+                                                       String actualMethodDescriptor,
+                                                       String signature, String[] exceptions) {
+                if (!methodName.equals(actualMethodName)
+                    || !methodDescriptor.equals(actualMethodDescriptor)) return null;
+                return new MethodVisitor(Opcodes.ASM5) {
+                    @Override public void visitMethodInsn(int opcode, String actualOwner,
+                                                          String actualName,
+                                                          String actualDescriptor, boolean itf) {
                         if (owner.equals(actualOwner) && name.equals(actualName)
                             && descriptor.equals(actualDescriptor)) count[0]++;
                     }

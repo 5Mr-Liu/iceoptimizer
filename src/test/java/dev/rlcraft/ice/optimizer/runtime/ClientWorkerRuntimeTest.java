@@ -1,12 +1,15 @@
 package dev.rlcraft.ice.optimizer.runtime;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.optimizer.ClientOptimizerConfig;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.Test;
@@ -45,6 +48,47 @@ public final class ClientWorkerRuntimeTest {
         } finally {
             workers.shutdown();
         }
+    }
+
+    @Test
+    public void lateWorkerCannotPublishAfterShutdownDrain() throws Exception {
+        OptimizerRegistry.configure(ClientOptimizerConfig.capture());
+        ClientEpochs epochs = new ClientEpochs();
+        final BoundedRenderQueue render = new BoundedRenderQueue(epochs, 64);
+        final ClientWorkerRuntime workers = new ClientWorkerRuntime(epochs,
+            render, 1, 64);
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        assertTrue(workers.submit(OptimizationModule.RENDER_SUBMISSION,
+            epochs.snapshot(), EpochMask.WORLD, new Callable<Integer>() {
+                @Override public Integer call() {
+                    started.countDown();
+                    boolean done = false;
+                    while (!done) try {
+                        done = release.await(10L, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException ignored) {
+                        // Deliberately emulate an uncooperative computation.
+                    }
+                    return Integer.valueOf(1);
+                }
+            }, new Consumer<Integer>() {
+                @Override public void accept(Integer value) { }
+            }));
+        assertTrue(started.await(2L, TimeUnit.SECONDS));
+        Thread shutdown = new Thread(new Runnable() {
+            @Override public void run() { workers.shutdown(); }
+        }, "worker-shutdown-test");
+        shutdown.start();
+        long deadline = System.nanoTime() + 2_000_000_000L;
+        while (!render.isClosed() && System.nanoTime() - deadline < 0L) {
+            Thread.yield();
+        }
+        assertTrue(render.isClosed());
+        release.countDown();
+        shutdown.join(2_000L);
+        assertFalse(shutdown.isAlive());
+        assertEquals(0, render.snapshot().getSize());
+        assertEquals(0, render.drain(1_000_000L, 64));
     }
 
     private static void awaitCompleted(ClientWorkerRuntime workers, long expected) {

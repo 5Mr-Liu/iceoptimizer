@@ -20,6 +20,7 @@ public final class ModuleCircuitBreaker {
     private volatile String detail = "未初始化";
     private volatile boolean packLockRejected;
     private volatile String packLockDetail = "";
+    private volatile long runtimeGeneration = Long.MIN_VALUE;
 
     public ModuleCircuitBreaker(OptimizationModule module) {
         this(module, null);
@@ -40,9 +41,11 @@ public final class ModuleCircuitBreaker {
             setState(ModuleState.INCOMPATIBLE);
             detail = packLockDetail;
         } else if (module == OptimizationModule.CORE_RUNTIME
-            || module == OptimizationModule.RENDER_SUBMISSION) {
+            || module == OptimizationModule.RENDER_SUBMISSION
+            || module.isRuntimeManagedRenderer()) {
             setState(ModuleState.VERIFIED);
-            detail = "内建模块已验证";
+            detail = module.isRuntimeManagedRenderer()
+                ? "等待运行时能力、输出与收益认证" : "内建模块已验证";
         } else if (patchedTargets.get() > 0) {
             setState(ModuleState.VERIFIED);
             detail = "目标字节码已通过结构验证";
@@ -58,9 +61,25 @@ public final class ModuleCircuitBreaker {
     public synchronized void resetRuntimeState() {
         setState(ModuleState.DISABLED);
         consecutiveFailures.set(0);
+        runtimeGeneration = Long.MIN_VALUE;
         packLockRejected = false;
         packLockDetail = "";
         detail = "未初始化";
+    }
+
+    /**
+     * Starts a new runtime-renderer generation. A quarantine or trip is sticky
+     * only inside the generation that produced it; context/resource/shader
+     * changes are allowed to perform a fresh executable self-test.
+     */
+    public synchronized void beginRuntimeGeneration(long generation) {
+        if (!module.isRuntimeManagedRenderer() || generation <= 0L
+            || runtimeGeneration == generation) return;
+        runtimeGeneration = generation;
+        consecutiveFailures.set(0);
+        if (packLockRejected || state.get() == ModuleState.DISABLED) return;
+        setState(ModuleState.VERIFIED);
+        detail = "新代际等待能力、输出与收益认证";
     }
 
     public synchronized void disable(String reason) {
@@ -135,6 +154,7 @@ public final class ModuleCircuitBreaker {
     }
 
     public void recordFailure(Throwable error) {
+        FatalErrors.rethrowIfFatal(error);
         failures.increment();
         int consecutive = consecutiveFailures.incrementAndGet();
         if (packLockRejected) return;

@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.renderlib;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
@@ -32,6 +33,7 @@ public final class RenderLibTileEntityBridge {
                 return Boolean.valueOf(equals.getDeclaringClass() == Object.class
                     && hashCode.getDeclaringClass() == Object.class);
             } catch (Throwable ignored) {
+                FatalErrors.rethrowIfFatal(ignored);
                 return Boolean.FALSE;
             }
         }
@@ -83,11 +85,19 @@ public final class RenderLibTileEntityBridge {
 
         try {
             processingLoadedTilesField.setBoolean(world, true);
+            Throwable callbackFailure = null;
             try {
                 consumer.accept(processing);
-            } finally {
-                processingLoadedTilesField.setBoolean(world, false);
+            } catch (Throwable error) {
+                callbackFailure = error;
             }
+            try {
+                processingLoadedTilesField.setBoolean(world, false);
+            } catch (Throwable restoreFailure) {
+                callbackFailure = appendFailure(callbackFailure,
+                    restoreFailure);
+            }
+            if (callbackFailure != null) throw propagate(callbackFailure);
 
             ObjectHashSet<TileEntity> loadedMembership;
             try {
@@ -158,6 +168,33 @@ public final class RenderLibTileEntityBridge {
         } catch (Throwable error) {
             OptimizerBridge.failure(MODULE, error);
             throw propagate(error);
+        } finally {
+            Throwable cleanupFailure = null;
+            try {
+                if (membership != null) membership.clear();
+            } catch (Throwable error) {
+                cleanupFailure = error;
+            } finally {
+                MEMBERSHIP_IN_USE.set(false);
+            }
+            if (cleanupFailure != null) {
+                OptimizerBridge.failure(MODULE, cleanupFailure);
+            }
+        }
+    }
+
+    /** Releases the retained table and its old runtime budget at a world boundary. */
+    public static void reset() {
+        if (!MEMBERSHIP_IN_USE.compareAndSet(false, true)) return;
+        try {
+            ObjectHashSet<TileEntity> owned = membership;
+            membership = null;
+            membershipCapacity = 0;
+            if (owned != null) owned.clear();
+            CacheBudget.Reservation reservation = membershipReservation;
+            membershipReservation = null;
+            if (reservation != null) reservation.close();
+            activated = false;
         } finally {
             MEMBERSHIP_IN_USE.set(false);
         }
@@ -247,8 +284,20 @@ public final class RenderLibTileEntityBridge {
     }
 
     private static RuntimeException propagate(Throwable error) {
+        FatalErrors.rethrowIfFatal(error);
         if (error instanceof RuntimeException) return (RuntimeException) error;
         if (error instanceof Error) throw (Error) error;
         return new IllegalStateException(error);
+    }
+
+    private static Throwable appendFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        Throwable nextFatal = FatalErrors.findFatal(next);
+        if (nextFatal != null && FatalErrors.findFatal(first) == null) {
+            if (nextFatal != first) nextFatal.addSuppressed(first);
+            return nextFatal;
+        }
+        if (next != null && first != next) first.addSuppressed(next);
+        return first;
     }
 }

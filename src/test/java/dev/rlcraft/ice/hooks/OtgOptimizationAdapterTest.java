@@ -35,7 +35,15 @@ public class OtgOptimizationAdapterTest {
             "fff1a1718671ed5f541c7d97c09c83cad905392f153e738b107b8b4254c98a09"),
         sample("com.pg85.otg.configuration.customobjects.CustomObjectResourcesManager",
             "otg-function-name-cache",
-            "90728917888aa2a04aa938d0442ab1852fdb5798723a7704f474666b0830d534")
+            "90728917888aa2a04aa938d0442ab1852fdb5798723a7704f474666b0830d534"),
+        sample("com.pg85.otg.customobjects.bo3.BO3Loader", "otg-bo3-metadata-cache",
+            "fc4f6de2879fdd688e8392ed921f16cd4e0ce145247a56d46dd8d9546b425dab"),
+        sample("com.pg85.otg.configuration.io.FileSettingsReaderOTGPlus",
+            "otg-settings-file-cache",
+            "fcbe8092a9fb55a51ed81d07aef6c8700fdf3580ff3e8c7b78bfff720142a404"),
+        sample("com.pg85.otg.customobjects.CustomObjectManager",
+            "otg-configuration-generation",
+            "e485b584cac97eafd36ecd664c6117a0389ca21a7f3c7441cda868ebe43b25ef")
     };
 
     @Test
@@ -75,7 +83,26 @@ public class OtgOptimizationAdapterTest {
     }
 
     private static void verifyCalls(Sample sample, byte[] transformed) {
-        if (sample.className.endsWith(".BO4")) {
+        if (sample.className.endsWith(".BO3Loader")) {
+            assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgBo3MetadataAdapter.BRIDGE, "createMetadataMap",
+                OtgBo3MetadataAdapter.CREATE_MAP_DESCRIPTOR));
+            assertEquals(2, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgBo3MetadataAdapter.BRIDGE, "readNamedBinaryTag",
+                OtgBo3MetadataAdapter.READ_DESCRIPTOR));
+            assertEquals(0, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgBo3MetadataAdapter.TAG, "readFrom",
+                "(Ljava/io/InputStream;Z)L" + OtgBo3MetadataAdapter.TAG + ";"));
+        } else if (sample.className.endsWith(".FileSettingsReaderOTGPlus")) {
+            assertTrue(hasMethod(transformed, OtgFileSettingsReaderAdapter.ORIGINAL, "()V"));
+            assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgFileSettingsReaderAdapter.BRIDGE, "readSettings",
+                OtgFileSettingsReaderAdapter.READ_DESCRIPTOR));
+        } else if (sample.className.endsWith(".CustomObjectManager")) {
+            assertEquals(2, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgConfigurationGenerationAdapter.BRIDGE,
+                "advanceConfigurationGeneration", "()V"));
+        } else if (sample.className.endsWith(".BO4")) {
             assertEquals(2, countCalls(transformed, Opcodes.INVOKESTATIC,
                 OtgBo4Adapter.OPTIMIZER_BRIDGE, "isEnabled", OtgBo4Adapter.ENABLED_DESCRIPTOR));
             assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,

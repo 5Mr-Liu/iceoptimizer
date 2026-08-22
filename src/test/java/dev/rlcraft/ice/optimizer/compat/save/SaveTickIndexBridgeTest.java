@@ -7,6 +7,7 @@ import static org.junit.Assert.assertSame;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.TreeSet;
 import net.minecraft.util.math.BlockPos;
@@ -27,6 +28,7 @@ public final class SaveTickIndexBridgeTest {
         enable();
         long token = SaveTickIndexBridge.begin("provider", world, true);
         try {
+            assertNull(SaveTickIndexBridge.pendingForChunk(world, 1, 1));
             List<NextTickListEntry> southeast = SaveTickIndexBridge.pendingForChunk(world, 1, 1);
             assertEquals(3, southeast.size());
             assertSame(first, southeast.get(0));
@@ -48,7 +50,7 @@ public final class SaveTickIndexBridgeTest {
     }
 
     @Test
-    public void rebuildsAfterTrackedMutationAndMasksNestedNonFullSaves() {
+    public void rebuildsAfterTrackedMutationAndKeepsNestedIncrementalScopesIndependent() {
         FakeAccessor world = new FakeAccessor();
         NextTickListEntry first = entry(0, 64, 0, 10L);
         NextTickListEntry second = entry(1, 64, 1, 20L);
@@ -56,6 +58,7 @@ public final class SaveTickIndexBridgeTest {
         enable();
         long outer = SaveTickIndexBridge.begin("provider", world, true);
         try {
+            assertNull(SaveTickIndexBridge.pendingForChunk(world, 0, 0));
             assertEquals(1, SaveTickIndexBridge.pendingForChunk(world, 0, 0).size());
             world.tree.add(second);
             world.version++;
@@ -64,12 +67,32 @@ public final class SaveTickIndexBridgeTest {
             long nested = SaveTickIndexBridge.begin("provider", world, false);
             try {
                 assertNull(SaveTickIndexBridge.pendingForChunk(world, 0, 0));
+                assertEquals(2, SaveTickIndexBridge.pendingForChunk(world, 0, 0).size());
             } finally {
                 SaveTickIndexBridge.end(nested);
             }
             assertEquals(2, SaveTickIndexBridge.pendingForChunk(world, 0, 0).size());
         } finally {
             SaveTickIndexBridge.end(outer);
+            disable();
+        }
+    }
+
+    @Test
+    public void incrementalScopeUsesOriginalFirstQueryBeforeBuildingGlobalIndex() {
+        FakeAccessor world = new FakeAccessor();
+        world.tree.add(entry(0, 64, 0, 10L));
+        enable();
+        long token = SaveTickIndexBridge.begin("provider", world, false);
+        try {
+            assertNull(SaveTickIndexBridge.pendingForChunk(world, 0, 0));
+            assertEquals(0, world.treeReads);
+            assertEquals(0, world.currentReads);
+            assertEquals(1, SaveTickIndexBridge.pendingForChunk(world, 0, 0).size());
+            assertEquals(1, world.treeReads);
+            assertEquals(1, world.currentReads);
+        } finally {
+            SaveTickIndexBridge.end(token);
             disable();
         }
     }
@@ -85,6 +108,77 @@ public final class SaveTickIndexBridgeTest {
             assertEquals(1, world.originalCalls);
         } finally {
             disable();
+        }
+    }
+
+    @Test
+    public void indexedResultsMatchVanillaBoundsAndIterationOrderExactly() {
+        FakeAccessor world = new FakeAccessor();
+        int sequence = 0;
+        for (int x : new int[] { -34, -33, -32, -18, -17, -16, -2, -1,
+                                 0, 13, 14, 15, 16, 29, 30, 31, 32 }) {
+            for (int z : new int[] { -18, -17, -16, -2, -1, 0, 13, 14,
+                                     15, 16, 29, 30, 31, 32 }) {
+                world.tree.add(entry(x, 64, z, sequence++));
+            }
+        }
+        world.current.addAll(Arrays.asList(
+            entry(-2, 80, 16, sequence++),
+            entry(14, 81, 14, sequence++),
+            entry(31, 82, -17, sequence++)));
+        enable();
+        long token = SaveTickIndexBridge.begin("provider", world, false);
+        try {
+            assertNull(SaveTickIndexBridge.pendingForChunk(world, -9, -9));
+            for (int chunkX = -3; chunkX <= 2; chunkX++) {
+                for (int chunkZ = -2; chunkZ <= 2; chunkZ++) {
+                    assertSameEntries("chunk " + chunkX + ',' + chunkZ,
+                        vanilla(world, chunkX, chunkZ),
+                        SaveTickIndexBridge.pendingForChunk(world, chunkX,
+                            chunkZ));
+                }
+            }
+        } finally {
+            SaveTickIndexBridge.end(token);
+            disable();
+        }
+    }
+
+    private static List<NextTickListEntry> vanilla(FakeAccessor world,
+                                                    int chunkX, int chunkZ) {
+        int minX = (chunkX << 4) - 2;
+        int maxX = minX + 18;
+        int minZ = (chunkZ << 4) - 2;
+        int maxZ = minZ + 18;
+        List<NextTickListEntry> result = new ArrayList<NextTickListEntry>();
+        appendVanilla(result, world.tree, minX, maxX, minZ, maxZ);
+        appendVanilla(result, world.current, minX, maxX, minZ, maxZ);
+        return result.isEmpty() ? null : result;
+    }
+
+    private static void appendVanilla(List<NextTickListEntry> result,
+                                      Iterable<NextTickListEntry> source,
+                                      int minX, int maxX, int minZ, int maxZ) {
+        for (NextTickListEntry entry : source) {
+            int x = entry.position.getX();
+            int z = entry.position.getZ();
+            if (x >= minX && x < maxX && z >= minZ && z < maxZ) {
+                result.add(entry);
+            }
+        }
+    }
+
+    private static void assertSameEntries(String message,
+                                          List<NextTickListEntry> expected,
+                                          List<NextTickListEntry> actual) {
+        if (expected == null || actual == null) {
+            assertSame(message, expected, actual);
+            return;
+        }
+        assertEquals(message + " size", expected.size(), actual.size());
+        for (int index = 0; index < expected.size(); index++) {
+            assertSame(message + " entry " + index, expected.get(index),
+                actual.get(index));
         }
     }
 
@@ -108,9 +202,17 @@ public final class SaveTickIndexBridgeTest {
         private final List<NextTickListEntry> original = new ArrayList<NextTickListEntry>();
         private long version;
         private int originalCalls;
+        private int treeReads;
+        private int currentReads;
 
-        @Override public Iterable<NextTickListEntry> ice$pendingTickTree() { return tree; }
-        @Override public List<NextTickListEntry> ice$pendingTicksThisTick() { return current; }
+        @Override public Iterable<NextTickListEntry> ice$pendingTickTree() {
+            treeReads++;
+            return tree;
+        }
+        @Override public List<NextTickListEntry> ice$pendingTicksThisTick() {
+            currentReads++;
+            return current;
+        }
         @Override public long ice$pendingTickVersion() { return version; }
         @Override public List<NextTickListEntry> ice$originalPendingBlockUpdates(Chunk chunk, boolean remove) {
             originalCalls++;

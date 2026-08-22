@@ -27,7 +27,9 @@ public final class RecordingSession {
     private final FixedRingBuffer<SessionMarker> markers = new FixedRingBuffer<SessionMarker>(256);
     private final HitchClusterer clusterer;
     private final StackTraceRepository stacks;
+    private final StackTraceRepository.StatisticsWindow dictionaryWindow;
     private final int perCaptureSampleLimit;
+    private StackTraceRepository.Statistics dictionaryStatistics;
     private HitchCapture activeCapture;
     private long nextCaptureSequence = 1L;
     private long triggerCount;
@@ -48,6 +50,7 @@ public final class RecordingSession {
         this.startedNanos = startedNanos;
         this.timeline = new FixedRingBuffer<TimelinePoint>(IceConfig.general.maxTimelinePoints);
         this.stacks = stacks;
+        this.dictionaryWindow = stacks.beginStatisticsWindow();
         this.perCaptureSampleLimit = ProfilerLimits.samplesPerCapture();
         this.clusterer = new HitchClusterer(
             new RootCauseAnalyzer(stacks, resolver),
@@ -102,6 +105,10 @@ public final class RecordingSession {
 
     public synchronized void finish(String reason) {
         completeActive();
+        if (dictionaryStatistics == null) {
+            dictionaryStatistics = stacks.finishStatisticsWindow(
+                dictionaryWindow);
+        }
         finishedEpochMillis = System.currentTimeMillis();
         stopReason = reason == null ? "stopped" : reason;
     }
@@ -128,6 +135,10 @@ public final class RecordingSession {
     public synchronized List<SessionMarker> getMarkers() { return markers.snapshot(); }
     public List<HitchCluster> getClusters() { return clusterer.snapshot(); }
     public StackTraceRepository getStacks() { return stacks; }
+    public synchronized StackTraceRepository.Statistics getDictionaryStatistics() {
+        return dictionaryStatistics == null
+            ? stacks.statisticsSince(dictionaryWindow) : dictionaryStatistics;
+    }
     public synchronized long durationMillis() {
         long end = finishedEpochMillis == 0L ? System.currentTimeMillis() : finishedEpochMillis;
         return Math.max(0L, end - startedEpochMillis);

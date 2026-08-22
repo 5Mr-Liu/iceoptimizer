@@ -13,6 +13,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import net.minecraftforge.fml.relauncher.IFMLLoadingPlugin;
 import org.junit.Test;
@@ -23,6 +24,21 @@ import org.objectweb.asm.Opcodes;
 public class CoreTransformerIsolationTest {
     private static final String PENDING_TICK_ACCESSOR =
         "dev.rlcraft.ice.optimizer.compat.save.PendingTickAccessor";
+    private static final String[] TERRAIN_VISIBILITY_ABI = {
+        "dev.rlcraft.ice.optimizer.compat.chunk.TerrainVisibilityAccessor",
+        "dev.rlcraft.ice.optimizer.compat.chunk.TerrainRenderInfoAccessor",
+        "dev.rlcraft.ice.optimizer.compat.chunk.TerrainRenderChunkIndexAccessor",
+        "dev.rlcraft.ice.optimizer.compat.chunk.TerrainCompiledChunkAccessor",
+        "dev.rlcraft.ice.optimizer.compat.chunk.TerrainVisibilityMaskAccessor"
+    };
+    private static final String EARLY_GL_TRACKER =
+        "dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker";
+    private static final String EARLY_MATRIX_TRACKER =
+        "dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker";
+    private static final String ICE_AND_FIRE_RAW_NODE_ACCESSOR =
+        "dev.rlcraft.ice.optimizer.compat.iceandfire.IceAndFireRawNodeAccessor";
+    private static final String PARTICLE_RENDER_ACCESS =
+        "dev.rlcraft.ice.optimizer.compat.particle.ParticleRenderAccess";
 
     @Test
     public void coreTransformersInitializeAndRunWithoutMainRuntimeClasses() throws Exception {
@@ -44,6 +60,45 @@ public class CoreTransformerIsolationTest {
             assertEquals("the transformed-class ABI must be defined by the isolated core loader",
                 loader, accessor.getClassLoader());
             assertEquals(4, accessor.getDeclaredMethods().length);
+            int[] expectedMethods = { 11, 6, 5, 2, 1 };
+            for (int i = 0; i < TERRAIN_VISIBILITY_ABI.length; i++) {
+                Class<?> visibilityAbi = Class.forName(TERRAIN_VISIBILITY_ABI[i], true, loader);
+                assertEquals("visibility ABI must be defined by the isolated core loader",
+                    loader, visibilityAbi.getClassLoader());
+                assertEquals(expectedMethods[i], visibilityAbi.getDeclaredMethods().length);
+            }
+            Class<?> glTracker = Class.forName(EARLY_GL_TRACKER, true, loader);
+            assertEquals(loader, glTracker.getClassLoader());
+            Class<?> matrixTracker = Class.forName(EARLY_MATRIX_TRACKER, true,
+                loader);
+            assertEquals(loader, matrixTracker.getClassLoader());
+            matrixTracker.getMethod("matrixMode", int.class).invoke(null, 5888);
+
+            byte[] managerBytes = new GlStateTrackingAdapter(
+                GlStateTrackingAdapter.Part.GL_STATE_MANAGER).transform(
+                    GlStateTrackingAdapter.GL_STATE_MANAGER,
+                    GlStateTrackingAdapterTest.syntheticManager(
+                        GlStateTrackingAdapter.GL_STATE_MANAGER),
+                    new TargetSpec(GlStateTrackingAdapter.GL_STATE_MANAGER,
+                        "modern-visibility-hzb", "test",
+                        Collections.<String>emptySet()));
+            Class<?> manager = loader.defineTarget(managerBytes);
+            manager.getMethod("func_179128_n", int.class).invoke(null, 5888);
+            Class<?> matrixState = Class.forName(EARLY_MATRIX_TRACKER + "$State",
+                false, loader);
+            assertEquals(loader, matrixState.getClassLoader());
+            assertEquals(0L, ((Long) matrixTracker.getMethod("invalidations")
+                .invoke(null)).longValue());
+            Class<?> iceAndFireAccessor = Class.forName(
+                ICE_AND_FIRE_RAW_NODE_ACCESSOR, true, loader);
+            assertEquals("Ice and Fire transformed-class ABI must be defined by the core loader",
+                loader, iceAndFireAccessor.getClassLoader());
+            assertEquals(1, iceAndFireAccessor.getDeclaredMethods().length);
+            Class<?> particleAccess = Class.forName(PARTICLE_RENDER_ACCESS,
+                true, loader);
+            assertEquals("particle transformed-class ABI must be defined by the core loader",
+                loader, particleAccess.getClassLoader());
+            assertEquals(16, particleAccess.getDeclaredMethods().length);
 
             Class<?> profilerType = Class.forName("dev.rlcraft.ice.hooks.IceProfilerTransformer", true, loader);
             Object profiler = profilerType.newInstance();
@@ -143,7 +198,7 @@ public class CoreTransformerIsolationTest {
 
         @Override
         protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-            if (name.startsWith("dev.rlcraft.ice.hooks.") || PENDING_TICK_ACCESSOR.equals(name)) {
+            if (name.startsWith("dev.rlcraft.ice.hooks.") || isEarlyAbi(name)) {
                 Class<?> loaded = findLoadedClass(name);
                 if (loaded == null) loaded = findClass(name);
                 if (resolve) resolveClass(loaded);
@@ -161,6 +216,24 @@ public class CoreTransformerIsolationTest {
 
         private int optimizerRuntimeLoadAttempts() {
             return optimizerRuntimeLoadAttempts;
+        }
+
+        private static boolean isEarlyAbi(String name) {
+            if (PENDING_TICK_ACCESSOR.equals(name)) return true;
+            if (name.equals(EARLY_GL_TRACKER)
+                || name.startsWith(EARLY_GL_TRACKER + "$")) return true;
+            if (name.equals(EARLY_MATRIX_TRACKER)
+                || name.startsWith(EARLY_MATRIX_TRACKER + "$")) return true;
+            if (name.equals(ICE_AND_FIRE_RAW_NODE_ACCESSOR)) return true;
+            if (name.equals(PARTICLE_RENDER_ACCESS)) return true;
+            for (String candidate : TERRAIN_VISIBILITY_ABI) {
+                if (candidate.equals(name)) return true;
+            }
+            return false;
+        }
+
+        private Class<?> defineTarget(byte[] bytes) {
+            return defineClass(null, bytes, 0, bytes.length);
         }
     }
 }

@@ -2,28 +2,38 @@
 
 本工程面向 **Minecraft 1.12.2 / Forge 14.23.5.2860 / Java 8 的 RLCraft 系整合包**，包括普通 RLCraft、RLCraft Dregora 以及结构兼容的旧版和衍生版本。从 `0.4.0` 起工程拆成两个可独立安装和维护的模组：`ICE RLCraft Optimizer` 负责客户端、单人集成服务器和远程专用服务端热点优化，`ICE Performance Recorder` 负责自动卡顿取证、采样和报告导出。优化器针对实测确认的 SRP、Lycanites、Mo' Bends、Ice and Fire、OptiFine、Rustic、FoamFix、Xaero、RenderLib、OreLib / Dynamic Surroundings、Better Foliage、Better Caves、Quality Tools、Quark、Dynamic Trees 与 OTG 热路径提供分侧能力选择、独立熔断和可回退的字节码适配框架。
 
-当前版本：`0.10.0`
+当前版本：`1.0.5`
+
+发布说明：[ICE 1.0.5 Release Notes](docs/ICE-1.0.5-RELEASE-NOTES.md)
+
+下一代完整方案：[ICE 2.0 数据驱动性能架构](docs/ICE-2.0-ARCHITECTURE-PLAN.md)
 
 它不删内容、不减粒子、不降模型、不跳 Tick，也不异步写世界。优化运行时只允许缓存完全相同输入的结果、把纯 CPU 准备工作交给专用线程，以及在渲染线程按原顺序提交 GPU 工作。`0.8.0` 不再按 RLCraft、Dregora 或单个模组的版本/JAR SHA-256 拒绝运行；每个目标类都由适配器检查所需方法签名和精确指令结构，结构不兼容时只放弃该目标并保留原字节码。
 
-## 0.10.0 模组边界
+## 1.0.5 模组边界
 
-- `ice-rlcraft-optimizer-0.10.0.jar`：双端优化器主运行时、高性能库和客户端 F3 状态。
-- `ice-rlcraft-optimizer-core-0.10.0.jar`：双端共享 transformer、结构适配器、早期安全桥和审计指纹目录。
-- `ice-rlcraft-profiler-0.10.0.jar`：独立记录器、F8/F9/F10、命令、指标、分析和报告。
-- `ice-rlcraft-profiler-core-0.10.0.jar`：只包含只读性能探针 transformer。
+- `ice-rlcraft-optimizer-1.0.5.jar`：双端优化器主运行时、高性能库和客户端 F3 状态。
+- `ice-rlcraft-optimizer-core-1.0.5.jar`：双端共享 transformer、结构适配器、早期安全桥和审计指纹目录。
+- `ice-rlcraft-profiler-1.0.5.jar`：独立记录器、F8/F9/F10、命令、指标、分析和报告。
+- `ice-rlcraft-profiler-core-1.0.5.jar`：只包含只读性能探针 transformer。
 
 两套主 JAR 和两套 Core JAR 均经过构建期重复 class 与越界内容检查。只安装优化器时不会创建采样线程、不会注册 F8/F9/F10、不会导出 Session，也不会显示常规 HUD。
 
-`0.10.0` 仍要求联机双方安装同一版 optimizer 主 JAR，以避免客户端和服务端运行时协议不一致；这只是 ICE 自身的 Forge 握手要求，不限制 RLCraft 或其他模组的版本。专服只启用可在物理服务端安全执行的 SRP AI/寻路与刷怪过滤、Lycanites 寻路/注册表/刷怪/效果、区块 NBT 压缩、Ice and Fire 粒子暂存、Rustic 栅栏状态、Better Caves、Quality Tools、Quark 和 OTG/BO4 模块；模型渲染、OptiFine、OpenGL、区块网格、Xaero、头颅联网及客户端工作池在物理服务端均保持关闭。
+`1.0.5` 要求联机双方安装同一版 optimizer 主 JAR，以避免客户端和服务端运行时协议不一致；这只是 ICE 自身的 Forge 握手要求，不限制 RLCraft 或其他模组的版本。专服只启用可在物理服务端安全执行的 SRP AI/寻路与刷怪过滤、Lycanites 寻路/注册表/刷怪/效果、Ice and Fire 单次寻路缓存与粒子暂存、区块 NBT 压缩、Rustic 栅栏状态、Better Caves、Quality Tools、Quark 和 OTG/BO4 模块；模型渲染、OptiFine、OpenGL、区块网格、Xaero、头颅联网及客户端工作池在物理服务端均保持关闭。
 
-`0.10.0` 在 Fermium 最终改写 worker 与 builder 数量之后再做硬件自适应上限，不替换 Fermium 策略；Chunk Worker 按逻辑处理器与 JVM 最大堆共同分档，范围为 1–16 且永远不超过前序实现。区块 VBO 只有达到 256 KiB 才尝试 GPU staging，每次最多探测两个 Fence 槽；小上传、GPU 落后、预算不足或能力缺失直接执行原 `glBufferData`。动画纹理的通用单级 PBO 已停用，避免不同显卡驱动上出现每 mip 一个 Fence 的反优化；FoamFix 只有完整 mip 批次达到 256 KiB 时才尝试 PBO。
+`1.0.5` 修复 HZB 与 ChunkAnimator 1.2.1 的动态坐标冲突：尚在动画中的区块强制保持可见并通过真实 `ChunkRenderContainer.preRenderChunk` 绘制，稳定区块仍参与 Arena multi-draw/MDI。普通遮挡必须由两个连续、独立的深度发布确认；Arena 在 GPU 提交前拒绝时会事务恢复完整 Legacy 列表。确认表会按堆预算缩容而不让整个现代渲染器回退，报告同时给出原始遮挡、确认延迟、动画绕过、事务回滚和容量退化。
 
-普通 RLCraft 的 Better Caves 会在单个区块生成中极高频调用 NoiseTuple/NoiseColumn 门。`0.10.0` 将所有模块热路径统一为稳定 ordinal + 单次 volatile bit-mask 读取；关闭、熔断或结构失配仍会立即刷新 mask 并回退原逻辑，不会把优化固定为开启。
+`1.0.4` 针对 1.0.3 实机会话修复现代渲染资格链：Terrain 认证阶段优先让 SOLID 占用影子 Arena，TESR 不再因无关 FBO/PBO 状态缺口被误隔离，粒子首次验证不再链接合成可选依赖，HZB 将区块几何代际与相机稳定历史分离并直接采纳已通过源深度 oracle 的发布结果。Entity/HUD 的实测候选路径仍明显更慢，因此继续由收益门保留原渲染；这不是兼容性回退，也不会为了提高“现代命中率”而强制启用反优化。
 
-`0.10.0` 保留动画纹理入口的早期类加载隔离：Core 改写后的 `TextureUtil` 只依赖 Core 内自包含引导桥；主 optimizer 尚未进入 Forge pre-init 时无条件执行原上传，运行时就绪后才安装无逐次反射开销的 MethodHandle 委托。因此不会因为主 JAR 类尚不可见而在帧缓冲初始化阶段崩溃。
+`1.0.1` 在 Fermium 最终改写 worker 与 builder 数量之后再施加固定安全上限，不替换 Fermium 策略；Chunk Worker 不按逻辑处理器、最大堆、CPU 型号或核类型分档。区块 VBO 只有达到 256 KiB 才尝试 GPU staging，每次最多探测两个 Fence 槽；小上传、GPU 落后、预算不足或能力缺失直接执行原 `glBufferData`。动画纹理的通用单级 PBO 已停用，避免不同显卡驱动上出现每 mip 一个 Fence 的反优化；FoamFix 只有完整 mip 批次达到 256 KiB 时才尝试 PBO。
 
-F3 状态不再把“字节码已安装”误写成“实际生效”：`CORE` 显示 Core JAR 是否存在，`PATCH` 表示结构补丁已安装，`HIT` 只统计真正执行过优化分支的模块，`MISS` 表示已观察到但至少一项结构能力未安装；区块行同时显示原版/有效 Worker、构建器数量、已排序四边形、`GL31-COPY` / `ARB-COPY` 后端和上传/回退次数。Core JAR 缺失时还会在进入世界后发送一次红色提示。
+普通 RLCraft 的 Better Caves 会在单个区块生成中极高频调用 NoiseTuple/NoiseColumn 门。`1.0.1` 将所有模块热路径统一为稳定 ordinal + 单次 volatile bit-mask 读取；关闭、熔断或结构失配仍会立即刷新 mask 并回退原逻辑，不会把优化固定为开启。
+
+`1.0.1` 保留动画纹理入口的早期类加载隔离：Core 改写后的 `TextureUtil` 只依赖 Core 内自包含引导桥；主 optimizer 尚未进入 Forge pre-init 时无条件执行原上传，运行时就绪后才安装无逐次反射开销的 MethodHandle 委托。因此不会因为主 JAR 类尚不可见而在帧缓冲初始化阶段崩溃。
+
+F3 状态不再把“字节码已安装”误写成“实际生效”：`CORE` 显示 Core JAR 是否存在，`PATCH` 表示结构补丁已安装，`HIT` 只统计真正执行过优化分支的模块，`MISS` 表示已观察到但至少一项结构能力未安装；区块行同时显示原版/有效 Worker、构建器数量、已排序四边形、`GL31-COPY` / `ARB-COPY` 后端和上传/回退次数。独立的 `ICE Terrain` 行显示 Arena/Legacy 实际绘制、multi-draw/MDI 提交及当前最高频回退原因，因此不能再把“适配器已安装”误当成现代地形已经接管。Core JAR 缺失时还会在进入世界后发送一次红色提示。
+
+2026-08-21 的后续真实 Session 证明此前 Arena/MDI 为零并非 GPU 本身不支持，而是 LWJGL 2 对多值 `glGet*v` 缓冲统一要求至少 16 个剩余元素，旧状态捕获只分配了逻辑结果所需的 2 或 4 个。`1.0.1` 现在同时修复 FBO 沙箱和启动/HUD 状态工作区的 integer/boolean/float 查询，并把 Timer Query 自测的异步退休窗口单独放宽到有界 250 ms。OTG 设置与 NBT 缓存首次或目录变更后才做真实路径、属性和 SHA-256 认证；稳定热命中只使用规范化逻辑路径、WatchService 内存序列和配置代际，不再调用 canonical/toRealPath/readAttributes 或打开文件。文件变化、同大小同 mtime 重写、配置换代或监视不可用仍会失效或 fail-open。
 
 本版本根据 0.9.4 新采样继续处理实测反优化和主线程热点：Konkrete 本地化值查询由逐次反射加全 Map 扫描改为资源代际反向索引；区块 NBT 仍由主线程生成完全相同的快照，只把序列化与 Deflate 交给 1–4 个有界专用 Worker，原 FILE_IO 线程按原 Map 顺序写 RegionFile；OptiFine 的区块光照与侧面遮挡 Reflector 调用在结构匹配时改为等价 Forge 虚调用。任一队列、目标结构、世界代际、内存预算或调用异常不满足时执行保留的原方法。
 
@@ -65,7 +75,7 @@ F3 状态不再把“字节码已安装”误写成“实际生效”：`CORE` �
 - Lycanites 实体效果：`PotionEffects` 中 35 个常量 `ObjectManager.getEffect` 调用、20 个唯一效果名进入原子槽缓存；公开注册表第一次仍真实解析，空值也显式编码。附近实体筛选 Predicate 按目标类型复用，事件、实体 Tick 和效果判定次数不变。
 - Mo' Bends 通用模型：优化公共 `ModelPart`，因此覆盖它接管的玩家、原版怪物和动物，而不是只针对某一种怪物。父链拓扑逐次验证后复用，pre/local transform 的先后和 scale 传播完全保持；子模型仍按原列表顺序绘制，只去掉 Iterator 分配。
 - Mo' Bends 四元数与攀爬：每个 Quaternion 持有自己的 16-float 矩阵缓冲，四个分量以 raw float bits 校验，任一变化立即重算；非梯子或已落地实体在三个方块状态读取前返回与原方法相同的 false，真正攀爬时仍完整执行原判定。
-- Ice and Fire：Tabula `moveToPose` 每个部件把重复五次的 `getCube` 收敛为两个局部值，旋转差值、部件遍历和提交顺序不变；海蛇粒子适配同时覆盖 1.7.1 的 `int[0] + int[]{0}` 与 Dregora 2.0.9 的两个 `int[0]` 调用图，不减少粒子。
+- Ice and Fire：Dregora 2.0.9 的 `ExperimentalWalkNodeProcessor` 在一次同步 `PathFinder` 生命周期内用 primitive 坐标表复用方块状态和原始节点分类；缓存不跨搜索、不异步读取世界，并按处理器与 `IBlockAccess` 身份隔离。Tabula `moveToPose` 每个部件把重复五次的 `getCube` 收敛为两个局部值，旋转差值、部件遍历和提交顺序不变；海蛇粒子适配同时覆盖 1.7.1 的 `int[0] + int[]{0}` 与 Dregora 2.0.9 的两个 `int[0]` 调用图，不减少粒子。
 - FoamFix `FastTextureAtlasSprite.uploadTextureMaxMips`：0.9.4 记录证明通用单级 PBO 的固定 Fence 成本会形成 42–45% 渲染线程税，因此单 mip `TextureUtil` 入口现在始终走原上传。只有完整 mip 批次达到 256 KiB 才允许使用三槽 PBO；小批次、槽位仍忙、GPU 预算不足或不支持 PBO 时立即执行未修改的 FoamFix 路径，不等待 GPU。
 - Xaero World Map `TextureUploader`：保留原上传对象、池、预算、队列与顺序，把初始化阶段 7 类纹理共 2560 个 `glFinish` 同步基准替换成 32 对非阻塞 GPU Timestamp Query。查询结果只有在驱动报告 available 后才读取，样本仍采用 GPU 时间与 CPU 提交时间的较大值，并保留原来的 512/256 样本目标与默认估计。
 - RenderLib `TileEntityUtil.processTileEntities`：在已加载方块实体不少于 64、待合并不少于 4 时，使用受 Heap 硬预算限制的可复用 Agrona 成员表替代 `pending × loaded` 线性扫描。只有保持 `Object.equals/hashCode` 身份语义的对象才使用哈希查询；自定义相等语义、预算不足、列表发生非预期变化或重入时逐项回退原 `List.contains`。
@@ -85,7 +95,7 @@ F3 状态不再把“字节码已安装”误写成“实际生效”：`CORE` �
 
 目标目录目前包含 66 个唯一类、68 个独立能力项；同一个 `ChunkRenderDispatcher` 可依次尝试线程策略和 VBO 上传，两者互不连带。类名只用于找到明确目标，真正的执行门是每个适配器内部的字段、方法描述符和调用图检查；完整 SHA-256 只标记“已审查样本”。输入异常、单项结构变化、预算不足、未知显卡能力、生命周期失配、GL 缓存真值不一致或运行时熔断时只会保留对应能力的原实现，后续独立能力仍继续验证；未在目录中的类不会被猜测适配。
 
-SRP 与 Lycanites AI/寻路优化只会作用于当前 JVM 实际运行的逻辑：单人游戏由客户端进程内的集成服务器受益；多人游戏由安装了同版 ICE 的远程专用服务端受益。SRP、Lycanites、Mo' Bends、Ice and Fire 模型与粒子侧优化仍只在客户端生效，服务端不会加载任何客户端渲染模块。
+SRP、Lycanites 与 Ice and Fire AI/寻路优化只会作用于当前 JVM 实际运行的逻辑：单人游戏由客户端进程内的集成服务器受益；多人游戏由安装了同版 ICE 的远程专用服务端受益。SRP、Lycanites、Mo' Bends 与 Ice and Fire 的模型渲染优化仍只在客户端生效，服务端不会加载任何客户端渲染模块。
 
 ## 优化器磁盘写入边界
 
@@ -172,34 +182,35 @@ MXBean 与原生进程 CPU 查询由独立最低优先级线程执行；Minecraf
 
 ## 安装
 
-### 推荐：客户端与服务端都安装优化器 0.10.0
+### 推荐：客户端与服务端都安装优化器 1.0.5
 
 将下面两个文件同时放入 RLCraft 客户端实例和对应专用服务端的 `mods` 目录：
 
 ```text
-ice-rlcraft-optimizer-0.10.0.jar
-ice-rlcraft-optimizer-core-0.10.0.jar
+ice-rlcraft-optimizer-1.0.5.jar
+ice-rlcraft-optimizer-core-1.0.5.jar
 ```
 
-Forge 握手要求客户端与服务端的 ICE optimizer 主 JAR 同为 `0.10.0`；Core JAR 不参与模组列表握手，但两端都必须同时安装，否则对应端不会获得字节码优化。必须先移除旧的 `ice-rlcraft-runtime-*` 和旧版 optimizer JAR，避免重复入口和转换器；不能混装不同版本的 Main/Core。
+Forge 握手要求客户端与服务端的 ICE optimizer 主 JAR 同为 `1.0.5`；Core JAR 不参与模组列表握手，但两端都必须同时安装，否则对应端不会获得字节码优化。必须先移除所有旧版 optimizer/profiler Main/Core JAR，避免重复模组入口和 transformer；不能混装不同版本。
 
-关闭 Minecraft 后也可在工程目录运行已校验 SHA-256、会先备份旧 optimizer JAR 的部署脚本：
+关闭 Minecraft 后也可在工程目录运行固定校验 SHA-256、会先备份旧 ICE JAR 的部署脚本：
 
 ```powershell
-.\tools\deploy-optimizer-0.10.0.ps1 -Pack Dregora -Target Client
-# 专用服务端：-Target Server -ModsDirectory "D:\path\to\server\mods"
-# 普通版使用：-Pack RLCraft
+.\tools\deploy-client-1.0.5.ps1 -Pack Dregora
+# 专用服务端只部署 optimizer：
+.\tools\deploy-optimizer-1.0.5.ps1 -Target Server -ModsDirectory "D:\path\to\server\mods"
+# 普通版客户端使用：-Pack RLCraft
 ```
 
-脚本只替换两个 optimizer JAR，不安装 profiler，不删除 `ice-optimizer` 旧采集文件，也不接触任何存档。
+客户端脚本会统一替换 optimizer/profiler Main/Core 四包，适合从重复安装或混装状态恢复；专服脚本只替换两个 optimizer JAR。两者都不删除 `ice-optimizer` 旧采集文件，也不接触配置、历史 Session 或任何存档。若客户端不需要记录器，可改用 optimizer 脚本的 `-Target Client`，但必须自行确认 `mods` 中至多保留一组同版本 profiler Main/Core。
 
 ### 可选：安装独立记录器
 
 需要重新采集卡顿证据时，再额外安装：
 
 ```text
-ice-rlcraft-profiler-0.10.0.jar
-ice-rlcraft-profiler-core-0.10.0.jar
+ice-rlcraft-profiler-1.0.5.jar
+ice-rlcraft-profiler-core-1.0.5.jar
 ```
 
 记录器可以单独维护和升级。主 JAR 提供有界采样、自动触发、根因分析、F8/F9/F10 和报告；core JAR 只提供精确只读计时探针。普通自动记录不依赖 profiler core，但深度探针需要两者一起安装。
@@ -214,9 +225,11 @@ ice-rlcraft-profiler-core-0.10.0.jar
 - Forge `ASMEventHandler` 的具体监听器。
 - 区块保存与客户端区块重建。
 
+喝药水完成边界属于低频常驻精确探针，不需要开启全局深度模式。完成一次饮用后，`probes.csv` 会分别出现 `item_use_finish`、`potion_item_finish`，以及该边界内实际执行的 Forge 事件监听器；探针只计时，不跳过或异步执行药水逻辑。
+
 两个 core JAR 不混装转换器：profiler core 只包含 `IceProfilerTransformer`，optimizer core 只注册双端 `IceOptimizerTransformer`（旧类名仅保留为开发兼容入口）。每个优化变换必须通过对应物理 side 和适配器的结构检查；类 SHA 或整合包版本不参与放行。任一结构条件不满足都执行原路径。未知目标默认只警告并保留原字节码；只有显式开启 `developmentDiskOutput` 才会在 `ice-optimizer/discovery` 中保存开发样本。
 
-优化器不再提供 F10 面板。F3 显示 Core 是否存在、实际命中/安装补丁数量、区块 Worker/排序/GPU 后端及 CPU/渲染队列；适配器安装与结构兼容性拒绝仍写入 `logs/latest.log`。`INCOMPATIBLE`、`TRIPPED` 或 `DISABLED` 都会保留对应目标的原实现。
+优化器不再提供 F10 面板。F3 显示 Core 是否存在、实际命中/安装补丁数量、区块 Worker/排序/GPU 后端、现代地形 Arena/Legacy/MDI 实际提交及 CPU/渲染队列；适配器安装与结构兼容性拒绝仍写入 `logs/latest.log`。`INCOMPATIBLE`、`TRIPPED` 或 `DISABLED` 都会保留对应目标的原实现。
 
 ## 快捷键和界面
 
@@ -224,7 +237,7 @@ ice-rlcraft-profiler-core-0.10.0.jar
 
 - 普通游戏画面没有 ICE HUD。
 - F8、F9、F10 不由优化器占用。
-- 只有打开原版 F3 时，右侧追加 `ICE Opt`、`ICE Chunk` 和 `ICE Q` 摘要；`config/ice-optimizer.cfg` 的 `display.showF3Summary=false` 可全部关闭。
+- 只有打开原版 F3 时，右侧追加 `ICE Opt`、`ICE Chunk`、`ICE Terrain` 和 `ICE Q` 摘要；`ICE Terrain` 的 Arena/Legacy/MDI 计数来自真实提交点，不是启动期能力推测。`config/ice-optimizer.cfg` 的 `display.showF3Summary=false` 可全部关闭。
 
 以下快捷键只属于可选的独立记录器：
 
@@ -274,6 +287,7 @@ ice-profiler/sessions/<session-id>/
 每个 Session 包含：
 
 - `summary.txt`：中文直接结论与建议。
+- `optimizer-renderer.txt`：若同一实例装有 optimizer，则记录现代渲染生命周期、Arena/Legacy 上传与绘制、multi-draw/MDI、HZB、模型捕获/逐原因回退、Heap/Direct/GPU 预算、ResourceLedger，以及 Legacy/ICE Native/OptiFine Region 的累计 CPU/GPU 归因；optimizer 不存在时该文件明确标记不可用。
 - `timeline.csv`：每秒客户端、服务端、JVM、世界、区块、渲染和网络指标。
 - `hitches.json`：聚类、置信度、证据和代表捕获元数据。
 - `probes.csv`：可选精确探针的类/监听器聚合。
@@ -350,3 +364,102 @@ Dregora 参考实例的真实兼容回归可额外传入。这里列出的版本
 ```
 
 四个可安装 JAR 都位于 `build/libs`。合并开发产物位于 `build/devlibs`，不可安装到正式实例。`verifySplitJars` 会检查主 JAR 与 core JAR 的类集合互不重叠、模组入口和 transformer 不越界。工程保留了 ForgeGradle 3.0.197 在 Windows/Java 8 下对完整 mapped JAR 的类路径补充。
+
+### 1.0.5 发布验证（2026-08-22）
+
+针对 Dregora 远处区块在 `modernVisibilityHzb=true` 时闪烁、关闭后恢复稳定的实机证据，使用真实 `ChunkAnimator-1.12.2-1.2.1.jar` 执行 ABI 测试，并连续两次独立执行 `clean build optimizerBundleZip`。发布前本地干净复验的 20 个任务全部实际执行；194 个测试类、740 项测试、0 failure、0 error，61 个 skipped 只对应当前命令未传入的可选真实模组 JAR/运行期单类样本。六个归档保持固定哈希：
+
+| 产物 | SHA-256 |
+| --- | --- |
+| optimizer main | `FFCEBDDDCDBFDA20E04DE102B17DCB861D52188B14051419BDC0815521919EC4` |
+| optimizer core | `8F082BE7DFC7E0A4FDC03EBF86F9E4A32BC8C0FFA65A28CA0D6CDFE5FD65BF31` |
+| profiler main | `8CB4B2B145A3215750F49C2EA8EB89FE3476DBF5D524A85403FF8D60F525B2E9` |
+| profiler core | `6FE9D528874BD7C788B9C0775133C510FFBC1CEE9ACE3C20138C27BF3E64CA01` |
+| optimizer bundle | `5F440E1CB47B983FDB777C7DDACEDD81338561668E2835802898EE11D0F3301E` |
+| combined-dev（不可安装） | `5D62E686147205DCE2402418D984912EF0D52CE46EBFFF8A9BE526C6092B3E63` |
+
+`tools/deploy-client-1.0.5.ps1` 与 `tools/deploy-optimizer-1.0.5.ps1` 固定校验上述安装包哈希。两者均在工作区隔离 `mods` 夹具中验证了旧版替换、完整备份、非 ICE/profiler 文件保持不变、无 `.deploying` 遗留及第二次幂等复验；夹具和测试回滚目录已清理。1.0.5 随后部署到真实 Dregora 客户端，并在 `modernVisibilityHzb=true` 下完成 Session 验证：区块生成与远处闪烁恢复正常，ChunkAnimator 探针和 HZB 列表事务均无运行失败。当前 HZB 尚未测试真实候选、Terrain 所有权仍受固定 Arena 限制，后续改进进入独立的 ICE 2.0 架构方案。
+
+### 1.0.4 发布验证（2026-08-22）
+
+针对 `20260822-113130-969` 实机会话完成 Terrain 认证容量、TESR 模型状态、粒子首次链接和 HZB 资格链修复后，连续两次独立执行 `clean build optimizerBundleZip`。每轮 20 个任务全部实际执行；189 个测试类、724 项测试、0 failure、0 error，60 个 skipped 只对应未传入的可选真实模组 JAR/运行期单类样本。六个归档逐字节一致：
+
+| 产物 | SHA-256 |
+| --- | --- |
+| optimizer main | `E58F057C3E3A9985F8E922BCD98C7BEF8A414F11F9707DBD7A1902282B9F62CB` |
+| optimizer core | `6A4E1022E81B5A0BA53DDE83D3A736B937F0853C1E2A9AF6A3452317F5CC8DE4` |
+| profiler main | `3977D5F8824AAA3DD90BF0A5A14DE2D893541951251D37520101B90F9BB786C0` |
+| profiler core | `68E87F35D77A7E888154EA0FFC660F94FB5E3017FCDB5DE8D7D3FC85B31206AB` |
+| optimizer bundle | `BEF6A2D6E75FC0821A0091E7BF17024C422FAE4FBA36112D91E8934D0C7569AD` |
+| combined-dev（不可安装） | `94A65C17AC94DC054541E2C24E1D8C0036B3622D805D973A3D8B6B86E0770C6C` |
+
+`tools/deploy-client-1.0.4.ps1` 与 `tools/deploy-optimizer-1.0.4.ps1` 固定校验上述安装包哈希。两者已用真实 Dregora 1.0.3 四包的工作区隔离副本验证：首次执行完整备份并只留下目标 1.0.4 包，第二次执行命中幂等校验且不再新建回滚目录，也没有遗留 `.deploying` 文件。测试夹具及其测试回滚目录已清理；1.0.4 尚未部署到真实 Dregora 客户端或任何服务端。
+
+### 1.0.3 发布验证（2026-08-22）
+
+真实崩溃包 `minecraft-exported-crash-info-2026-08-22T09-20-45` 显示，启动画面的 `GlStateManager.matrixMode` 调用了只存在于普通 Main JAR 的 `EarlyMatrixStateTracker`，当时 LaunchWrapper 尚不能解析该类，直接触发 `NoClassDefFoundError`；实例同时保留 1.0.1 与 1.0.2 的 optimizer/profiler Main/Core 八个 JAR，两个 transformer 还会重复改写同一目标。1.0.3 将矩阵跟踪器及四个内部类全部迁入 optimizer Core 并从 Main 排除，同时移除了它对 Main `FatalErrors` 的链接。
+
+Core 隔离回归会完全隐藏 Main 运行时，在子加载器中定义并实际执行改写后的合成 `GlStateManager.matrixMode`；发布分包任务另行要求五个矩阵类全部且只存在于 Core。连续两次空目录 `clean build optimizerBundleZip` 均为 20 个任务实际执行：186 个测试类、701 项测试、0 failure、0 error，60 个 skipped 仅对应未传入的可选真实模组 JAR/运行期单类样本。六个归档逐字节一致。
+
+| 产物 | SHA-256 |
+| --- | --- |
+| optimizer main | `D73581DE9A59B92791408F984F70D4CDB12D32FE03994CF39D12D5DC8BB2CD6F` |
+| optimizer core | `6C24636949D585D9A77926CED42995E0E3441BC1527A6A1A77F710165C217F2A` |
+| profiler main | `8EDFD98FC2D102D2DB964978F733BB6D5724B80334358AB51D146A890793EB5A` |
+| profiler core | `4F4214EDA17E8427B3131C71C68CDFDBA6ADE838910B78523AB9024DF9BDF8F3` |
+| optimizer bundle | `89C0FE8259E57CB78F634DFFB0A1BD37D2EAD96C0A2D166ED32472F1C744D625` |
+| combined-dev（不可安装） | `21494A7F6982DAE767BC44A6B26264DDA6A476F8E9A0D69ABEA9A895E92CC94F` |
+
+`tools/deploy-client-1.0.3.ps1` 已用真实混装八包的隔离副本验证：旧八包完整进入回滚目录，目标 `mods` 最终只剩四个 1.0.3 JAR；第二次执行为幂等复验，不新建回滚或遗留 `.deploying`。`tools/deploy-optimizer-1.0.3.ps1` 为专服或不安装记录器的客户端只替换 optimizer Main/Core。两者均固定校验上述 SHA-256。经用户明确授权，四个 1.0.3 JAR 已于 2026-08-22 09:45 部署到真实 Dregora 客户端；四个 1.0.2 原件保存在 `rollback/client-Dregora-before-1.0.3-20260822-094517283`，其他模组、配置、Session 和存档未修改。
+
+### 1.0.2 发布验证（2026-08-22）
+
+从空构建目录连续执行两次 `clean build optimizerBundleZip`，第二轮实际执行 186 个测试类、701 项测试、0 failure、0 error；60 个 skipped 均对应本轮没有传入的可选真实模组 JAR 或运行期单类样本。20 个 Gradle 任务全部实际执行，重混淆、Main/Core 分包和 `verifySplitJars` 均通过。两轮 optimizer/profiler Main、Core、optimizer bundle 与 combined-dev 六个归档逐字节一致；combined-dev 只供开发使用，不能安装到游戏实例。
+
+| 产物 | SHA-256 |
+| --- | --- |
+| optimizer main | `467388F241529E6AAE3DF57DAFFD55A0688723A9D7F121A3F397677732F267F0` |
+| optimizer core | `47EF6357E75001C33F8103FBB3565E84F767681485C5DD532BE1EDBBBA99EB0E` |
+| profiler main | `0CA288DF05C3C2009C147AD1A995198663DA206EEDA3042B724E73AAB87E3B2D` |
+| profiler core | `C3770E6BF8852D68D93B5580D295E1D42C014B7F8E8541083E0EF8AAF972A323` |
+| optimizer bundle | `B5AB92517670BDAC8C0B5EE6FE37619CCC4442B4EA0081CEEF7A5FF16BA60109` |
+| combined-dev（不可安装） | `79E006FEF650145E33393C7B7D535B7751C9F203B6F34A20CAC422DBD7F1EC74` |
+
+`tools/deploy-optimizer-1.0.2.ps1` 固定校验两枚 optimizer 发布 JAR 的 SHA-256，在关闭 Java 游戏进程后才允许替换；它先备份已安装的 optimizer JAR，通过同目录 `.deploying` 文件完成替换，并在失败时恢复备份。脚本不会替换 profiler、配置、历史 Session 或存档。
+
+### 1.0.1 发布验证（2026-08-22）
+
+从空构建目录执行真实 Ice and Fire 2.0.9 参数下的 `test`、`build`、`optimizerBundleZip` 与 `verifySplitJars`：185 个测试类、695 项测试、0 failure、0 error。57 个 skipped 均为本轮未传入的其他可选真实 JAR/运行时样本；Ice and Fire 新适配器、Dregora 原始 JAR、缓存生命周期和 Core-only ABI 用例均实际执行且无跳过。
+
+| 产物 | SHA-256 |
+| --- | --- |
+| optimizer main | `E405E889C7BFC5B7B7721619916F043BA430619A55022CD033CB884C56572F42` |
+| optimizer core | `2D15D4416E3FEB0EAA636E895642EDC66E511860C75CF297E8688B1EF754C297` |
+| profiler main | `30E540526F19081D652E7FE3605F68424D0C4314368356594C617580054557AE` |
+| profiler core | `AE9024181646E5D4798B7E68755F751E66B8C175686B1ECB46F107D5969DF8F1` |
+| optimizer bundle | `B8617CE0030758685834FAB3A950C644182F12F9DBE19F32D155A1DB3753D585` |
+
+`tools/deploy-optimizer-1.0.1.ps1` 固定校验两枚 optimizer 哈希，先备份所有已安装的旧 optimizer JAR，再通过同目录 `.deploying` 文件替换；失败时恢复备份。脚本的空 `mods` 首次安装与第二次幂等复验均已在工程内隔离夹具通过；它不会触碰 profiler、存档、配置或历史 Session。
+
+### 1.0 发布验证（2026-08-21）
+
+完整真实输入矩阵使用 OptiFine G5、OTG 9.7、Forge SRG、Minecraft client/notch→SRG 映射，以及 Dregora 的 SRP、Lycanites、RenderLib、RLFoliage、Ice and Fire 等只读样本：181 个测试类、674 项测试、0 failure、0 error、1 skipped。唯一跳过项对应未额外提供的 Better Foliage 运行期改写单类样本；Dregora 专用 SRP/RenderLib 样本只通过 `-PdregoraSrpJar` / `-PdregoraRenderLibJar` 传入，不能同时冒充普通基线参数。
+
+现代渲染零命中与喝药精确探针修复后的当前实例回归为 182 个测试类、682 项测试、0 failure、0 error、8 skipped。8 项只对应本机未安装的 Xaero/Better Foliage 运行时单类，以及六个不能由 Dregora 新版 JAR 冒充的普通 RLCraft 旧版精确基线；Dregora 专用变换、OTG 9.7、OptiFine G5、Forge/Minecraft 字节码均已执行。
+
+本次收尾覆盖 `ReportWriter` 发布/ZIP cleanup 的 fatal 等价、逐能力 renderer 诊断、FBO/FBP/HZB/MDI 状态沙箱、LWJGL 2 多值状态查询容量、Timer Query 异步退休、MDI/HZB/实体/TESR 零命中修复、模型延迟发布与生命周期、ShaderPack 安全认证、HUD 空提交回退、Profiler 栈字典边界与喝药精确探针、OTG BO3/BO4 的强文件身份/摘要热复用/代际/深复制/稳定负缓存，以及区块 churn 与增量卸载保存的计划刻归因。发布任务链成功；连续两次独立 `clean` 构建的六个产物逐字节一致。独立归档审计确认 6 个 ZIP/JAR 无重复 entry、4 组 Main/Core 类交集均为 0、21 组早期注入 ABI 只存在于 optimizer Core、Agrona/Caffeine/LZ4 没有未重定位 entry 或字节引用，bundle 内两枚 JAR 与外部产物哈希相同。
+
+| 产物 | SHA-256 |
+| --- | --- |
+| optimizer main | `3E4217D2657560B5472AEF2CCD2B624DBA3BA3A6DE862B5678589057A50F9571` |
+| optimizer core | `280DA95BA947D38C0644A3225D155E6525C434A2E3956A70D90DAE62D36E164F` |
+| profiler main | `91C21399B7570B124DE79B8ED222ABC2E84C480E9AD49D5BF4E447FC3407A094` |
+| profiler core | `DF95108CAC4CD7C1A270F81BB34A594EF5C3C1734AB3B98CE0747283B70A67C5` |
+| optimizer bundle | `9EB94A339E5140003A347CBD9AB83377A91217C102FFDE8F12C2FBB039DCF952` |
+| reobfuscated combined-dev | `5A6E4257A767E3940DED072C9D5D8A6EFF37588E3FCA87C6C3ACAF75D8A42826` |
+
+部署脚本已固定上述哈希，并在隔离 `mods` 夹具中覆盖空目录首次安装、同名旧四包升级、备份保真和第二次幂等校验；夹具与烟测回滚副本随后删除。经用户明确批准，本轮四个新 JAR 已部署到真实 Dregora 客户端，旧四包保存在 `rollback/client-Dregora-before-1.0-20260821-234005394`；其他模组、存档、配置和历史 Session 未修改。
+
+需要将本轮 optimizer 与包含喝药探针的 profiler 四包一起更新时，可在完全退出 Minecraft 后运行 `tools/deploy-client-1.0.ps1 -Pack Dregora`。脚本先校验四个源产物，备份现有 ICE JAR，以 `.deploying` 暂存并逐包复验；任一步失败都会恢复备份，且不会修改其他模组、存档、配置或已有 Session。
+
+自动验证不等于实机验收：当前没有宣称通过真实 OpenGL 画面 A/B、ShaderPack 实机图像认证、随机化 ABBA、new-chunk Frame/GPU P95/P99/1% low 或长时间 Fence/Query/RAM/VRAM soak。

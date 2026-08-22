@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.lycanites;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.pathfinding.PathNodeType;
@@ -178,8 +179,10 @@ public final class LycanitesPathingBridge {
 
         private void disable() {
             active = false;
-            try { rawTypes.clear(); } catch (Throwable ignored) { }
-            try { blockStates.clear(); } catch (Throwable ignored) { }
+            try { rawTypes.clear(); }
+            catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
+            try { blockStates.clear(); }
+            catch (Throwable ignored) { FatalErrors.rethrowIfFatal(ignored); }
         }
     }
 }

@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.common;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import dev.rlcraft.ice.optimizer.OptimizerRuntimeConfig;
 import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
@@ -28,6 +29,7 @@ public final class CommonOptimizerBootstrap {
             journal.getMethod("replay").invoke(null);
             return true;
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // The main mod remains safe without the CoreMod, but no bytecode optimization can activate.
             return false;
         }

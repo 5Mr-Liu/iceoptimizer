@@ -65,6 +65,7 @@ public final class IceProfilerTransformer implements IClassTransformer {
             LOGGER.info("ICE hooks 已为 {} 安装 {} 个只读计时点，原始指纹 {}", transformedName, patched[0], fingerprint(basicClass));
             return result;
         } catch (Throwable error) {
+            HookFatalErrors.rethrowIfFatal(error);
             LOGGER.error("ICE hooks 无法安全转换 " + transformedName + "，已保留原字节码（fail-open）", error);
             return basicClass;
         }
@@ -110,6 +111,26 @@ public final class IceProfilerTransformer implements IClassTransformer {
                 return null;
             }
         },
+        ENTITY_LIVING_BASE {
+            @Override ProbeSpec match(String owner, int access, String name, String desc) {
+                boolean named = "onItemUseFinish".equals(name)
+                    || "func_71036_o".equals(name) || "v".equals(name);
+                return named && "()V".equals(desc)
+                    ? new ProbeSpec(ProbeProtocol.ITEM_USE_FINISH,
+                        Subject.ITEM_FINISH, null) : null;
+            }
+        },
+        ITEM_POTION {
+            @Override ProbeSpec match(String owner, int access, String name, String desc) {
+                boolean named = "onItemUseFinish".equals(name)
+                    || "func_77654_b".equals(name) || "a".equals(name);
+                boolean descriptor = "(Lnet/minecraft/item/ItemStack;Lnet/minecraft/world/World;Lnet/minecraft/entity/EntityLivingBase;)Lnet/minecraft/item/ItemStack;".equals(desc)
+                    || "(Laip;Lamu;Lvp;)Laip;".equals(desc);
+                return named && descriptor
+                    ? new ProbeSpec(ProbeProtocol.POTION_ITEM_FINISH,
+                        Subject.NAMED_CONSTANT, "vanilla_item_potion") : null;
+            }
+        },
         TILE_ENTITY {
             @Override ProbeSpec match(String owner, int access, String name, String desc) {
                 return ("()V".equals(desc) && ("update".equals(name) || "func_73660_a".equals(name) || "e".equals(name)))
@@ -147,6 +168,12 @@ public final class IceProfilerTransformer implements IClassTransformer {
 
         static TargetClass forName(String transformedName, boolean tileEntity, boolean generator) {
             if ("net.minecraft.world.World".equals(transformedName)) return WORLD;
+            if ("net.minecraft.entity.EntityLivingBase".equals(transformedName)) {
+                return ENTITY_LIVING_BASE;
+            }
+            if ("net.minecraft.item.ItemPotion".equals(transformedName)) {
+                return ITEM_POTION;
+            }
             if ("net.minecraftforge.fml.common.eventhandler.ASMEventHandler".equals(transformedName)) return EVENT_HANDLER;
             if ("net.minecraft.world.chunk.storage.AnvilChunkLoader".equals(transformedName)) return CHUNK_SAVE;
             if ("net.minecraft.client.renderer.chunk.RenderChunk".equals(transformedName)) return CHUNK_RENDER;
@@ -156,7 +183,13 @@ public final class IceProfilerTransformer implements IClassTransformer {
         }
     }
 
-    private enum Subject { THIS, ARG0, NAMED_FIELD }
+    private enum Subject {
+        THIS,
+        ARG0,
+        NAMED_FIELD,
+        NAMED_CONSTANT,
+        ITEM_FINISH
+    }
 
     private static final class ProbeSpec {
         private final int id;
@@ -180,14 +213,27 @@ public final class IceProfilerTransformer implements IClassTransformer {
         }
 
         @Override protected void onMethodEnter() {
+            if (spec.subject == Subject.ITEM_FINISH) {
+                loadThis();
+                invokeStatic(BRIDGE_TYPE,
+                    new org.objectweb.asm.commons.Method("enterItemFinish",
+                        "(Ljava/lang/Object;)J"));
+                tokenLocal = newLocal(Type.LONG_TYPE);
+                storeLocal(tokenLocal);
+                visitLabel(protectedStart);
+                return;
+            }
             push(spec.id);
             if (spec.subject == Subject.ARG0) loadArg(0);
             else if (spec.subject == Subject.THIS) loadThis();
-            else {
+            else if (spec.subject == Subject.NAMED_FIELD) {
                 loadThis();
                 visitFieldInsn(GETFIELD, owner, spec.field, "Ljava/lang/String;");
+            } else {
+                push(spec.field);
             }
-            if (spec.subject == Subject.NAMED_FIELD) invokeStatic(BRIDGE_TYPE, new org.objectweb.asm.commons.Method("enterNamed", "(ILjava/lang/String;)J"));
+            if (spec.subject == Subject.NAMED_FIELD
+                || spec.subject == Subject.NAMED_CONSTANT) invokeStatic(BRIDGE_TYPE, new org.objectweb.asm.commons.Method("enterNamed", "(ILjava/lang/String;)J"));
             else invokeStatic(BRIDGE_TYPE, new org.objectweb.asm.commons.Method("enter", "(ILjava/lang/Object;)J"));
             tokenLocal = newLocal(Type.LONG_TYPE);
             storeLocal(tokenLocal);
@@ -228,6 +274,7 @@ public final class IceProfilerTransformer implements IClassTransformer {
             for (int i = 0; i < 8; i++) value.append(String.format("%02x", digest[i] & 0xff));
             return value.toString();
         } catch (Exception ignored) {
+            HookFatalErrors.rethrowIfFatal(ignored);
             return "unavailable";
         }
     }

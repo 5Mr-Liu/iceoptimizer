@@ -4,7 +4,7 @@
 
 Profiler 与双端优化器保持包级、模组入口、发布 JAR 和转换器级分离。Profiler 只收集证据；优化器只处理已经由报告确认、并通过物理 side 与目标类结构检查的热点。标准采集路径不取消事件、不改返回值、不重排任务、不写世界数据，也不调整原版或模组线程优先级。
 
-`0.10.0` 构建输出四个互不重叠的正式产物：optimizer main/core 与 profiler main/core。优化器 main 不包含采样、报告、命令、快捷键或 Dashboard；profiler main 不链接优化器状态。两个 core JAR 分别只声明一个 `FMLCorePlugin` 和一个 transformer，构建期会比较全部 class entry 并拒绝重复或越界内容。
+`1.0` 构建输出四个互不重叠的正式产物：optimizer main/core 与 profiler main/core。优化器 main 不包含采样、报告、命令、快捷键或 Dashboard；profiler main 不链接优化器状态。两个 core JAR 分别只声明一个 `FMLCorePlugin` 和一个 transformer，构建期会比较全部 class entry 并拒绝重复或越界内容。
 
 客户端优化数据流为：
 
@@ -158,13 +158,13 @@ ASM transformer 的安全策略：
 - 任何异常返回原始 `byte[]`。
 - `ProbeBridge` 自身吞掉采集异常，永不把异常带回原游戏调用。
 
-Forge 会在普通模组 JAR 可见之前实例化 CoreMod 转换器，因此 hooks 源集在构建期禁止依赖 main 输出。`IceProfilerLoadingPlugin` 只返回 `IceProfilerTransformer`；`IceOptimizerLoadingPlugin` 只返回双端 `IceOptimizerTransformer` 并初始化目标发现策略。Profiler transformer 只保存 `ProbeBridge` 的内部类名和稳定数字 ABI，不在启动期解析该类；optimizer transformer 使用 Core JAR 本地 SHA-256 实现。optimizer CoreMod 的 transformer exclusion 只包含 `dev.rlcraft.ice.hooks.*`；主运行时 `dev.rlcraft.ice.optimizer.*` 必须继续由 LaunchClassLoader 正常解析，否则 FermiumASM 环境会在 preInit 产生 `NoClassDefFoundError`。早期观察到的优化目标和已安装补丁先写入 `OptimizerPatchJournal`，客户端或专服主运行时初始化后通过反射回放到 `OptimizerRegistry`。隔离类加载测试会隐藏全部 main 运行时类，并要求转换器仍能初始化和执行，同时校验 optimizer exclusion 只剩 hooks 包。
+Forge 会在普通模组 JAR 可见之前实例化 CoreMod 转换器，因此 hooks 源集在构建期禁止依赖 main 输出。`IceProfilerLoadingPlugin` 只返回 `IceProfilerTransformer`；`IceOptimizerLoadingPlugin` 只返回双端 `IceOptimizerTransformer` 并初始化目标发现策略。Profiler transformer 只保存 `ProbeBridge` 的内部类名和稳定数字 ABI，不在启动期解析该类；optimizer transformer 使用 Core JAR 本地 SHA-256 实现。optimizer CoreMod 的 transformer exclusion 只包含 `dev.rlcraft.ice.hooks.*`；主运行时 `dev.rlcraft.ice.optimizer.*` 必须继续由 LaunchClassLoader 正常解析，否则 FermiumASM 环境会在 preInit 产生 `NoClassDefFoundError`。任何由 Core transformer 注入到目标类声明中的接口 ABI 都只打包进 Core JAR，包括字体、粒子、OptiFine VboRegion、Lycanites、Mo' Bends、地形、动态光源、存档和 SRP 接口；Main JAR 显式排除这些类。字体隔离回归使用无父 ClassLoader，要求缺少 Core ABI 时重现 `NoClassDefFoundError`、ABI 可见时完成改写类链接。早期观察到的优化目标和已安装补丁先写入 `OptimizerPatchJournal`，客户端或专服主运行时初始化后通过反射回放到 `OptimizerRegistry`。隔离类加载测试会隐藏全部 main 运行时类，并要求转换器仍能初始化和执行，同时校验 optimizer exclusion 只剩 hooks 包。
 
 ## 9. 隐私与兼容
 
 默认报告不需要世界种子、玩家名或精确坐标。绝对游戏/世界路径不进入报告；命令也只显示 Session 名。Netty handler 始终先计数、再调用 `super`，即使计数失败也继续原网络管线。
 
-优化器从 `0.7.0` 起声明为双端必需模组；`0.10.0` 使用 `acceptableRemoteVersions=[0.10.0]` 强制客户端与专用服务端使用同一 ICE 主 JAR 版本。该握手不检查 RLCraft、Dregora 或目标组件版本。两端也都必须安装 optimizer Core JAR 才会真正注入优化。Profiler 没有自定义网络握手协议，仍可按需要单独安装在客户端、单人集成服务器或独立服务端，另一端不要求安装 Profiler。
+优化器从 `0.7.0` 起声明为双端必需模组；`1.0` 使用 `acceptableRemoteVersions=[1.0]` 强制客户端与专用服务端使用同一 ICE 主 JAR 版本。该握手不检查 RLCraft、Dregora 或目标组件版本。两端也都必须安装 optimizer Core JAR 才会真正注入优化。Profiler 没有自定义网络握手协议，仍可按需要单独安装在客户端、单人集成服务器或独立服务端，另一端不要求安装 Profiler。
 
 ## 10. 后续优化器准入条件
 
@@ -193,7 +193,7 @@ Forge 会在普通模组 JAR 可见之前实例化 CoreMod 转换器，因此 ho
 
 ## 12. FoamFix / TextureUtil 纹理上传适配器
 
-`FoamFixTextureUploadAdapter` 匹配私有静态方法 `uploadTextureMaxMips(I[[IIIIIZZZ)V`；`VanillaTextureUploadAdapter` 仍包装生产 SRG `TextureUtil` 的单级 `(I[IIIIIZZZ)V` 上传入口以保持早期 Core/Main 隔离，但 0.10.0 的单级桥固定返回 `false`。实际 0.9.4 Session 证明单级入口会形成每小纹理一个 Fence 的驱动税，因此只有 FoamFix 已经聚合好的完整 mip 数组才允许进入 PBO 候选。两条适配器都要求唯一方法描述符和原上传调用图；桥返回 `false` 时控制流落回未经删改的原方法。
+`FoamFixTextureUploadAdapter` 匹配私有静态方法 `uploadTextureMaxMips(I[[IIIIIZZZ)V`；`VanillaTextureUploadAdapter` 仍包装生产 SRG `TextureUtil` 的单级 `(I[IIIIIZZZ)V` 上传入口以保持早期 Core/Main 隔离，但 1.0 的单级桥固定返回 `false`。实际 0.9.4 Session 证明单级入口会形成每小纹理一个 Fence 的驱动税，因此只有 FoamFix 已经聚合好的完整 mip 数组才允许进入 PBO 候选。两条适配器都要求唯一方法描述符和原上传调用图；桥返回 `false` 时控制流落回未经删改的原方法。
 
 优化路径保持像素、mip、过滤、clamp、坐标和提交顺序不变：
 
@@ -202,7 +202,8 @@ Forge 会在普通模组 JAR 可见之前实例化 CoreMod 转换器，因此 ho
 - 支持 PBO 且具备 OpenGL 3.2 核心 Sync 或 `GL_ARB_sync` 时轮转三个上传槽；Fence 未完成时不调用带等待的同步 API，而是尝试其他槽。
 - 三槽都忙、GPU 预算不足或显卡不支持时，使用同一暂存区逐 mip 直接上传。
 - FoamFix 三个调用点在完整上传后原本就会执行一次 `checkGLError`，因此桥接方法不再添加逐 mip 或重复的 `glGetError`。
-- PBO 绑定在调用后恢复；发生 Java/LWJGL 异常的槽会被隔离，模块按连续错误熔断，并执行原方法。
+- PBO 绑定恢复意图在进入 LWJGL 绑定调用前发布；普通异常只有在原 `PIXEL_UNPACK_BUFFER` 绑定确认恢复后才执行原方法。
+- 若绑定恢复失败，Bridge 抛出 Core JAR 以类名识别的 `UnsafeLegacyReplayException`，禁止对可能已经提交的像素再次执行原上传；故障槽仍被隔离并由独立熔断器处理。
 - GL 槽生命周期使用 `glContextGeneration`，不把普通资源重载误认为显卡上下文重建。
 
 ## 13. Xaero World Map 非阻塞 GPU 基准适配器
@@ -311,9 +312,11 @@ Lycanites Mobs `2.0.8.9` 与 Dregora 参考实例的 `2.0.8.10 - MC 1.12.2` 都�
 
 `LycanitesObjRenderAdapter` 精确匹配 `TessellatorModel` 与 `VBOModel` 的 `renderGroupImpl(ObjObject, Vector4f, Vector2f, VertexFormat)` 结构。原方法重命名保留，公开 wrapper 先调用 `LycanitesObjRenderBridge.tryRender`，任何拒绝或失败都执行原实现。
 
-- 缓存按模型身份、ObjObject 身份、Mesh/indices/vertices/normals 身份与长度、VBO ID、颜色/UV raw float bits 和 `VertexFormat` 身份区分，不合并任何输入不同的提交。
-- 一个变体连续观察三次才编译；每组最多 8 个变体、最多 96 个模型、2048 个分组和 1024 个 Display List，避免动态染色造成无界 GPU 对象。
-- 每个列表先取得 GPU `CacheBudget` 预留；网格签名改变、资源代际改变或 GL 上下文代际改变时释放对应列表与预算。同一 GL 上下文可安全删除，已丢失的旧上下文只释放账本。
+- 缓存按模型、`ObjObject`、`Mesh`、indices/vertices/normals 身份与长度及外部 VBO ID 区分；颜色继续使用原固定管线 current color，UV offset 继续按原 VBO 路径临时修改 texture matrix，因此不会为动态颜色/UV 生成变体对象。
+- 一个分组连续观察三次后才取得共享 VBO；最多保留 96 个模型和 2048 个分组，达到上限时按最近使用帧淘汰旧项，不会因一次性模型永久占满强引用表。
+- 已由 Lycanites 创建的 VBO 只借用且不删除。ICE 触发 `Mesh.getVbo()` 创建的新名字会先从 `Mesh.vbo` 事务式脱离，再把预分配的 GPU 预算与名字一并转交 `ResourceLedger`，从而避免 `Mesh.delete()` 与 ICE 双删；删除结果不确定时预算保持 poisoned。
+- 网格签名、资源代际或 GL context 代际变化时，ICE-owned 名字经 Fence 退休；context 丢失时账本只 abandon，借用名字的旧字段被清除。组件图原地重置和销毁都会同步排空静态缓存，清理失败不会阻断其余资源回收。
+- `glDrawArrays` 一旦进入即视为可能提交；任何绘制或其后状态清理异常都返回“已处理”并只熔断该适配器，禁止透明几何执行第二次 legacy draw。提交前异常仍安全执行保留的原方法。
 - 反射字段沿继承链解析；异常只熔断 `lycanites-obj-render`。该模块是本轮唯一必须在真实 OpenGL 游戏中额外做画面回归的路径，可用 `settings.lycanitesObjRender=false` 单独关闭而保留其余优化。
 
 Lycanites 动画侧由四类适配器组成：
@@ -417,9 +420,9 @@ Better Caves 由四个适配器组成：
 
 `RusticLatticeAdapter` 不缓存邻居或连接判定。`getExtendedState` 的循环仍按 `EnumFacing` 0–5 调用原 `canConnectTo`，Bridge 只按源状态、属性身份和 Boolean 值复用不可变转换结果；表满或探测冲突时直接调用原 `withProperty`。包围盒按 Rustic 的 DOWN、UP、NORTH、SOUTH、WEST、EAST 位序预构建 64 个精确对象，任一属性缺失或类型变化时执行原包围盒方法。
 
-`VanillaChunkRenderAdapter` 在构造器中定位最终 worker 局部变量存储，并在其后调用 `tuneWorkerCount`，因此 Fermium 的 `@ModifyVariable` 结果先执行。builder 限制插在唯一 `field_188249_c` 写入之后；当 Fermium 把写入重定向到自己的 helper 时，限制也位于 helper 的最终赋值之后。CPU 与 JVM 堆只形成上限，不会把前序实现给出的 worker 或 builder 数量增大；结构无法唯一确认时仅关闭线程策略，独立 VBO 上传适配仍继续尝试。
+`VanillaChunkRenderAdapter` 在构造器中定位最终 worker 局部变量存储，并在其后调用 `tuneWorkerCount`，因此 Fermium 的 `@ModifyVariable` 结果先执行。builder 限制插在唯一 `field_188249_c` 写入之后；当 Fermium 把写入重定向到自己的 helper 时，限制也位于 helper 的最终赋值之后。ICE 只把前序实现给出的 worker 限制到固定安全上限 2，并据此限制 builder；逻辑处理器数、最大堆、CPU 型号和核类型都不参与分档。结构无法唯一确认时仅关闭线程策略，独立 VBO 上传适配仍继续尝试。
 
-## 30. 0.10.0 无锁模块门与记录器降耗
+## 30. 1.0 无锁模块门与记录器降耗
 
 `OptimizationModule` 采用 append-only ordinal ABI，所有注入桥在编译期保存 ordinal。`OptimizerRegistry` 只发布一个 volatile `long operationalMask`；稳定调用只做范围检查、一次 volatile 读取和位判断。熔断器用 CAS 迁移状态、`LongAdder` 计数，仅配置、目标观察和显式关闭保留同步边界。
 
@@ -433,12 +436,56 @@ Profiler 的线程发现仍按配置周期执行，但发现结果会编译为�
 
 ## 32. 区块 NBT 并行压缩与顺序提交
 
-`ChunkSaveCompressionAdapter` 在 `AnvilChunkLoader` 把完整 NBT 快照放入 pending Map 后提交一个身份绑定任务。Worker 不访问 World/Chunk/Entity，只对该快照执行 `CompressedStreamTools.write` 和 zlib Deflate；线程数按 CPU 与最大堆限制为 1–4，队列和结果总字节都有硬上限。
+`ChunkSaveCompressionAdapter` 在 `AnvilChunkLoader` 把完整 NBT 快照放入 pending Map 后提交一个身份绑定任务。Worker 不访问 World/Chunk/Entity，只对该快照执行 `CompressedStreamTools.write` 和 zlib Deflate；线程池固定从 1 个安全 Worker 启动，只根据已观察到的队列饱和、FILE_IO 等待和结果内存压力，以迟滞反馈在 1–4 间调节，CPU 数、最大堆和硬件身份不选择 Worker 档位。队列和结果总字节仍有硬上限。
 
 FILE_IO 线程从原 pending Map 取得同一个 NBT 身份后等待对应任务，随后通过 Core-only `RegionFileRawWriteAccessor` 调用原同步 raw write，因而 pending Map 迭代、RegionFile 写入和磁盘格式都不变。Accessor 缺失、队列拒绝、结果大于 16 MiB、代际变化、压缩错误或取消时 wrapper 调用保留的原 `func_183013_b`。取消任务主动 count down，确保线程池关闭不会让 FILE_IO 永久等待。
+
+每个压缩 Worker 惰性持有自己的 `Deflater`；`ThreadPoolExecutor` Worker 真正退出时由包装 Runnable 显式执行 `Deflater.end()` 并移除 ThreadLocal。主异常、清理异常和包装型 fatal 按 fatal 优先规则聚合，既不泄漏 native zlib 状态，也不以清理异常覆盖原保存异常。
 
 ## 33. OptiFine / Forge BlockState 直调用
 
 两个独立 target 分别处理 `ReflectorForge` 与 `BlockStateContainer$StateImplementation`。适配器要求唯一对象参数方法、准确返回类型，以及精确一个 `Reflector.callInt` / `callBoolean`；匹配后把原方法重命名保留，公开 wrapper 先调用 `ForgeBlockStateDirectBridge`。Bridge 只执行对应 `IBlockState` 或 `Block` Forge 虚方法，返回专用 fallback sentinel 时调用原反射方法。
 
-普通 Forge 的 StateImplementation 已经没有 Reflector 调用时抛出预期 skip，而不是把模块或其他 target 判为失败。目标类名和完整 JAR SHA 不构成白名单；方法结构变化只回退本能力。目标目录在 0.10.0 为 66 个唯一类、68 个独立能力项。
+普通 Forge 的 StateImplementation 已经没有 Reflector 调用时抛出预期 skip，而不是把模块或其他 target 判为失败。目标类名和完整 JAR SHA 不构成白名单；方法结构变化只回退本能力。目标目录在 1.0 为 66 个唯一类、68 个独立能力项。
+
+## 34. 现代 OpenGL 混合渲染运行时
+
+`ClientOptimizerRuntime` 在真实客户端渲染线程拥有唯一 `ModernRendererRuntime`。初始化和重建以实际 GL Context 身份及 `world/resource/glContext` generation 为准，不按显卡型号、核心数或核显/独显分档。Worker 只能发布带 generation 的不可变 payload；所有名称创建、绑定、提交、Fence/Query 轮询和删除都留在渲染线程。
+
+`FrameCoordinator` 与 `PassGraph` 保存原版、Forge、OptiFine、RenderLib 和递归 portal 的可观察 pass 顺序。每个 pass 在 `LEGACY`、`OF_COMPAT_REGION`、`ICE_NATIVE` 之间独立选择；未知状态、第三方回调、FBO/事件边界和 ShaderPack 不认证组合进入 `LegacyGlIsland`，先 flush 现代批次，再捕获/恢复或失效状态镜像。透明命令保持原遍历顺序和距离排序，不跨事件或 view 合并。
+
+每个现代后端都经历 `CAPABILITY_SELF_TEST → WARMUP → OUTPUT_VALIDATE → PAIRED_MEASURE → MODERN → REGRESSION_MONITOR`；失败进入该后端自己的 `LEGACY` 或 `QUARANTINED`，不会连坐其他能力。能力判断来自实际函数/格式自测，离屏或字节输出验证证明等价，随机配对测量与回归窗口决定是否保留收益；普通帧 Fence/Query 只做 availability/零等待检查。
+
+主要数据流如下：
+
+- 区块 Worker 发布精确 `ChunkMeshPayload`；渲染线程在 `GpuArenaAllocator`、Persistent/SubData 上传和 MultiDraw/MDI 间按自测选择。`OF_COMPAT_REGION` 观察 OptiFine 权威 region，`ICE_NATIVE` 生成保持原顺序的地形命令。
+- primitive section grid、层级候选和保守 HZB 只剔除被证明不可见的工作；深度历史带 view/FBO/matrix generation，延迟读回不阻塞当前帧，任何不确定性直接可见。
+- RenderLib 唯一实体/TESR 遍历边界生成带事件 scope 与 sequence 的 packet；模型缓存、SRP/Lycanites 专用路径、标准粒子与 FBP 都在提交点记录“未提交/已提交/结果不确定”，避免透明几何重复重放。
+- 动画纹理可见性、PBO/Persistent ring、HUD/字体动态流和 OptiFine Shader program/permutation 都有独立自测、输出认证、预算、代际和 Legacy barrier；未认证 ShaderPack 不进入原生顶点格式。
+
+OptiFine G5 会在 ICE 前重建若干 vanilla 类，不能再把原 SRG 字段名当成最终 ABI。地形容器现在从唯一 `(DDD)V` 方法的 `DLOAD 1/3/5 → PUTFIELD` 结构解析相机坐标，并按唯一实例描述符解析 List/boolean；动画纹理只要求 update/interpolation 是非 static、非 abstract、非 native 且各有唯一认证上传点。可见性适配器认证真实 `Deque.isEmpty → poll → RenderInfo` 循环，并保留 OptiFine 的三张 render-info 列表、五参数 offset、`isBoundingBoxInFrustum(camera, frame)` 缓存、`RenderChunk.getRenderInfo()` 对象池、`access$000` 初始化以及 packed path int。测试会用真实 OptiFine transformer 处理 Dregora 客户端原类，再执行 notch→SRG remap，最后把结果送入生产适配器和 ASM verifier；这条链不再是只检查合成类形状。
+
+地形命中诊断由渲染线程累计并每 120 帧发布为两个有界 immutable 字符串，包含 Arena/Legacy 上传、Legacy layer、unbatched/multi-draw、MDI submission/command、提交不确定和所有明确 fallback reason。每个 adaptive backend 同时输出 lifecycle、active、detail、配对收益、P95 回归、样本和不稳定样本数。F3 只显示一行简表；独立 Profiler 用字符串类名反射调用 `ModernRendererDiagnostics.report/summary`，输出 `optimizer-renderer.txt` 并追加 `summary.txt`，报告线程不持有也不遍历运行时 GL/backend 对象。Profiler 自有 `dev.rlcraft.ice.profiler.FatalErrors`，不再对 optimizer Main JAR 建立隐藏链接。
+
+`ResourceLedger`、`RenderHandle`、`TemporaryGpuResourceScope` 和各后端的所有权 witness 统一管理 GPU/Direct/native 对象。确认同一 Context 时才删除；Context-loss 只 abandon 名字并释放账本，删除结果不确定的 raw name 永不重试。SRP display list、模型/VBO、PBO、terrain arena、HZB、粒子、Shader、Query/Fence 和线程本地 Deflater 都已接入重载、Context reset、关闭或 Worker 退出边界。
+
+Core trampoline 对 HUD、动画纹理和批量纹理上传的 `UnsafeLegacyReplayException` 只按类名识别，保持 Core/Main 隔离。一旦 delegate 可能已经提交 GL 工作，或恢复后的绑定/矩阵/客户端数组状态不确定，Core 不执行旧调用；只有明确失败在提交前且状态已恢复时才允许 Legacy 重放。hooks 中所有 `catch(Throwable)` 都先提升直接或包装的 `ThreadDeath`/`VirtualMachineError`。
+
+## 35. 2026-08-21 自动交付与产物审计
+
+当前源码在提供本机可用的真实 OptiFine G5、OTG 9.7、Dregora 专用只读依赖、Minecraft client/Forge SRG JAR 和 notch→SRG 映射时，完整 `gradlew test` 为 182 个测试类、682 项测试、0 failure、0 error、8 skipped；跳过项只对应缺失的 Xaero/Better Foliage 运行时样本和六项普通 RLCraft 旧版精确基线，不能用 Dregora 新版 JAR 冒充。`build`、三个实际 reobf 任务、`optimizerBundleZip` 和 `verifySplitJars` 全部成功。ForgeGradle reobf 后的正式 JAR 及 combined-dev 均再次执行固定时间戳、固定顺序的确定性规范化；连续两次独立 `clean + build/reobf/bundle/verify` 的六个产物 SHA-256 均逐字节一致。独立 Zip/JAR 审计确认六个归档均无重复 entry，四组 main/core/main-main/core-core 类交集都为 0；21 组早期注入 ABI 在 optimizer Main 中为 0、Core 中全部存在。Core manifest 分别声明正确的 `IceOptimizerLoadingPlugin` 与 `IceProfilerLoadingPlugin`，主 JAR 不冒充 CoreMod；JDeps 与常量池检查确认 Profiler Main 不再链接 optimizer-only `FatalErrors`。
+
+最终尾审补齐了 `ReportWriter` 发布、ZIP/stream cleanup 和原子移动的 primary/fatal 传播；Capability 与 renderer 输出按能力记录准备、认证、提交和回退原因；FBO、MultiDraw/MDI、FBP、HZB 与生产 HZB 对无法精确恢复的 OpenGL 状态直接拒绝候选路径。真实 Session 后续审计又修复了 LWJGL 2 `glGetIntegerv/glGetBooleanv/glGetFloatv` 的 16 元素包装器契约，FBO 沙箱和启动/HUD 状态工作区不再因 2/4 元素逻辑结果被错误隔离；Timer Query 使用独立的 250 ms 有界退休窗口。ShaderPack 接管要求 program/permutation、顶点格式、状态和输出完整认证；HUD 空提交安全回到原路径，提交不确定时禁止重复重放。Profiler 栈字典达到上限时稳定折叠，冻结窗口包含完整统计。OTG BO3/BO4 同步缓存首次/变更后使用 canonical path、file key、size、mtime、SHA-256、目录变更序列与配置代际完整认证，受监视热命中只比较逻辑路径和内存令牌，不再解析真实路径、读取属性或打开文件；命中深复制、稳定失败负缓存、反射 fatal 传播，并在发布前同锁认证代际；区块 churn 与增量卸载保存同时记录计划刻索引来源。
+
+优化器主 JAR 中重定位 entry 数为 Agrona 308、Caffeine 696、LZ4 103；原 `org.agrona`、`com.github.benmanes.caffeine` 和 `net.jpountz` entry 与 class/resource 字节引用均为 0。最终 SHA-256：
+
+- optimizer main：`3E4217D2657560B5472AEF2CCD2B624DBA3BA3A6DE862B5678589057A50F9571`
+- optimizer core：`280DA95BA947D38C0644A3225D155E6525C434A2E3956A70D90DAE62D36E164F`
+- profiler main：`91C21399B7570B124DE79B8ED222ABC2E84C480E9AD49D5BF4E447FC3407A094`
+- profiler core：`DF95108CAC4CD7C1A270F81BB34A594EF5C3C1734AB3B98CE0747283B70A67C5`
+- optimizer bundle：`9EB94A339E5140003A347CBD9AB83377A91217C102FFDE8F12C2FBB039DCF952`
+- combined-dev reobf：`5A6E4257A767E3940DED072C9D5D8A6EFF37588E3FCA87C6C3ACAF75D8A42826`
+
+bundle 只含与源产物哈希完全一致的 optimizer main/core 和 `INSTALL.txt`。四包客户端部署脚本在隔离 `mods` fixture 中完成空目录安装、同名旧包升级、备份保真、无 `.deploying` 残留和第二次调用幂等验证；fixture 与烟测回滚随后清理。经用户明确批准，真实 Dregora 已部署本轮 optimizer/profiler Main/Core，旧四包保存在 `rollback/client-Dregora-before-1.0-20260821-234005394`。
+
+真实 OpenGL 画面 A/B、ShaderPack 实机图像、随机化 ABBA 的 Frame/GPU P50/P95/P99/1% low、new-chunk P95/P99、接近 2× 吞吐和长时间 Fence/Query/RAM/VRAM soak 仍是外部验收，不能由上述自动证据替代，也没有在本次发布中宣称通过。

@@ -20,12 +20,23 @@ public final class ClientOptimizerStatus {
     private final CacheBudgetStatus cacheBudget;
     private final EpochToken epochs;
     private final ChunkRenderStatus chunkRender;
+    private final ModernRendererStatus modernRenderer;
     private final List<ModuleStatus> modules;
 
     public ClientOptimizerStatus(boolean initialized, boolean coreModPresent,
                                  PackLockStatus packLock, WorkerStatus workers,
                                  RenderQueueStatus renderQueue, CacheBudgetStatus cacheBudget,
                                  EpochToken epochs, ChunkRenderStatus chunkRender,
+                                 List<ModuleStatus> modules) {
+        this(initialized, coreModPresent, packLock, workers, renderQueue, cacheBudget,
+            epochs, chunkRender, null, modules);
+    }
+
+    public ClientOptimizerStatus(boolean initialized, boolean coreModPresent,
+                                 PackLockStatus packLock, WorkerStatus workers,
+                                 RenderQueueStatus renderQueue, CacheBudgetStatus cacheBudget,
+                                 EpochToken epochs, ChunkRenderStatus chunkRender,
+                                 ModernRendererStatus modernRenderer,
                                  List<ModuleStatus> modules) {
         this.initialized = initialized;
         this.coreModPresent = coreModPresent;
@@ -35,6 +46,7 @@ public final class ClientOptimizerStatus {
         this.cacheBudget = cacheBudget;
         this.epochs = epochs;
         this.chunkRender = chunkRender;
+        this.modernRenderer = modernRenderer;
         this.modules = Collections.unmodifiableList(new ArrayList<ModuleStatus>(modules));
     }
 
@@ -46,5 +58,6 @@ public final class ClientOptimizerStatus {
     public CacheBudgetStatus getCacheBudget() { return cacheBudget; }
     public EpochToken getEpochs() { return epochs; }
     public ChunkRenderStatus getChunkRender() { return chunkRender; }
+    public ModernRendererStatus getModernRenderer() { return modernRenderer; }
     public List<ModuleStatus> getModules() { return modules; }
 }

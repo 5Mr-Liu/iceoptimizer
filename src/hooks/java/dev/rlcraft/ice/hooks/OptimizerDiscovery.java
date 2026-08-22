@@ -59,6 +59,7 @@ final class OptimizerDiscovery {
             }
             return true;
         } catch (Throwable error) {
+            HookFatalErrors.rethrowIfFatal(error);
             LOGGER.warn("无法写出优化目标发现样本 {}", target.className, error);
             return false;
         }

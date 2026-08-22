@@ -11,6 +11,10 @@ public final class ProbeIds {
     public static final int PACKET_OUTBOUND = 8;
     public static final int CHUNK_RENDER = 9;
     public static final int WORLD_TICK = 10;
+    /** Rare outer scope covering vanilla item completion and Forge Finish. */
+    public static final int ITEM_USE_FINISH = 11;
+    /** Vanilla ItemPotion body nested inside ITEM_USE_FINISH. */
+    public static final int POTION_ITEM_FINISH = 12;
 
     private ProbeIds() {
     }
@@ -27,6 +31,8 @@ public final class ProbeIds {
             case PACKET_OUTBOUND: return "packet_outbound";
             case CHUNK_RENDER: return "chunk_render";
             case WORLD_TICK: return "world_tick";
+            case ITEM_USE_FINISH: return "item_use_finish";
+            case POTION_ITEM_FINISH: return "potion_item_finish";
             default: return "probe_" + id;
         }
     }

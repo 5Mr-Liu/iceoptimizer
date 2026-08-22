@@ -2,6 +2,7 @@ package dev.rlcraft.ice.profiler.core;
 
 import dev.rlcraft.ice.IceProfilerMod;
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.capture.HitchCluster;
 import dev.rlcraft.ice.profiler.capture.HitchTrigger;
 import dev.rlcraft.ice.profiler.capture.TriggerEngine;
@@ -266,6 +267,7 @@ public final class ProfilerRuntime implements SampleListener, SamplingMode, Trig
     }
 
     private void collectorFailure(String collector, Throwable error) {
+        FatalErrors.rethrowIfFatal(error);
         long failures = collectorFailures.incrementAndGet();
         if (failures == 1L || (failures & (failures - 1L)) == 0L) {
             IceProfilerMod.LOGGER.warn("ICE 采集器 {} 发生错误（累计 {} 次），本轮数据已丢弃，游戏继续运行", collector, failures, error);

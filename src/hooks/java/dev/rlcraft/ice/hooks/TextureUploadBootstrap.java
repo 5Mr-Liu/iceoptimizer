@@ -14,6 +14,8 @@ import java.lang.invoke.MethodType;
  * the untouched Minecraft/FoamFix implementation runs.</p>
  */
 public final class TextureUploadBootstrap {
+    private static final String UNSAFE_REPLAY_FAILURE =
+        "dev.rlcraft.ice.optimizer.bridge.UnsafeLegacyReplayException";
     private static final MethodType LEVEL_TYPE = MethodType.methodType(boolean.class,
         int.class, int[].class, int.class, int.class, int.class, int.class,
         boolean.class, boolean.class, boolean.class);
@@ -35,6 +37,7 @@ public final class TextureUploadBootstrap {
             delegate = new Delegate(level, batch);
             return true;
         } catch (Throwable incompatibleBridge) {
+            HookFatalErrors.rethrowIfFatal(incompatibleBridge);
             delegate = null;
             return false;
         }
@@ -49,6 +52,11 @@ public final class TextureUploadBootstrap {
             return (boolean) current.level.invokeExact(mipLevel, data, width, height,
                 originX, originY, linearFiltering, clamped, mipFiltering);
         } catch (Throwable failedDelegate) {
+            HookFatalErrors.rethrowIfFatal(failedDelegate);
+            if (isUnsafeReplayFailure(failedDelegate)) {
+                return TextureUploadBootstrap.<RuntimeException, Boolean>raise(
+                    failedDelegate);
+            }
             return false;
         }
     }
@@ -62,8 +70,31 @@ public final class TextureUploadBootstrap {
             return (boolean) current.batch.invokeExact(maxMips, data, width, height,
                 originX, originY, linearFiltering, clamped, mipFiltering);
         } catch (Throwable failedDelegate) {
+            HookFatalErrors.rethrowIfFatal(failedDelegate);
+            if (isUnsafeReplayFailure(failedDelegate)) {
+                return TextureUploadBootstrap.<RuntimeException, Boolean>raise(
+                    failedDelegate);
+            }
             return false;
         }
+    }
+
+    private static boolean isUnsafeReplayFailure(Throwable error) {
+        Throwable current = error;
+        for (int depth = 0; current != null && depth < 64; depth++) {
+            if (UNSAFE_REPLAY_FAILURE.equals(current.getClass().getName())) {
+                return true;
+            }
+            Throwable next = current.getCause();
+            if (next == current) return false;
+            current = next;
+        }
+        return false;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E extends Throwable, T> T raise(Throwable error) throws E {
+        throw (E) error;
     }
 
     static void resetForTest() {

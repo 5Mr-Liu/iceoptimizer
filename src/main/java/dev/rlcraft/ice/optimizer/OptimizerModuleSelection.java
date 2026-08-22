@@ -42,6 +42,7 @@ final class OptimizerModuleSelection {
             case MOBENDS_ENTITY_ANIMATION: return source.moBendsEntityAnimation;
             case ICEANDFIRE_POSE_LOOKUP: return source.iceAndFirePoseLookup;
             case ICEANDFIRE_PARTICLE_SCRATCH: return source.iceAndFireParticleScratch;
+            case ICEANDFIRE_PATH_NODE_CACHE: return source.iceAndFirePathNodeCache;
             case FOAMFIX_TEXTURE_UPLOAD: return source.foamFixTextureUpload;
             case XAERO_TEXTURE_UPLOAD: return source.xaeroTextureUpload;
             case XAERO_GPU_FENCE: return source.xaeroGpuFence;
@@ -56,10 +57,47 @@ final class OptimizerModuleSelection {
             case OTG_BO4_IO: return source.otgBo4WriteSuppression;
             case OTG_CONFIG_PARSER: return source.otgConfigParser;
             case OTG_BO4_LAYOUT: return source.otgBo4Layout;
+            case OTG_SYNC_FILE_CACHE: return source.otgSynchronousFileCache;
             case SKULL_PROFILE_ASYNC: return source.skullProfileAsync;
             case KONKRETE_LOCALE_LOOKUP: return source.konkreteLocaleLookup;
             case VANILLA_CHUNK_COMPRESSION: return source.vanillaChunkCompression;
             case FORGE_BLOCKSTATE_DIRECT_CALLS: return source.forgeBlockStateDirectCalls;
+            case MODERN_FRAME_COORDINATOR:
+                return source.modernRenderer && source.modernFrameCoordinator;
+            case MODERN_TERRAIN_BACKEND:
+                return source.modernRenderer && source.modernTerrainBackend;
+            case MODERN_TERRAIN_MDI:
+                return source.modernRenderer && source.modernTerrainBackend;
+            case MODERN_TERRAIN_PERSISTENT_MAPPING:
+                return source.modernRenderer && source.modernTerrainBackend;
+            case MODERN_VISIBILITY_HZB:
+                return source.modernRenderer && source.modernVisibilityHzb;
+            case MODERN_VISIBILITY_GRID:
+                return source.modernRenderer && source.modernVisibilityHzb;
+            case MODERN_ENTITY_BACKEND:
+                return source.modernRenderer && source.modernEntityBackend;
+            case MODERN_TESR_BACKEND:
+                return source.modernRenderer && source.modernTesrBackend;
+            case MODERN_PARTICLE_BACKEND:
+                return source.modernRenderer && source.modernParticleBackend;
+            case FBP_PARTICLE_ADAPTER:
+                return source.modernRenderer && source.modernParticleBackend;
+            case MODERN_TEXTURE_STREAM:
+                return source.modernRenderer && source.modernTextureStream;
+            case MODERN_TEXTURE_PERSISTENT_RING:
+                return source.modernRenderer && source.modernTextureStream;
+            case MODERN_TEXTURE_VISIBILITY:
+                return source.modernRenderer && source.modernTextureStream;
+            case MODERN_HUD_STREAM:
+                return source.modernRenderer && source.modernHudStream;
+            case OPTIFINE_REGION_BACKEND:
+                return source.modernRenderer && source.optifineRegionBackend;
+            case OPTIFINE_SHADER_BRIDGE:
+                return source.modernRenderer && source.optifineShaderBridge;
+            case LEGACY_GL_ISLAND:
+                return source.modernRenderer && source.legacyGlIsland;
+            case RENDER_VALIDATION:
+                return source.modernRenderer && source.renderValidation;
             default: return true;
         }
     }

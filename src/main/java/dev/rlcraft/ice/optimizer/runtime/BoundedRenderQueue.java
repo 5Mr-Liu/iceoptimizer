@@ -12,11 +12,14 @@ public final class BoundedRenderQueue {
     private final ManyToOneConcurrentArrayQueue<RenderCommand> queue;
     private final ClientEpochs epochs;
     private final int configuredCapacity;
+    private final Object producerGate = new Object();
+    private final Object consumerGate = new Object();
     private final LongAdder submitted = new LongAdder();
     private final LongAdder executed = new LongAdder();
     private final LongAdder rejected = new LongAdder();
     private final LongAdder stale = new LongAdder();
     private final LongAdder failures = new LongAdder();
+    private volatile boolean closed;
 
     public BoundedRenderQueue(ClientEpochs epochs, int capacity) {
         this.epochs = epochs;
@@ -28,54 +31,90 @@ public final class BoundedRenderQueue {
         if (module == null || action == null
             || !OptimizerRegistry.isOperational(module.ordinal())) return false;
         RenderCommand command = new RenderCommand(module, token, epochMask, action);
-        if (!queue.offer(command)) {
-            rejected.increment();
-            OptimizerRegistry.breaker(module).recordRejected("渲染提交队列已满，已回退原路径");
-            OptimizerRegistry.breaker(OptimizationModule.RENDER_SUBMISSION).recordRejected("渲染提交队列已满");
-            return false;
+        synchronized (producerGate) {
+            if (closed) return false;
+            if (!queue.offer(command)) {
+                rejected.increment();
+                OptimizerRegistry.breaker(module).recordRejected(
+                    "渲染提交队列已满，已回退原路径");
+                OptimizerRegistry.breaker(OptimizationModule.RENDER_SUBMISSION)
+                    .recordRejected("渲染提交队列已满");
+                return false;
+            }
+            submitted.increment();
+            return true;
         }
-        submitted.increment();
-        return true;
     }
 
     public int drain(long timeBudgetNanos, int maximumCommands) {
-        long deadline = System.nanoTime() + Math.max(1L, timeBudgetNanos);
-        int completed = 0;
-        int processed = 0;
-        int processLimit = Math.max(1, maximumCommands);
-        while (processed < processLimit) {
-            if (processed > 0 && (processed & TIME_CHECK_MASK) == 0
-                && System.nanoTime() >= deadline) break;
-            RenderCommand command = queue.poll();
-            if (command == null) break;
-            processed++;
-            if (!epochs.isCurrent(command.token, command.epochMask)) {
-                stale.increment();
-                continue;
-            }
-            ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(command.module);
-            if (!OptimizerRegistry.isOperational(command.module.ordinal())) continue;
-            try {
-                command.action.run();
-                executed.increment();
-                completed++;
-                breaker.recordSuccess();
-                breaker.activate("已执行已验证优化路径");
-                if (command.module != OptimizationModule.RENDER_SUBMISSION) {
-                    OptimizerRegistry.breaker(OptimizationModule.RENDER_SUBMISSION).recordSuccess();
+        synchronized (consumerGate) {
+            long started = System.nanoTime();
+            long budget = Math.max(1L, timeBudgetNanos);
+            int completed = 0;
+            int processed = 0;
+            int processLimit = Math.max(1, maximumCommands);
+            while (processed < processLimit) {
+                if (processed > 0 && (processed & TIME_CHECK_MASK) == 0
+                    && System.nanoTime() - started >= budget) break;
+                RenderCommand command = queue.poll();
+                if (command == null) break;
+                processed++;
+                if (!epochs.isCurrent(command.token, command.epochMask)) {
+                    stale.increment();
+                    continue;
                 }
-            } catch (Throwable error) {
-                failures.increment();
-                breaker.recordFailure(error);
-                if (command.module != OptimizationModule.RENDER_SUBMISSION) {
-                    OptimizerRegistry.breaker(OptimizationModule.RENDER_SUBMISSION).recordFailure(error);
+                ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(
+                    command.module);
+                if (!OptimizerRegistry.isOperational(command.module.ordinal())) {
+                    continue;
+                }
+                try {
+                    command.action.run();
+                    executed.increment();
+                    completed++;
+                    breaker.recordSuccess();
+                    breaker.activate("已执行已验证优化路径");
+                    if (command.module != OptimizationModule.RENDER_SUBMISSION) {
+                        OptimizerRegistry.breaker(
+                            OptimizationModule.RENDER_SUBMISSION).recordSuccess();
+                    }
+                } catch (ThreadDeath fatal) {
+                    throw fatal;
+                } catch (VirtualMachineError fatal) {
+                    throw fatal;
+                } catch (Throwable error) {
+                    failures.increment();
+                    breaker.recordFailure(error);
+                    if (command.module != OptimizationModule.RENDER_SUBMISSION) {
+                        OptimizerRegistry.breaker(
+                            OptimizationModule.RENDER_SUBMISSION)
+                            .recordFailure(error);
+                    }
                 }
             }
+            return completed;
         }
-        return completed;
     }
 
     public int discardAll() {
+        synchronized (consumerGate) {
+            return discardAllLocked();
+        }
+    }
+
+    /** Permanently rejects producers before consuming the final queue tail. */
+    public int closeAndDiscard() {
+        synchronized (producerGate) {
+            closed = true;
+        }
+        synchronized (consumerGate) {
+            return discardAllLocked();
+        }
+    }
+
+    boolean isClosed() { return closed; }
+
+    private int discardAllLocked() {
         int discarded = 0;
         while (queue.poll() != null) discarded++;
         stale.add(discarded);

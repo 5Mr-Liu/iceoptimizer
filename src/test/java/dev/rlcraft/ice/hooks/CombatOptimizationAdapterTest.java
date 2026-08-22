@@ -147,8 +147,16 @@ public class CombatOptimizationAdapterTest {
                 "com.github.alexthe666.iceandfire.client.model.animator.IceAndFireTabulaModelAnimator");
             assertEquals(1, countCalls(animator, IceAndFirePoseAdapter.BRIDGE, "usePoseLookup"));
             byte[] serpent = transformed.get("com.github.alexthe666.iceandfire.entity.EntitySeaSerpent");
-            assertEquals(1, countCalls(serpent, IceAndFireSeaSerpentAdapter.BRIDGE, "emptyParticleArgs"));
-            assertEquals(1, countCalls(serpent, IceAndFireSeaSerpentAdapter.BRIDGE, "zeroParticleArgs"));
+            int emptyArrays = countCalls(serpent, IceAndFireSeaSerpentAdapter.BRIDGE,
+                "emptyParticleArgs");
+            int zeroArrays = countCalls(serpent, IceAndFireSeaSerpentAdapter.BRIDGE,
+                "zeroParticleArgs");
+            // Ice and Fire 1.7.1 used {0} in the slam path; Dregora 2.0.9
+            // changed that site to an empty array.  Both retain exactly the two
+            // reviewed particle argument allocations.
+            assertEquals(2, emptyArrays + zeroArrays);
+            assertTrue(emptyArrays == 1 || emptyArrays == 2);
+            assertTrue(zeroArrays == 0 || zeroArrays == 1);
 
             for (String className : ICE_AND_FIRE.keySet()) {
                 assertEquals(className, loader.define(className, transformed.get(className)).getName());

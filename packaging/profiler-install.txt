@@ -1,0 +1,11 @@
+ICE Performance Recorder installation
+=====================================
+
+Copy BOTH JAR files from this ZIP into the Minecraft instance's mods folder.
+The profiler main JAR provides recording and reports; profiler-core provides
+the optional deep bytecode probes. Keep both files on the same version and
+remove older profiler main/core JARs before installation.
+
+安装方法：把 ZIP 内的两个 JAR 一起放入实例的 mods 目录。Profiler 主 JAR
+提供记录与报告，profiler-core 提供可选的深度字节码探针。两个文件必须同版，
+安装前请移除旧版 profiler 主/Core JAR。

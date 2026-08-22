@@ -64,6 +64,11 @@ public final class KonkreteLocaleBridge {
         return value == FALLBACK;
     }
 
+    /** Releases the old Locale map and reverse index at a resource boundary. */
+    public static synchronized void reset() {
+        cache = null;
+    }
+
     private static Cache rebuild(Map<?, ?> source, long generation, int expectedSize) {
         synchronized (KonkreteLocaleBridge.class) {
             Cache current = cache;

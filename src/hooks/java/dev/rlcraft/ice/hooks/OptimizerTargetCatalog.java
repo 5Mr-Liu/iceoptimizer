@@ -81,6 +81,9 @@ final class OptimizerTargetCatalog {
 
     private static int integer(String value, int fallback) {
         try { return Integer.parseInt(value); }
-        catch (Exception ignored) { return fallback; }
+        catch (Exception ignored) {
+            HookFatalErrors.rethrowIfFatal(ignored);
+            return fallback;
+        }
     }
 }

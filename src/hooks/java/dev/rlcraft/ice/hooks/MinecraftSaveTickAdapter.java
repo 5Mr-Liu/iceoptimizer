@@ -19,7 +19,7 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-/** Installs the mutation-versioned scheduled-tick index around vanilla full saves. */
+/** Installs the mutation-versioned scheduled-tick index around vanilla synchronous saves. */
 final class MinecraftSaveTickAdapter implements OptimizerBytecodeAdapter {
     static final String WORLD_TARGET = "net/minecraft/world/WorldServer";
     static final String PROVIDER_TARGET = "net/minecraft/world/gen/ChunkProviderServer";
@@ -35,6 +35,9 @@ final class MinecraftSaveTickAdapter implements OptimizerBytecodeAdapter {
     static final String SAVE_METHOD = "func_186027_a";
     static final String SAVE_DESCRIPTOR = "(Z)Z";
     static final String ORIGINAL_SAVE_METHOD = "ice$original$saveChunks";
+    static final String PROVIDER_TICK_METHOD = "func_73156_b";
+    static final String PROVIDER_TICK_DESCRIPTOR = "()Z";
+    static final String ORIGINAL_PROVIDER_TICK_METHOD = "ice$original$tick";
     static final String VERSION_FIELD = "ice$pendingTickVersion";
 
     private static final String TREE_FIELD = "field_73065_O";
@@ -45,7 +48,6 @@ final class MinecraftSaveTickAdapter implements OptimizerBytecodeAdapter {
     private static final String HASH_DESCRIPTOR = "Ljava/util/Set;";
     private static final String WORLD_FIELD = "field_73251_h";
     private static final String WORLD_DESCRIPTOR = "Lnet/minecraft/world/WorldServer;";
-
     private static final String UPDATE_TICK = "func_175654_a";
     private static final String SCHEDULE_TICK = "func_180497_b";
     private static final String TICK_UPDATES = "func_72955_a";
@@ -143,7 +145,9 @@ final class MinecraftSaveTickAdapter implements OptimizerBytecodeAdapter {
     private static void transformProvider(ClassNode node) {
         requireField(node, WORLD_FIELD, WORLD_DESCRIPTOR);
         rejectMethod(node, ORIGINAL_SAVE_METHOD, SAVE_DESCRIPTOR);
+        rejectMethod(node, ORIGINAL_PROVIDER_TICK_METHOD, PROVIDER_TICK_DESCRIPTOR);
         MethodNode save = requireMethod(node, SAVE_METHOD, SAVE_DESCRIPTOR);
+        MethodNode tick = requireMethod(node, PROVIDER_TICK_METHOD, PROVIDER_TICK_DESCRIPTOR);
         if (countCalls(save, Opcodes.INVOKESTATIC, "com/google/common/collect/Lists",
             "newArrayList", "(Ljava/lang/Iterable;)Ljava/util/ArrayList;") != 1
             || countCalls(save, Opcodes.INVOKESPECIAL, PROVIDER_TARGET,
@@ -155,6 +159,15 @@ final class MinecraftSaveTickAdapter implements OptimizerBytecodeAdapter {
             || countCalls(save, Opcodes.INVOKEVIRTUAL, "net/minecraft/world/chunk/Chunk",
                 "func_177427_f", "(Z)V") != 1) {
             throw new IllegalStateException("ChunkProviderServer 全量保存调用图变化");
+        }
+        if (countCalls(tick, Opcodes.INVOKESPECIAL, PROVIDER_TARGET,
+                "func_73242_b", "(Lnet/minecraft/world/chunk/Chunk;)V") != 1
+            || countCalls(tick, Opcodes.INVOKESPECIAL, PROVIDER_TARGET,
+                "func_73243_a", "(Lnet/minecraft/world/chunk/Chunk;)V") != 1
+            || countCalls(tick, Opcodes.INVOKEINTERFACE,
+                "it/unimi/dsi/fastutil/longs/Long2ObjectMap", "remove",
+                "(Ljava/lang/Object;)Ljava/lang/Object;") != 1) {
+            throw new IllegalStateException("ChunkProviderServer 卸载保存调用图变化");
         }
 
         int wrapperAccess = save.access;
@@ -197,6 +210,47 @@ final class MinecraftSaveTickAdapter implements OptimizerBytecodeAdapter {
         code.add(new InsnNode(Opcodes.ATHROW));
         wrapper.tryCatchBlocks.add(new TryCatchBlockNode(start, end, handler, null));
         node.methods.add(wrapper);
+
+        int tickWrapperAccess = tick.access;
+        String tickSignature = tick.signature;
+        String[] tickExceptions = exceptions(tick);
+        tick.name = ORIGINAL_PROVIDER_TICK_METHOD;
+        tick.access = (tick.access & ~(Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED))
+            | Opcodes.ACC_PRIVATE | Opcodes.ACC_SYNTHETIC;
+
+        MethodNode tickWrapper = new MethodNode(Opcodes.ASM5, tickWrapperAccess,
+            PROVIDER_TICK_METHOD, PROVIDER_TICK_DESCRIPTOR, tickSignature, tickExceptions);
+        InsnList tickCode = tickWrapper.instructions;
+        tickCode.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        tickCode.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        tickCode.add(new FieldInsnNode(Opcodes.GETFIELD, PROVIDER_TARGET, WORLD_FIELD,
+            WORLD_DESCRIPTOR));
+        tickCode.add(new InsnNode(Opcodes.ICONST_0));
+        tickCode.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "begin",
+            "(Ljava/lang/Object;Ljava/lang/Object;Z)J", false));
+        tickCode.add(new VarInsnNode(Opcodes.LSTORE, 1));
+
+        LabelNode tickStart = new LabelNode();
+        LabelNode tickEnd = new LabelNode();
+        LabelNode tickHandler = new LabelNode();
+        tickCode.add(tickStart);
+        tickCode.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        tickCode.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, PROVIDER_TARGET,
+            ORIGINAL_PROVIDER_TICK_METHOD, PROVIDER_TICK_DESCRIPTOR, false));
+        tickCode.add(new VarInsnNode(Opcodes.ISTORE, 3));
+        tickCode.add(tickEnd);
+        tickCode.add(new VarInsnNode(Opcodes.LLOAD, 1));
+        tickCode.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "end", "(J)V", false));
+        tickCode.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        tickCode.add(new InsnNode(Opcodes.IRETURN));
+        tickCode.add(tickHandler);
+        tickCode.add(new VarInsnNode(Opcodes.ASTORE, 4));
+        tickCode.add(new VarInsnNode(Opcodes.LLOAD, 1));
+        tickCode.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "end", "(J)V", false));
+        tickCode.add(new VarInsnNode(Opcodes.ALOAD, 4));
+        tickCode.add(new InsnNode(Opcodes.ATHROW));
+        tickWrapper.tryCatchBlocks.add(new TryCatchBlockNode(tickStart, tickEnd, tickHandler, null));
+        node.methods.add(tickWrapper);
     }
 
     private static void insertVersionBump(MethodNode method) {

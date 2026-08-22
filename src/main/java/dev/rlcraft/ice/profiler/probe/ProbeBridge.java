@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.profiler.probe;
 
 import dev.rlcraft.ice.config.IceConfig;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -9,6 +10,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.util.ResourceLocation;
 
 public final class ProbeBridge {
     private static final int MAX_NESTING = 32;
@@ -31,13 +36,10 @@ public final class ProbeBridge {
         try {
             if (!isEnabled() || probeId <= 0 || probeId >= MAX_PROBE_ID) return 0L;
             SpanState state = STATE.get();
-            if (state.depth >= MAX_NESTING) return 0L;
-            int slot = state.depth++;
-            state.started[slot] = System.nanoTime();
-            state.probeIds[slot] = probeId;
-            state.subjects[slot] = subject == null ? "<none>" : subject.getClass().getName();
-            return (((long) slot + 1L) << 32) | (Thread.currentThread().getId() & 0xffffffffL);
+            return enterAccepted(state, probeId, subject == null
+                ? "<none>" : subject.getClass().getName(), false);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
     }
@@ -45,17 +47,43 @@ public final class ProbeBridge {
     /** Named variant for generated Forge event wrappers, whose readable name already identifies the listener method. */
     public static long enterNamed(int probeId, String subjectName) {
         try {
-            if (!isEnabled() || probeId <= 0 || probeId >= MAX_PROBE_ID) return 0L;
+            if (probeId <= 0 || probeId >= MAX_PROBE_ID || !enabled) return 0L;
             SpanState state = STATE.get();
-            if (state.depth >= MAX_NESTING) return 0L;
-            int slot = state.depth++;
-            state.started[slot] = System.nanoTime();
-            state.probeIds[slot] = probeId;
-            state.subjects[slot] = subjectName == null || subjectName.isEmpty() ? "<unnamed>" : subjectName;
-            return (((long) slot + 1L) << 32) | (Thread.currentThread().getId() & 0xffffffffL);
+            if (!IceConfig.probes.deepProfiling
+                && !(state.rareDepth > 0 && isRareScopedProbe(probeId))) {
+                return 0L;
+            }
+            return enterAccepted(state, probeId,
+                subjectName == null || subjectName.isEmpty()
+                    ? "<unnamed>" : subjectName, false);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return 0L;
         }
+    }
+
+    /**
+     * Opens an always-low-frequency diagnostic scope. Unlike deep probes this
+     * is allowed while passive monitoring is active because item completion
+     * occurs at human interaction frequency, not once per entity or event.
+     */
+    public static long enterRareNamed(int probeId, String subjectName) {
+        try {
+            if (!enabled || probeId <= 0 || probeId >= MAX_PROBE_ID) return 0L;
+            return enterAccepted(STATE.get(), probeId,
+                subjectName == null || subjectName.isEmpty()
+                    ? "<unnamed>" : subjectName, true);
+        } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
+            return 0L;
+        }
+    }
+
+    /** Entry point used by the exact EntityLivingBase completion hook. */
+    public static long enterItemFinish(Object entity) {
+        if (!enabled) return 0L;
+        return enterRareNamed(ProbeIds.ITEM_USE_FINISH,
+            itemFinishSubject(entity));
     }
 
     /** Called by optional bytecode hooks from a finally path. Invalid tokens are ignored (fail-open). */
@@ -68,10 +96,19 @@ public final class ProbeBridge {
             long elapsed = Math.max(0L, System.nanoTime() - state.started[slot]);
             int probeId = state.probeIds[slot];
             String subject = state.subjects[slot];
+            int oldDepth = state.depth;
             state.depth = slot;
-            state.subjects[slot] = null;
+            for (int index = slot; index < oldDepth; index++) {
+                state.subjects[index] = null;
+                state.rareScopes[index] = false;
+            }
+            state.rareDepth = 0;
+            for (int index = 0; index < slot; index++) {
+                if (state.rareScopes[index]) state.rareDepth++;
+            }
             record(probeId, subject, elapsed);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             // Exact hooks are observational and must never affect the instrumented call.
         }
     }
@@ -113,11 +150,48 @@ public final class ProbeBridge {
         while (nanos > previous && !accumulator.maximum.compareAndSet(previous, nanos)) previous = accumulator.maximum.get();
     }
 
+    private static long enterAccepted(SpanState state, int probeId,
+                                      String subject, boolean rare) {
+        if (state == null || state.depth >= MAX_NESTING) return 0L;
+        int slot = state.depth++;
+        state.started[slot] = System.nanoTime();
+        state.probeIds[slot] = probeId;
+        state.subjects[slot] = subject;
+        state.rareScopes[slot] = rare;
+        if (rare) state.rareDepth++;
+        return (((long) slot + 1L) << 32)
+            | (Thread.currentThread().getId() & 0xffffffffL);
+    }
+
+    private static boolean isRareScopedProbe(int probeId) {
+        return probeId == ProbeIds.EVENT_HANDLER
+            || probeId == ProbeIds.POTION_ITEM_FINISH;
+    }
+
+    private static String itemFinishSubject(Object entity) {
+        String fallback = entity == null ? "<none>" : entity.getClass().getName();
+        if (!(entity instanceof EntityLivingBase)) return fallback;
+        try {
+            ItemStack stack = ((EntityLivingBase) entity).getActiveItemStack();
+            if (stack == null || stack.isEmpty()) return fallback + "|<empty>";
+            Item item = stack.getItem();
+            if (item == null) return fallback + "|<null-item>";
+            ResourceLocation registryName = item.getRegistryName();
+            return (registryName == null ? item.getClass().getName()
+                : registryName.toString()) + "|" + item.getClass().getName();
+        } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
+            return fallback + "|<unresolved-item>";
+        }
+    }
+
     private static final class SpanState {
         private final long[] started = new long[MAX_NESTING];
         private final int[] probeIds = new int[MAX_NESTING];
         private final String[] subjects = new String[MAX_NESTING];
+        private final boolean[] rareScopes = new boolean[MAX_NESTING];
         private int depth;
+        private int rareDepth;
     }
 
     private static final class Accumulator {

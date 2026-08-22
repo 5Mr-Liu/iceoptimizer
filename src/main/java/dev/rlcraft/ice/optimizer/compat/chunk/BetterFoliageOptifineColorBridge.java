@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.chunk;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.lang.reflect.Field;
 
@@ -38,6 +39,7 @@ public final class BetterFoliageOptifineColorBridge {
             Field field = find(settings.getClass());
             return field != null && Boolean.TRUE.equals(field.get(settings));
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }
@@ -52,6 +54,7 @@ public final class BetterFoliageOptifineColorBridge {
             } catch (NoSuchFieldException ignored) {
                 current = current.getSuperclass();
             } catch (Throwable ignored) {
+                FatalErrors.rethrowIfFatal(ignored);
                 return null;
             }
         }
@@ -72,6 +75,7 @@ public final class BetterFoliageOptifineColorBridge {
         try {
             OptimizerBridge.failure(MODULE, error);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
         }
     }
 

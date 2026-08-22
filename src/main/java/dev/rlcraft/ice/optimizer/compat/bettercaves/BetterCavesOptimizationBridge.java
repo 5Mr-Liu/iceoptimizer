@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.bettercaves;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.ModuleCircuitBreaker;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
@@ -53,6 +54,7 @@ public final class BetterCavesOptimizationBridge {
                 pipelineCapability = 1;
                 return true;
             } catch (Throwable incompatible) {
+                FatalErrors.rethrowIfFatal(incompatible);
                 pipelineCapability = -1;
                 return false;
             }
@@ -97,6 +99,7 @@ public final class BetterCavesOptimizationBridge {
             if (known != null) known.recordFailure(error);
             else OptimizerBridge.failure(MODULE.getId(), error);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
         }
     }
 }

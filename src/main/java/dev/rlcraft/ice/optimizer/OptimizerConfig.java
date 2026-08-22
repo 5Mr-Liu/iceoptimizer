@@ -37,7 +37,10 @@ public final class OptimizerConfig {
         })
         public boolean developmentDiskOutput = false;
 
-        @Config.Comment("Dedicated optimizer worker count. Zero selects CPU count minus two, clamped to 1..6.")
+        @Config.Comment({
+            "Dedicated optimizer worker count. Zero selects one fixed safe worker; it never infers a tier from CPU topology.",
+            "A positive value is an explicit user override, clamped to 1..12."
+        })
         @Config.RangeInt(min = 0, max = 12)
         public int workerThreads = 0;
 
@@ -159,6 +162,12 @@ public final class OptimizerConfig {
         public boolean iceAndFireParticleScratch = true;
 
         @Config.Comment({
+            "Cache Ice and Fire block-state and raw node-type queries only inside one synchronous PathFinder call.",
+            "No world read or AI decision is moved off the authoritative thread or retained across searches."
+        })
+        public boolean iceAndFirePathNodeCache = true;
+
+        @Config.Comment({
             "Use fenced PBO uploads only for large animated-texture batches through FoamFix's batch helper.",
             "Single mip levels, small sprites, busy slots and unsupported drivers keep the original upload path."
         })
@@ -201,6 +210,13 @@ public final class OptimizerConfig {
         @Config.Comment("Reuse OTG BO4 block arrays inside one spawn and precompute immutable column offsets while loading a BO4.")
         public boolean otgBo4Layout = true;
 
+        @Config.Comment({
+            "Cache only fully and stably read OTG settings and BO3 tile-entity NBT blueprints.",
+            "Every hit revalidates canonical path, size, modification time, file key and OTG configuration generation;",
+            "mutable NBT arrays and tag trees are deep-copied for every caller, while all world generation stays synchronous."
+        })
+        public boolean otgSynchronousFileCache = true;
+
         @Config.Comment("Resolve incomplete player-skull profiles away from the render thread with bounded positive, negative and in-flight caches.")
         public boolean skullProfileAsync = true;
 
@@ -221,6 +237,26 @@ public final class OptimizerConfig {
             "The original reflective methods remain as fallback when a target shape or invocation fails."
         })
         public boolean forgeBlockStateDirectCalls = true;
+
+        @Config.Comment({
+            "Enable the complete capability-tested modern OpenGL hybrid renderer.",
+            "This switch never selects a backend by hardware model. Each subsystem still requires",
+            "its own self-test, output validation, paired benefit measurement and circuit breaker."
+        })
+        public boolean modernRenderer = true;
+
+        public boolean modernFrameCoordinator = true;
+        public boolean modernTerrainBackend = true;
+        public boolean modernVisibilityHzb = true;
+        public boolean modernEntityBackend = true;
+        public boolean modernTesrBackend = true;
+        public boolean modernParticleBackend = true;
+        public boolean modernTextureStream = true;
+        public boolean modernHudStream = true;
+        public boolean optifineRegionBackend = true;
+        public boolean optifineShaderBridge = true;
+        public boolean legacyGlIsland = true;
+        public boolean renderValidation = true;
 
         @Config.RangeInt(min = 64, max = 8192)
         public int skullProfileCacheEntries = 2048;

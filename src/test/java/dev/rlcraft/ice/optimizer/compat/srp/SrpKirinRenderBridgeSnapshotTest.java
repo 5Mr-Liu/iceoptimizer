@@ -1,12 +1,17 @@
 package dev.rlcraft.ice.optimizer.compat.srp;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import dev.rlcraft.ice.optimizer.memory.BudgetKind;
+import dev.rlcraft.ice.optimizer.memory.CacheBudget;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import net.minecraft.client.model.ModelBase;
 import net.minecraft.client.model.ModelRenderer;
 import org.junit.Test;
@@ -78,6 +83,45 @@ public class SrpKirinRenderBridgeSnapshotTest {
         assertFalse(eligible(jointRecord));
     }
 
+    @Test
+    public void contextLossImmediatelyDropsRootReferencesAndGpuBudgetWithoutGlDeletion()
+        throws Exception {
+        final long generation = 73L;
+        ModelRenderer root = renderer(401);
+        ModelRenderer child = renderer(402);
+        ModelRenderer leaf = renderer(403);
+        root.addChild(child);
+        child.addChild(leaf);
+        Object rootEntry = captureRoot(root, generation);
+        Object rootRecord = field(rootEntry, "root");
+        Object snapshot = snapshot(rootRecord);
+        CacheBudget budget = new CacheBudget(1L, 1L, 8192L);
+        CacheBudget.Reservation reservation = budget.tryReserve(
+            BudgetKind.GPU, 4096L);
+        assertNotNull(reservation);
+
+        Object batch = newBatch(snapshot, generation, reservation);
+        setField(rootRecord, "batch", batch);
+        setStatic("knownContextGeneration", generation);
+        cache().put(root, rootEntry);
+        try {
+            assertEquals(1, cache().size());
+            assertEquals(4096L, budget.snapshot().getGpuUsed());
+
+            SrpKirinRenderBridge.contextLost(generation);
+
+            assertTrue(cache().isEmpty());
+            assertEquals(0L, budget.snapshot().getGpuUsed());
+            assertEquals(null, field(rootRecord, "batch"));
+            assertEquals(Long.MIN_VALUE,
+                ((Long) staticField("knownContextGeneration")).longValue());
+        } finally {
+            long known = ((Long) staticField("knownContextGeneration"))
+                .longValue();
+            SrpKirinRenderBridge.contextLost(known);
+        }
+    }
+
     private static ModelRenderer renderer(int displayList) throws Exception {
         ModelRenderer renderer = new ModelRenderer(new ModelBase() { });
         setPrivate(renderer, true, "compiled", "field_78812_q");
@@ -86,10 +130,15 @@ public class SrpKirinRenderBridgeSnapshotTest {
     }
 
     private static Object captureRoot(ModelRenderer root) throws Exception {
+        return captureRoot(root, 1L);
+    }
+
+    private static Object captureRoot(ModelRenderer root, long generation)
+        throws Exception {
         resolveFields();
         Method capture = SrpKirinRenderBridge.class.getDeclaredMethod("captureRoot", ModelRenderer.class, long.class);
         capture.setAccessible(true);
-        Object result = capture.invoke(null, root, 1L);
+        Object result = capture.invoke(null, root, generation);
         assertNotNull(result);
         return result;
     }
@@ -97,12 +146,29 @@ public class SrpKirinRenderBridgeSnapshotTest {
     private static Object captureSnapshot(ModelRenderer root) throws Exception {
         Object entry = captureRoot(root);
         Object rootRecord = field(entry, "root");
+        return snapshot(rootRecord);
+    }
+
+    private static Object snapshot(Object rootRecord) throws Exception {
         Method capture = SrpKirinRenderBridge.class.getDeclaredMethod(
             "captureSnapshot", rootRecord.getClass(), boolean.class);
         capture.setAccessible(true);
         Object result = capture.invoke(null, rootRecord, true);
         assertNotNull(result);
         return field(result, "snapshot");
+    }
+
+    private static Object newBatch(Object snapshot, long generation,
+                                   CacheBudget.Reservation reservation)
+        throws Exception {
+        Class<?> batchType = Class.forName(
+            SrpKirinRenderBridge.class.getName() + "$BatchEntry");
+        Constructor<?> constructor = batchType.getDeclaredConstructor(
+            int.class, snapshot.getClass(), int.class, int.class, long.class,
+            CacheBudget.Reservation.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(Float.floatToRawIntBits(0.0625F),
+            snapshot, 499, 3, generation, reservation);
     }
 
     private static boolean matches(Object snapshot) throws Exception {
@@ -127,6 +193,31 @@ public class SrpKirinRenderBridgeSnapshotTest {
         Field field = owner.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return field.get(owner);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static IdentityHashMap<ModelRenderer, Object> cache()
+        throws Exception {
+        return (IdentityHashMap<ModelRenderer, Object>) staticField("CACHE");
+    }
+
+    private static Object staticField(String name) throws Exception {
+        Field field = SrpKirinRenderBridge.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(null);
+    }
+
+    private static void setStatic(String name, Object value) throws Exception {
+        Field field = SrpKirinRenderBridge.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(null, value);
+    }
+
+    private static void setField(Object owner, String name, Object value)
+        throws Exception {
+        Field field = owner.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(owner, value);
     }
 
     private static void resolveFields() throws Exception {

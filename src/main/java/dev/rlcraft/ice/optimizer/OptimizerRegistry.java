@@ -10,11 +10,12 @@ public final class OptimizerRegistry {
     private static final OptimizationModule[] MODULES = OptimizationModule.values();
     private static final ModuleCircuitBreaker[] BREAKERS = new ModuleCircuitBreaker[MODULES.length];
     private static volatile long operationalMask;
+    private static volatile long operationalMaskHigh;
 
     static {
-        if (MODULES.length > Long.SIZE) {
-            throw new IllegalStateException("ICE operational mask supports at most "
-                + Long.SIZE + " modules");
+        if (MODULES.length > Long.SIZE * 2) {
+            throw new IllegalStateException("ICE operational masks support at most "
+                + (Long.SIZE * 2) + " modules");
         }
         Runnable publisher = new Runnable() {
             @Override public void run() { refreshOperationalMask(); }
@@ -55,8 +56,10 @@ public final class OptimizerRegistry {
 
     /** One volatile read; used by injected and other high-frequency call sites. */
     public static boolean isOperational(int moduleOrdinal) {
-        return moduleOrdinal >= 0 && moduleOrdinal < MODULES.length
-            && (operationalMask & (1L << moduleOrdinal)) != 0L;
+        if (moduleOrdinal < 0 || moduleOrdinal >= MODULES.length) return false;
+        return moduleOrdinal < Long.SIZE
+            ? (operationalMask & (1L << moduleOrdinal)) != 0L
+            : (operationalMaskHigh & (1L << (moduleOrdinal - Long.SIZE))) != 0L;
     }
 
     public static void targetObserved(String moduleId, String className,
@@ -95,12 +98,18 @@ public final class OptimizerRegistry {
         return operationalMask;
     }
 
+    static long operationalMaskHighForTest() { return operationalMaskHigh; }
+
     private static void refreshOperationalMask() {
         long next = 0L;
+        long nextHigh = 0L;
         for (int i = 0; i < BREAKERS.length; i++) {
             ModuleCircuitBreaker breaker = BREAKERS[i];
-            if (breaker != null && breaker.isOperational()) next |= 1L << i;
+            if (breaker == null || !breaker.isOperational()) continue;
+            if (i < Long.SIZE) next |= 1L << i;
+            else nextHigh |= 1L << (i - Long.SIZE);
         }
         operationalMask = next;
+        operationalMaskHigh = nextHigh;
     }
 }

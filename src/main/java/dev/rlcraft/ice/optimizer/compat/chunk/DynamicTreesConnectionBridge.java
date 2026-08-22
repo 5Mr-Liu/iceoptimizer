@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.chunk;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 
 /**
@@ -64,6 +65,7 @@ public final class DynamicTreesConnectionBridge {
         try {
             OptimizerBridge.failure(MODULE, error);
         } catch (Throwable ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
         }
     }
 

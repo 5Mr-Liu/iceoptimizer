@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.lock;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizerRuntimeSide;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -55,6 +56,7 @@ public final class RlcPackLock {
             if (output != null) detail += "；开发组件清单已写入 " + output.getPath();
             return new PackLockStatus(PackLockState.CAPABILITY, detail, observed, output);
         } catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
             return new PackLockStatus(PackLockState.CAPABILITY,
                 "组件诊断失败但不影响结构适配：" + error.getClass().getSimpleName()
                     + (error.getMessage() == null ? "" : ": " + error.getMessage()),

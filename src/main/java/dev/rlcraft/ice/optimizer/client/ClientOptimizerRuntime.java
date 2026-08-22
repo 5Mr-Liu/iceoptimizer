@@ -10,8 +10,16 @@ import dev.rlcraft.ice.optimizer.bridge.ClientRuntimeAccess;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.compat.skull.SkullProfileBridge;
 import dev.rlcraft.ice.optimizer.compat.save.ChunkSaveCompressionBridge;
+import dev.rlcraft.ice.optimizer.compat.chunk.ChunkVboUploadBridge;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderTelemetry;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkRenderStatus;
+import dev.rlcraft.ice.optimizer.compat.foamfix.FoamFixUploadBridge;
+import dev.rlcraft.ice.optimizer.compat.konkrete.KonkreteLocaleBridge;
+import dev.rlcraft.ice.optimizer.compat.model.ModelMeshCaptureBridge;
+import dev.rlcraft.ice.optimizer.compat.optifine.OptifineShaderSourceBridge;
+import dev.rlcraft.ice.optimizer.compat.renderlib.RenderLibTileEntityBridge;
+import dev.rlcraft.ice.optimizer.compat.srp.SrpKirinRenderBridge;
+import dev.rlcraft.ice.optimizer.compat.xaero.XaeroGpuTimerBridge;
 import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import dev.rlcraft.ice.optimizer.lock.PackLockState;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
@@ -35,6 +43,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     private BoundedRenderQueue renderQueue;
     private ClientWorkerRuntime workers;
     private CacheBudget cacheBudget;
+    private ModernRendererRuntime modernRenderer;
     private PackLockStatus packLock = new PackLockStatus(PackLockState.DISCOVERY, "尚未初始化", Collections.emptyList(), null);
 
     private ClientOptimizerRuntime() {
@@ -47,6 +56,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         coreModPresent = bootstrap.isCoreModPresent();
         packLock = bootstrap.getPackLock();
         if (!config.isEnabled()) {
+            ModelMeshCaptureBridge.reset();
             initialized = true;
             IceMod.LOGGER.info("ICE 客户端优化运行时已由配置关闭");
             return;
@@ -55,6 +65,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         renderQueue = new BoundedRenderQueue(epochs, config.getRenderQueueCapacity());
         workers = new ClientWorkerRuntime(epochs, renderQueue, config.getWorkerThreads(), config.getWorkerQueueCapacity());
         cacheBudget = new CacheBudget(config.getHeapCacheBudgetBytes(), config.getDirectCacheBudgetBytes(), config.getGpuCacheBudgetBytes());
+        modernRenderer = new ModernRendererRuntime(epochs, cacheBudget);
         SkullProfileBridge.configure(config.getSkullProfileCacheEntries(),
             config.getSkullProfilePositiveTtlMinutes(), config.getSkullProfileNegativeTtlSeconds(),
             config.getSkullProfileQueueCapacity());
@@ -72,7 +83,15 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
 
     public long beginFrame() {
         if (!initialized || epochs == null) return 0L;
-        return epochs.nextFrame();
+        long frameId = epochs.nextFrame();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.beginFrame(frameId, epochs.snapshot());
+        return frameId;
+    }
+
+    public void endFrame() {
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.endFrame();
     }
 
     public long beginClientTick() {
@@ -83,19 +102,95 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     public void worldChanged() {
         if (epochs == null) return;
         epochs.invalidateWorld();
+        epochs.invalidateViewFrustum();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateWorld();
         ChunkSaveCompressionBridge.reset();
+        RenderLibTileEntityBridge.reset();
         if (workers != null) workers.discardStaleQueuedTasks();
     }
 
     public void resourcesReloaded() {
         if (epochs == null) return;
         epochs.invalidateResources();
+        resetResourceCaptureBridges();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateResources();
+        if (workers != null) workers.discardStaleQueuedTasks();
+    }
+
+    public void atlasChanged() {
+        if (epochs == null) return;
+        epochs.invalidateResources();
+        epochs.invalidateAtlas();
+        epochs.invalidateShaderPermutation();
+        resetResourceCaptureBridges();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateResources();
+        if (workers != null) workers.discardStaleQueuedTasks();
+    }
+
+    public void modelsChanged() {
+        if (epochs == null) return;
+        epochs.invalidateResources();
+        resetResourceCaptureBridges();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateResources();
         if (workers != null) workers.discardStaleQueuedTasks();
     }
 
     public void glContextReset() {
         if (epochs == null) return;
+        long oldGeneration = epochs.currentGlContextGeneration();
         epochs.invalidateGlContext();
+        FoamFixUploadBridge.contextLost(oldGeneration);
+        ChunkVboUploadBridge.contextLost();
+        XaeroGpuTimerBridge.contextLost(oldGeneration);
+        SrpKirinRenderBridge.contextLost(oldGeneration);
+        ModelMeshCaptureBridge.reset();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateContext(oldGeneration);
+        if (workers != null) workers.discardStaleQueuedTasks();
+    }
+
+    public void shaderPackChanged() {
+        if (epochs == null) return;
+        epochs.invalidateShaderPack();
+        epochs.invalidateShaderPermutation();
+        OptifineShaderSourceBridge.reset();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateResources();
+        if (workers != null) workers.discardStaleQueuedTasks();
+    }
+
+    public void shaderPackStateObserved(boolean known, boolean active) {
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.setShaderPackState(known, active);
+    }
+
+    public void shaderPermutationChanged() {
+        if (epochs == null) return;
+        epochs.invalidateShaderPermutation();
+        OptifineShaderSourceBridge.reset();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateResources();
+        if (workers != null) workers.discardStaleQueuedTasks();
+    }
+
+    public void vertexFormatChanged() {
+        if (epochs == null) return;
+        epochs.invalidateVertexFormat();
+        ModelMeshCaptureBridge.reset();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateResources();
+        if (workers != null) workers.discardStaleQueuedTasks();
+    }
+
+    public void viewFrustumChanged() {
+        if (epochs == null) return;
+        epochs.invalidateViewFrustum();
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null) renderer.invalidateWorld();
         if (workers != null) workers.discardStaleQueuedTasks();
     }
 
@@ -143,13 +238,28 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         return budget == null ? null : budget.tryReserve(kind, bytes);
     }
 
+    public CacheBudget cacheBudget() { return cacheBudget; }
+
     public synchronized void shutdown() {
-        OptimizerBridge.detachClientRuntime(this);
+        // Stop every producer before disposing render-thread state. A worker
+        // which outlives its bounded join is still unable to enqueue a late
+        // completion because ClientWorkerRuntime closes the render queue first.
         if (workers != null) workers.shutdown();
+        FoamFixUploadBridge.shutdown();
+        ChunkVboUploadBridge.shutdown();
+        XaeroGpuTimerBridge.shutdown();
+        SrpKirinRenderBridge.reset();
+        if (modernRenderer != null) modernRenderer.shutdown();
+        OptimizerBridge.detachClientRuntime(this);
         SkullProfileBridge.shutdown();
+        RenderLibTileEntityBridge.reset();
+        ModelMeshCaptureBridge.reset();
+        OptifineShaderSourceBridge.reset();
+        KonkreteLocaleBridge.reset();
         ChunkSaveCompressionBridge.shutdown();
         workers = null;
         renderQueue = null;
+        modernRenderer = null;
         cacheBudget = null;
         epochs = null;
         OptimizerRegistry.shutdown("客户端优化运行时已停止");
@@ -163,7 +273,12 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
             renderQueue == null ? null : renderQueue.snapshot(),
             cacheBudget == null ? null : cacheBudget.snapshot(),
             epochs == null ? null : epochs.snapshot(), safeChunkRenderStatus(),
+            modernRenderer == null ? null : modernRenderer.status(),
             OptimizerRegistry.snapshot());
+    }
+
+    public ModernRendererRuntime modernRenderer() {
+        return modernRenderer;
     }
 
     private ChunkRenderStatus safeChunkRenderStatus() {
@@ -171,8 +286,16 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         try {
             return ChunkRenderTelemetry.snapshot();
         } catch (LinkageError incompatibleCore) {
+            dev.rlcraft.ice.optimizer.FatalErrors.rethrowIfFatal(incompatibleCore);
             return new ChunkRenderStatus(0, 0, 0, 0L, 0L, 0L, "CORE-ABI");
         }
+    }
+
+    private static void resetResourceCaptureBridges() {
+        ModelMeshCaptureBridge.reset();
+        SrpKirinRenderBridge.reset();
+        OptifineShaderSourceBridge.reset();
+        KonkreteLocaleBridge.reset();
     }
 
 }

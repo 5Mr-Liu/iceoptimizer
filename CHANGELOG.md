@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.0.5 ChunkAnimator-safe HZB visibility - 2026-08-22
+
+- 修复 Dregora `ChunkAnimator-1.12.2-1.2.1` 与 HZB 静态区块边界的坐标冲突：`timeStamps` 中仍在动画的区块强制保持可见，Arena 将其从 multi-draw/MDI run 拆出并调用真实 `ChunkRenderContainer.preRenderChunk`，再补偿 region-local 原点；稳定区块继续批处理。模组不存在时零影响，实际 ABI 或运行探针异常时 fail-open。
+- 普通 HZB 遮挡必须在连续两个独立深度发布中获得同一区块身份见证，同一发布的 SOLID/CUTOUT 多层不会重复累计；场景/几何换代会清空证据。确认表使用固定预算、无逐区块分配的身份表，预算不足时逐级缩容或只停止剔除，不再使整个现代渲染器初始化失败。
+- HZB 对真实 `VboRenderList` 的压缩现在具有提交事务：只有 Arena 已接管或 GPU 提交已经开始才 commit；所有提交前拒绝和异常均恢复原对象身份、顺序与长度。新增回滚快照预算、异常契约与 `hzb_filter_rollbacks`、`hzb_filter_transaction_deferrals/failures` 等诊断。
+- 新增真实 ChunkAnimator 1.2.1 JAR ABI 回归、动画兼容绘制字节码契约、稳定遮挡见证与列表事务测试。optimizer/profiler Main/Core 和 Forge 精确握手版本提升为 `1.0.5`，禁止与 1.0.4 混装。
+- 连续两次 `clean build optimizerBundleZip` 的六个归档逐字节一致；每轮 20 个发布任务实际执行，194 个测试类、740 项测试为 0 failure、0 error。1.0.5 四包/optimizer 两包固定哈希脚本通过 PowerShell 语法、隔离旧版升级和第二次幂等复验。随后四包部署到真实 Dregora 客户端并以 `modernVisibilityHzb=true` 完成新 Session 验证：区块生成与远处闪烁恢复正常，ChunkAnimator 探针、运行失败和 HZB 列表事务失败均为零；实测同时确认旧 HZB 尚未测试真实候选、Terrain 所有权受固定 Arena 限制，后续进入独立 ICE 2.0 架构重构。
+
+## 1.0.4 renderer qualification recovery and actionable diagnostics - 2026-08-22
+
+- 修复真实 1.0.3 Session 中 Terrain 资格认证被固定 128 MiB Arena 饥饿的问题：无 ShaderPack 时只有认证工作负载 `SOLID` 能建立 Legacy twin 并竞争影子 Arena，CUTOUT/TRANSLUCENT 不再先占满预算；ShaderPack 顶点布局认证仍保留全部实际图层的严格双副本。新增 `terrain_shadow_qualification_skips` 以区分策略跳过与容量拒绝。
+- 修复 TESR 被错误永久隔离：模型重认证只需要固定管线模型绘制状态和矩阵状态，旧代码却用还要求无关 FBO/PBO 全局状态的完整 snapshot 检查发布，导致三次合法重认证被误报为 `model GL state publication incomplete`。实体/TESR 现在按真实模型提交契约认证，仍不放松 draw-time 状态等价要求。
+- 移除首次实机粒子遍历中会链接整套可选 CoreMod 依赖的合成 `Particle` 子类；运行期验证只检查真实实例提交所需的 BufferBuilder/VBO 字节边界，完整 vanilla billboard 等价性移入隔离测试。报告新增粒子直接异常及根异常的类型与紧凑消息，若仍有可选类缺失会给出具体类名而非只有 `NoClassDefFoundError`。
+- 修复 HZB 几何代际与视图稳定性误耦合：区块上传仍严格淘汰旧/在途深度并以 scene serial 拒绝陈旧完成，但不再清空独立的连续精确视图历史。带源深度 oracle 的 GPU 缩减一旦成功发布便按每帧一次推进输出认证，不再额外等待下一帧相机与几何身份完全相同。新增 oracle 发布量及 `FIRST_OBSERVATION/VIEW_CHANGED/DUPLICATE_FRAME/FRAME_GAP/CAPTURE_ALLOWED` 逐原因计数。
+- Entity 与 HUD 在本次实机中分别慢 11.483% 与 30.888%，因此保留收益门主动 Legacy，没有通过降低正确性或强制 GPU 接管掩盖反优化。版本提升为 `1.0.4`，禁止与已部署 1.0.3 使用相同版本号混用不同字节码。
+- 连续两次 `clean build optimizerBundleZip` 的六个归档逐字节一致；每轮 20 个发布任务实际执行，189 个测试类、724 项测试为 0 failure、0 error。1.0.4 四包/optimizer 两包固定哈希脚本均通过 PowerShell 语法、真实 1.0.3 输入的隔离升级和第二次幂等复验；未部署到真实客户端或服务端。
+
+## 1.0.3 early matrix Core ABI and mixed-version recovery - 2026-08-22
+
+- 修复 1.0.2 启动画面崩溃：Core transformer 已经把 `GlStateManager` 的矩阵包装器改为调用 `EarlyMatrixStateTracker`，但该类仍只存在于尚未暴露给 LaunchWrapper 的普通 Main JAR，首次 `matrixMode` 因而触发 `NoClassDefFoundError`。矩阵跟踪器及全部内部类现在只位于 optimizer Core，并移除对 Main `FatalErrors` 的早期链接依赖。
+- 新增真正隐藏 Main 运行时的 Core 隔离回归：在子加载器中定义并执行改写后的合成 `GlStateManager.matrixMode`，同时由发布分包检查硬性要求矩阵 ABI 的五个类只存在于 Core。版本提升为 `1.0.3`，禁止与已发布的 1.0.2 相同版本号混用不同字节码。
+- 真实崩溃包还确认实例同时安装了 1.0.1 与 1.0.2 的 optimizer/profiler Main/Core 八个 JAR，造成重复模组入口和 transformer。1.0.3 客户端部署脚本会统一备份并替换全部 ICE 四包，避免只覆盖新文件却保留旧版本。
+- 两次独立 `clean build optimizerBundleZip` 的六个归档逐字节一致；每轮 20 个发布任务实际执行，186 个测试类、701 项测试为 0 failure、0 error。真实混装八包的隔离部署、旧包备份、最终四包哈希和第二次幂等复验均通过。经用户明确授权，四个 1.0.3 JAR 已部署到真实 Dregora 客户端，四个 1.0.2 原件保存在 `rollback/client-Dregora-before-1.0.3-20260822-094517283`；其他模组、配置、Session 和存档未修改。
+
+## 1.0.2 load-profiled renderer recovery and HZB preflight - 2026-08-22
+
+- 实体与 TESR 收益认证不再由启动早期一个普通场景永久决定：按实体/方块实体数量建立 8 个对数负载桶，同一桶连续暖机 30 帧后才进入 ABBA；已拒绝桶保持 Legacy，只允许未见过且更高的负载桶在 600 帧冷却后重测，单代际最多 3 次。安全收益阈值仍为中位数至少提升 5%、p95 回退不超过 2%，没有把实测更慢的路径强行打开。
+- Legacy/隔离后的 RenderLib 遍历不再让每个 ModelRenderer 部件进入缓存、状态重认证与逐原因计数；终态在遍历入口发布零分配快速门。Terrain 父后端回退时，MDI 与 Persistent Mapping 子认证立即暂停为明确 Legacy，避免长期饥饿与无效样本。
+- HZB 在任何同步 GL 状态补查前先执行纯 CPU 连续视角预检；已有历史、捕获待完成或移动视角均不会查询驱动。地形上传失效在同帧且捕获边界之前安全合并，捕获后的变化仍严格推进 scene serial；新增几何变化、合并、场景失效及过期完成量诊断。
+- Particle 实例着色器为支持 `GL_EXT_gpu_shader4` 的兼容驱动增加 GLSL 1.20 变体，避免 NVIDIA 对带旧固定管线 varyings 的 vertex-only GLSL 1.30 程序在链接阶段拒绝；最终是否启用仍由离屏像素等价自测决定。着色器/程序日志保留上限由 256 字符扩展为 4096，失败继续独立隔离。
+- optimizer/profiler Main 与 Core、Forge 精确握手和发布文件统一提升为 `1.0.2`。连续两次空目录 `clean build optimizerBundleZip` 的六个归档逐字节一致；第二轮 186 个测试类、701 项测试为 0 failure、0 error，重混淆、Main/Core 分包、bundle 与固定 SHA-256 部署夹具均通过。
+
+## 1.0.1 entity-density recovery and bounded path reuse - 2026-08-22
+
+- 修复真实实体密集 Session 暴露的二次瓶颈：HZB 只有连续两个相同视角帧才捕获并在 Legacy terrain 下也能推进输出验证，避免移动时反复 reduction/readback；实体/TESR 将 GL 与矩阵状态分开重认证，同帧同失效序号只探测一次，提交前瞬时认证失败不再立即永久切回 Legacy；TESR 的 ABBA 指纹允许实体与方块实体计数的自然小幅抖动，但仍严格锁定维度、区域、视角、分辨率、天气、配置代际与纹理负载。
+- 新增 `iceandfire-path-node-cache`：对 Dregora Ice and Fire 2.0.9 的 `ExperimentalWalkNodeProcessor` 严格验证 2 个 raw-node 与 12 个 block-state 调用点，只在一次同步 PathFinder 生命周期内用 primitive long key 复用结果；处理器/世界身份不匹配、调用图变化、缓存异常或生命周期异常均独立 fail-open，不跨 Tick、不缓存整条路径，也不把服务端权威世界读取异步化。
+- 新增 Ice and Fire 合成调用图、搜索生命周期、嵌套处理器、世界身份隔离、实机 2.0.9 JAR 与 Core-only ABI 回归；注入接口只位于 Core，运行期桥只位于 Main，分包任务硬性禁止缺失或重复。optimizer 精确握手版本提升为 `1.0.1`，避免已部署 `1.0` 与本次不同字节码被误判为同版；两次独立 clean 发布构建逐字节一致，固定哈希部署脚本的首次与幂等夹具通过。
+
+## 1.0 modern OpenGL hybrid renderer and audited release pipeline - 2026-08-21
+
+- 将正式发布版本从已使用过的 `0.10.0` 提升为 `1.0`；optimizer/profiler Main 与 Core、Forge 精确握手范围、Gradle 产物名、部署脚本和安装文档统一使用同一版本，禁止 0.10 与 1.0 混装。
+- 完整接入 FrameCoordinator、PassGraph、Legacy GL Island、能力自测、输出验证、在线 ABBA/收益回归状态机，以及 `OF_COMPAT_REGION`/`ICE_NATIVE` 双地形后端、保守 HZB、实体/TESR、粒子、动画纹理、HUD/字体与 ShaderPack 认证路径。
+- hooks fatal、提交状态不确定时禁止 Legacy GL 重放、Context-loss 资源 abandon、Fence/Query/VBO/PBO/Display List 所有权和 ChunkSave Deflater native 生命周期均完成故障注入与尾审。
+- 完成中断后的发布尾审：`ReportWriter` 的目录发布、ZIP/流关闭和原子移动现在保留 primary failure，并在 cleanup 中出现 `ThreadDeath`/`VirtualMachineError` 时正确提升 fatal；Profiler 统计窗口冻结完整字典，栈字典达到上限时稳定折叠而不越界。
+- `CapabilityReport` 与 `optimizer-renderer.txt` 改为逐能力记录准备、认证、提交、回退及明确原因；FBO、MultiDraw/MDI、FBP、HZB 与生产 HZB 路径隔离并恢复 draw/read framebuffer、draw buffers、VAO/PBO、固定功能纹理单元、alpha/fog/stencil/dither/sRGB/rasterizer 等状态，无法精确恢复时拒绝候选路径。
+- 修复真实 Session 暴露的现代渲染零命中：LWJGL 2 的 `glGetIntegerv/glGetBooleanv/glGetFloatv` 生成包装器统一要求缓冲区至少剩余 16 个元素；FBO 状态沙箱与启动/HUD 状态工作区现在为三类查询提供相互隔离的 16 元素视图，不会在 viewport、颜色掩码或颜色值捕获阶段被错误隔离。
+- 修复能力自测通过后仍无法实际下放的三条链：MDI 的瞬时失败不再永久封死后续提交，HZB 在固定功能状态镜像缺口时进行有界重新认证，实体/TESR 的 `ModelRenderer` 捕获在后端完成决策前允许有界延迟发布；两个模型后端都不可用时立即丢弃待发布网格，避免只增加 CPU/内存而 GPU 零命中。
+- 模型 VBO 缓存明确按资源/GL 上下文而非世界代际归属：换世界或维度保留暖缓存，资源包重载和 Context loss 清除。`optimizer-renderer.txt` 新增模型捕获/逐原因拒绝、Heap/Direct/GPU 预算、ResourceLedger 存活/退休/超时，以及 Legacy、ICE Native、OptiFine Region 的累计 CPU/GPU 时间与查询覆盖量。
+- Profiler Core 新增低频常驻的首次喝药精确边界，无需开启全局深度模式即可分别记录 `item_use_finish`、`potion_item_finish` 及其间每个 Forge 事件监听器；它只观测原版同步语义，不把药水效果、实体状态、事件或网络同步错误地异步化/GPU 化。
+- Timer Query 能力自测保留通用 8 ms 上限，但 Timestamp Query 单独允许最多 250 ms 让已排队 GPU 工作退休；轮询仍有严格边界，避免把正常异步结果误报为 `timer query timeout`。
+- ShaderPack 只有在 program/permutation、顶点格式、状态捕获和输出验证全部认证后才接管；fatal 验证路径先释放 retained prepared state。HUD 的空提交或提交前安全失败回到原提交，提交结果不确定时禁止重复 Legacy 重放。
+- OTG BO3/BO4 同步解析缓存以 canonical path、file key、size、mtime、SHA-256 和配置代际共同认证文件；首次或目录变更后才解析真实路径、读取属性与摘要，稳定热命中只规范化逻辑路径、排空 WatchService 并比较内存中的目录序列/配置代际，不再执行 canonical/toRealPath/readAttributes 或打开文件。缺失/稳定解析失败具有负缓存，命中返回深复制，反射构造 fatal 继续传播，发布前在同一代际锁内再次认证；WatchService 不可用时拒绝复用摘要并保留原 Map fail-open 行为。
+- 区块 churn 报告补齐加载、卸载、保存和计划刻来源归因；增量卸载保存覆盖计划刻索引路径，避免把保存风暴笼统归为区块生成。
+- ChunkSave 固定从一个安全 Worker 启动，只按实际队列、FILE_IO 等待与结果压力迟滞调节；不按处理器数、最大堆、CPU/GPU 型号或核类型静态分档。
+- 修复真实 Dregora 启动画面加载 `FontRenderer` 时的 Core/Main 类加载边界崩溃：`FontRenderCacheAccess` 以及粒子、OptiFine VboRegion、Lycanites、Mo' Bends 的全部注入 ABI 现在只由 Core JAR 提供；新增无父加载器回归，证明改写后的字体类在 ABI 缺失时必然失败、Core ABI 可见时能够完成链接。
+- reobf 后统一规范化 JAR entry 顺序和时间戳，manifest 时间从 `SOURCE_DATE_EPOCH` 派生；相同输入连续两次独立 `clean` 构建的 optimizer/profiler Main、Core、optimizer bundle 和 combined-dev 六个产物均逐字节一致，部署脚本固定校验最终 SHA-256。
+- 使用 OptiFine G5、OTG 9.7、Forge SRG/Minecraft 映射和 Dregora 真实只读依赖执行完整矩阵：181 个测试类、674 项测试、0 failure、0 error、1 skipped（未额外提供 Better Foliage 运行期改写单类样本）；发布任务链、独立 manifest/重复 entry/类交集/早期 ABI/依赖重定位/bundle 哈希审计及临时隔离 `mods` 的首次与幂等部署均通过。
+- 上述零命中与喝药探针修复后的当前 Dregora 实例矩阵为 182 个测试类、682 项测试、0 failure、0 error、8 skipped；跳过项只对应当前机器没有的 Xaero/Better Foliage 运行时单类，以及不能用 Dregora 新版 JAR 冒充的六项普通 RLCraft 旧版精确基线。两次独立 `clean` 发布构建的六个归档逐字节一致。
+- 经用户明确批准，optimizer/profiler Main/Core 四个新 JAR 已原子部署到真实 Dregora 客户端；旧四包保存在 `rollback/client-Dregora-before-1.0-20260821-234005394`，其他模组、存档、配置与历史 Session 未修改。真实 OpenGL 画面 A/B、ShaderPack 实机图像认证、随机化 ABBA、new-chunk Frame/GPU P95/P99/1% low 与长时间 Fence/Query/RAM/VRAM soak 仍须在真实游戏环境验收，不能由自动回归结果替代。
+
 ## 0.10.0 portable compression, render guards and low-overhead recording - 2026-08-16
 
 - 修正 0.9.4 的主要反优化：最新实际 Session 中动画纹理链出现数百次 `glFenceSync`，通用单级 `TextureUtil` PBO 会为小纹理反复进入驱动。该入口现在始终执行原上传；FoamFix 只有完整 mip 批次达到 256 KiB 才尝试 PBO，小批次和忙槽立即回退。区块 VBO 同样增加 256 KiB 下限，每次最多探测两个 Fence 槽，GPU 落后时不再遍历六槽。

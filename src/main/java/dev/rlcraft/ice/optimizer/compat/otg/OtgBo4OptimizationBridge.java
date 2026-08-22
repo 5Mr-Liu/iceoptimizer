@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.otg;
 
+import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 
@@ -21,8 +22,8 @@ public final class OtgBo4OptimizationBridge {
                 cached.build(columnSizes);
                 OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).recordSuccess();
             } catch (LinkageError | RuntimeException error) {
-                OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).recordFailure(error);
                 cached.accelerated = false;
+                OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).recordFailure(error);
             }
         }
         if (cached.accelerated && columnX >= 0 && columnX < 16 && columnZ >= 0 && columnZ < 16) {
@@ -46,6 +47,7 @@ public final class OtgBo4OptimizationBridge {
         try {
             return OptimizerRegistry.isOperational(OptimizationModule.OTG_BO4_LAYOUT);
         } catch (LinkageError | RuntimeException ignored) {
+            FatalErrors.rethrowIfFatal(ignored);
             return false;
         }
     }

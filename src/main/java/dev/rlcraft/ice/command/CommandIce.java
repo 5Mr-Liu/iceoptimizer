@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.command;
 
 import dev.rlcraft.ice.IceProfilerMod;
+import dev.rlcraft.ice.profiler.FatalErrors;
 import dev.rlcraft.ice.profiler.core.ProfilerRuntime;
 import dev.rlcraft.ice.profiler.core.ProfilerStatus;
 import dev.rlcraft.ice.profiler.metrics.TimelinePoint;
@@ -60,6 +61,7 @@ public final class CommandIce extends CommandBase {
                 send(sender, "§b[ICE] 对比 " + comparison.getLeftId() + " → " + comparison.getRightId());
                 for (String line : comparison.getLines()) send(sender, "§7" + line);
             } catch (Exception error) {
+                FatalErrors.rethrowIfFatal(error);
                 throw new CommandException("报告对比失败：" + error.getMessage());
             }
         } else if ("reload".equals(action)) {

@@ -48,8 +48,10 @@ public final class ClientWorkerRuntime {
         }
     }
 
-    public <T> boolean submit(OptimizationModule module, EpochToken token, int epochMask,
-                              Callable<T> computation, Consumer<T> renderCompletion) {
+    public synchronized <T> boolean submit(OptimizationModule module,
+                              EpochToken token, int epochMask,
+                              Callable<T> computation,
+                              Consumer<T> renderCompletion) {
         if (!running || module == null || computation == null || renderCompletion == null
             || !OptimizerRegistry.isOperational(module.ordinal())) return false;
         EpochTask<T> task = new EpochTask<T>(module, token, epochMask,
@@ -73,8 +75,16 @@ public final class ClientWorkerRuntime {
         return 0;
     }
 
-    public void shutdown() {
+    public synchronized void shutdown() {
+        if (!running) {
+            renderQueue.closeAndDiscard();
+            return;
+        }
         running = false;
+        // Close the consumer queue before interrupting workers. A computation
+        // which ignores interruption may finish after the bounded joins, but
+        // it can no longer publish a completion behind the final drain.
+        renderQueue.closeAndDiscard();
         signalAllWorkers();
         for (Thread thread : workerThreads) thread.interrupt();
         for (Thread thread : workerThreads) {
@@ -88,7 +98,6 @@ public final class ClientWorkerRuntime {
         int discarded = 0;
         while (queue.poll() != null) discarded++;
         stale.add(discarded);
-        renderQueue.discardAll();
     }
 
     public WorkerStatus snapshot() {
@@ -159,6 +168,10 @@ public final class ClientWorkerRuntime {
                     completed.increment();
                     breaker.recordSuccess();
                 }
+            } catch (ThreadDeath fatal) {
+                throw fatal;
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
             } catch (Throwable error) {
                 breaker.recordFailure(error);
             }
