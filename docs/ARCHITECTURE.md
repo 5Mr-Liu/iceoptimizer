@@ -359,15 +359,17 @@ Dregora 参考预设包含 16618 个 `.BO4`（约 1.77 GiB）和 101657 个 NBT 
 
 四个适配器分别归属 `otg-bo4-io`、`otg-bo4-layout` 与 `otg-config-parser`，开关和熔断互不绑定。真实 OTG JAR 回归会记录 JAR/类 SHA，并验证精确调用点、变换后 ASM 结构及 Java 8 JVM 实际类定义。
 
-## 24. 玩家头颅资料异步解析
+## 24. 玩家头颅资料策略
 
-生产 SRG 与开发映射版 `LayerCustomHead` 分别保留独立完整 SHA-256 审计值。适配器只在结构中恰好存在一次 `TileEntitySkull.updateGameProfile` 时替换，并在 `TileEntitySkullRenderer.renderSkull` 参数提交前再次查询缓存；方法描述符、参数栈和渲染调用次数不变。
+生产 SRG 与开发映射版 `LayerCustomHead`、`TileEntitySkullRenderer` 分别保留独立完整 SHA-256 审计值。前一适配器只在结构中恰好存在一次 `TileEntitySkull.updateGameProfile` 时替换，并在 `renderSkull` 参数提交前再次查询缓存；后一适配器认证唯一 `SkinManager.loadSkinFromCache` 调用，把返回类型和栈形状不变的静态策略桥插在所有头颅渲染路径共用的入口，同时把异步完成的 `GameProfile` 写回原局部变量供默认皮肤 UUID 选择使用。
 
-- 不完整资料当帧立即返回原 `GameProfile`，所以原版默认皮肤继续绘制；后台完成后后续帧取得同名完整资料。
+- 默认 `allowIncompletePlayerSkullProfileLookup=false`：含现成 `textures` 的 `GameProfile` 原样进入 `SkinManager`，不完整资料在进入 vanilla/CustomSkinLoader 前直接使用原版默认皮肤；方块、物品栏/JEI、快捷栏、手持/掉落及佩戴头颅均不调用 Authlib、不创建缓存或 resolver worker，也不提交后台任务。
+- 显式允许资料查询且 `skullProfileAsync=true` 时，不完整资料当帧立即返回原 `GameProfile`，后台完成后后续帧取得同名完整资料。
+- 显式允许资料查询但关闭异步时保留原版同步查询；全局关闭 optimizer 时同样保持完整的 vanilla fail-open 行为。
 - 后台只有一个低优先级 daemon worker；队列默认 128、正/负缓存默认各最多 2048 项，同名请求由有界 in-flight map 去重。
 - 正缓存默认访问后 360 分钟过期；无结果、断网或队列满进入 300 秒负缓存。联网失败记为拒绝而不是模块错误，不会触发同步联网回退。
 - 每次 configure/shutdown 都递增配置代际并清空旧缓存；即使旧 socket 调用忽略中断并晚于新运行时返回，也不能写入新缓存或移除新请求的 in-flight 标记。
-- 模块关闭、类结构不兼容或运行时熔断时保留原同步方法。模块运行时从不在渲染线程等待 executor、Future、锁或网络。
+- 类结构不兼容时原类不被改写并保留同步方法。已有资料模式不依赖模块熔断状态；异步模式运行时从不在渲染线程等待 executor、Future、锁或网络。
 
 ## 25. Better Caves、区块颜色与实体状态热点
 

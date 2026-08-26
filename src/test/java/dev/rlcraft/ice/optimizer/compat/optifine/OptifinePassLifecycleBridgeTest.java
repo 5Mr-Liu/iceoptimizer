@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.compat.optifine;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.After;
@@ -34,5 +35,15 @@ public final class OptifinePassLifecycleBridgeTest {
         OptifinePassLifecycleBridge.transitionFinal();
         OptifinePassLifecycleBridge.endComposite(token);
         assertTrue(OptifinePassLifecycleBridge.compositeDepthForTest() == 0);
+    }
+
+    @Test
+    public void completedScopesReuseTheirPreallocatedThreadState() {
+        long first = OptifinePassLifecycleBridge.beginShadow();
+        Object state = OptifinePassLifecycleBridge.stateIdentityForTest();
+        OptifinePassLifecycleBridge.endShadow(first);
+        long second = OptifinePassLifecycleBridge.beginShadow();
+        assertSame(state, OptifinePassLifecycleBridge.stateIdentityForTest());
+        OptifinePassLifecycleBridge.endShadow(second);
     }
 }

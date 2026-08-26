@@ -24,6 +24,10 @@ public final class FbpParticleRenderBridge {
     }
 
     public static long enter(Object particle) {
+        ModernRendererRuntime runtime =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (runtime != null && !runtime.shouldObserveBackend(
+            OptimizationModule.FBP_PARTICLE_ADAPTER)) return 0L;
         long token = nextPositive();
         if (token == 0L) return 0L;
         Scope parent = CURRENT.get();
@@ -32,12 +36,10 @@ public final class FbpParticleRenderBridge {
             "nested FBP particle render forced to Legacy"));
         if (depth > MAX_DEPTH) return -token;
 
-        ModernRendererRuntime runtime = null;
         ModernRendererRuntime.RenderBackendSample sample = null;
         LwjglFbpPacketRenderer renderer = null;
         boolean modern = false;
         try {
-            runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
             if (runtime != null) {
                 sample = runtime.beginRenderBackendSample(
                     OptimizationModule.FBP_PARTICLE_ADAPTER,

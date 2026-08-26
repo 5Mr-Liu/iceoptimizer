@@ -32,6 +32,7 @@ public final class OptimizerConfigTest {
         assertTrue(OptimizerConfig.settings.otgConfigParser);
         assertTrue(OptimizerConfig.settings.otgBo4Layout);
         assertTrue(OptimizerConfig.settings.otgSynchronousFileCache);
+        assertFalse(OptimizerConfig.settings.allowIncompletePlayerSkullProfileLookup);
         assertTrue(OptimizerConfig.settings.skullProfileAsync);
         assertTrue(OptimizerConfig.settings.konkreteLocaleLookup);
         assertTrue(OptimizerConfig.settings.vanillaChunkCompression);
@@ -62,6 +63,35 @@ public final class OptimizerConfigTest {
             assertEquals(7, ClientOptimizerConfig.capture().getWorkerThreads());
         } finally {
             OptimizerConfig.settings.workerThreads = original;
+        }
+    }
+
+    @Test
+    public void skullAsyncModuleRequiresExplicitProfileLookupPermission() {
+        boolean originalEnabled = OptimizerConfig.settings.enabled;
+        boolean originalLookup = OptimizerConfig.settings.allowIncompletePlayerSkullProfileLookup;
+        boolean originalAsync = OptimizerConfig.settings.skullProfileAsync;
+        try {
+            OptimizerConfig.settings.enabled = true;
+            OptimizerConfig.settings.allowIncompletePlayerSkullProfileLookup = false;
+            OptimizerConfig.settings.skullProfileAsync = true;
+            ClientOptimizerConfig existingOnly = ClientOptimizerConfig.capture();
+            assertFalse(existingOnly.isIncompletePlayerSkullProfileLookupAllowed());
+            assertFalse(existingOnly.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
+
+            OptimizerConfig.settings.allowIncompletePlayerSkullProfileLookup = true;
+            ClientOptimizerConfig asynchronous = ClientOptimizerConfig.capture();
+            assertTrue(asynchronous.isIncompletePlayerSkullProfileLookupAllowed());
+            assertTrue(asynchronous.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
+
+            OptimizerConfig.settings.skullProfileAsync = false;
+            ClientOptimizerConfig vanilla = ClientOptimizerConfig.capture();
+            assertTrue(vanilla.isIncompletePlayerSkullProfileLookupAllowed());
+            assertFalse(vanilla.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
+        } finally {
+            OptimizerConfig.settings.enabled = originalEnabled;
+            OptimizerConfig.settings.allowIncompletePlayerSkullProfileLookup = originalLookup;
+            OptimizerConfig.settings.skullProfileAsync = originalAsync;
         }
     }
 

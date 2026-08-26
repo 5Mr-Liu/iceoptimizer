@@ -22,4 +22,14 @@ public final class OptifineRegionBridgeTest {
         }
         assertEquals(0, OptifineRegionBridge.depthForTest());
     }
+
+    @Test
+    public void normalRegionScopesRetainAndReuseTheirPreallocatedState() {
+        long first = OptifineRegionBridge.beginScopeForTest();
+        Object state = OptifineRegionBridge.stateIdentityForTest();
+        OptifineRegionBridge.end(first, null);
+        long second = OptifineRegionBridge.beginScopeForTest();
+        assertSame(state, OptifineRegionBridge.stateIdentityForTest());
+        OptifineRegionBridge.end(second, null);
+    }
 }

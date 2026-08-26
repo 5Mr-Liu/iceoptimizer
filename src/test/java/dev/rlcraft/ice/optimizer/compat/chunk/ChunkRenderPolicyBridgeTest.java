@@ -10,29 +10,29 @@ import org.junit.Test;
 
 public final class ChunkRenderPolicyBridgeTest {
     @Test
-    public void fixedSafeCapDoesNotTierByLogicalProcessorCount() {
+    public void preservesTheVanillaWorkerDecision() {
         assertEquals(1, ChunkRenderPolicyBridge.computeWorkerCount(1, 1));
         assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(2, 2));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(4, 4));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(8, 8));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 64));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 1));
+        assertEquals(4, ChunkRenderPolicyBridge.computeWorkerCount(4, 4));
+        assertEquals(8, ChunkRenderPolicyBridge.computeWorkerCount(8, 8));
+        assertEquals(32, ChunkRenderPolicyBridge.computeWorkerCount(32, 64));
+        assertEquals(32, ChunkRenderPolicyBridge.computeWorkerCount(32, 1));
     }
 
     @Test
-    public void heapSizeCannotSelectAWorkerTier() {
+    public void heapSizeCannotSilentlyReduceTheVanillaWorkerDecision() {
         long mib = 1024L * 1024L;
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 1024L * mib));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 2048L * mib));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 8192L * mib));
-        assertEquals(2, ChunkRenderPolicyBridge.computeWorkerCount(32, 1, Long.MAX_VALUE));
+        assertEquals(32, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 1024L * mib));
+        assertEquals(32, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 2048L * mib));
+        assertEquals(32, ChunkRenderPolicyBridge.computeWorkerCount(32, 32, 8192L * mib));
+        assertEquals(32, ChunkRenderPolicyBridge.computeWorkerCount(32, 1, Long.MAX_VALUE));
     }
 
     @Test
-    public void builderPoolKeepsFourPipelineSlotsPerWorkerWithoutGrowingVanilla() {
-        assertEquals(32, ChunkRenderPolicyBridge.computeBuilderCount(160, 8));
+    public void builderPoolPreservesTheAuthoritativeExternalResult() {
+        assertEquals(160, ChunkRenderPolicyBridge.computeBuilderCount(160, 8));
         assertEquals(12, ChunkRenderPolicyBridge.computeBuilderCount(12, 8));
-        assertEquals(4, ChunkRenderPolicyBridge.computeBuilderCount(40, 1));
+        assertEquals(40, ChunkRenderPolicyBridge.computeBuilderCount(40, 1));
     }
 
     @Test
@@ -44,7 +44,7 @@ public final class ChunkRenderPolicyBridgeTest {
             ChunkRenderPolicyBridge.setEffectiveWorkersForTest(8);
             FakeDispatcher dispatcher = new FakeDispatcher(100);
             ChunkRenderPolicyBridge.clampBuilderCount(dispatcher);
-            assertEquals(32, dispatcher.builders);
+            assertEquals(100, dispatcher.builders);
         } finally {
             OptimizerRegistry.breaker(OptimizationModule.VANILLA_CHUNK_DISPATCH).configure(false, 3);
         }

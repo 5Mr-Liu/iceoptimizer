@@ -99,11 +99,11 @@ public final class HudRenderBridgeDispatchTest {
     }
 
     @Test
-    public void emptyActualPostIsDirectAndInvalidatesKnownTracker() {
+    public void emptyActualPostIsDirectAndPreservesKnownTracker() {
         publishTrackedState();
         assertTrue(EarlyGlStateTracker.isKnown());
         assertFalse(HudRenderBridge.post(new EventBus(), new Event()));
-        assertFalse(EarlyGlStateTracker.isKnown());
+        assertTrue(EarlyGlStateTracker.isKnown());
     }
 
     @Test

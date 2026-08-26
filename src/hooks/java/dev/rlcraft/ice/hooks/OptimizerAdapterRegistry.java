@@ -63,6 +63,7 @@ final class OptimizerAdapterRegistry {
         adapters.put("otg-settings-file-cache", new OtgFileSettingsReaderAdapter());
         adapters.put("otg-configuration-generation", new OtgConfigurationGenerationAdapter());
         adapters.put("player-skull-async", new PlayerSkullLayerAdapter());
+        adapters.put("player-skull-renderer", new PlayerSkullRendererAdapter());
         adapters.put("bettercaves-noise-tuple", new BetterCavesNoiseTupleAdapter());
         adapters.put("bettercaves-noise-column", new BetterCavesNoiseColumnAdapter());
         adapters.put("bettercaves-noise-generation", new BetterCavesNoiseGenAdapter());

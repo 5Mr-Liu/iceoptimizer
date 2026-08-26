@@ -5,8 +5,6 @@ import dev.rlcraft.ice.optimizer.render.backend.RenderBackendId;
 import dev.rlcraft.ice.optimizer.render.legacy.GlStateMirror;
 import dev.rlcraft.ice.optimizer.render.resource.RenderThreadGuard;
 import dev.rlcraft.ice.optimizer.runtime.EpochToken;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.EnumSet;
 
 /**
@@ -25,7 +23,8 @@ public final class FrameCoordinator {
     private final PassGraph graph;
     private final GlStateMirror stateMirror;
     private final BatchBarrier batchBarrier;
-    private final Deque<ViewState> views = new ArrayDeque<ViewState>();
+    private final ViewState[] views = new ViewState[MAX_VIEW_DEPTH];
+    private int viewDepth;
     private boolean frameActive;
     private long frameId;
     private long nextViewId;
@@ -43,6 +42,9 @@ public final class FrameCoordinator {
         this.graph = graph;
         this.stateMirror = stateMirror;
         this.batchBarrier = batchBarrier;
+        for (int index = 0; index < views.length; index++) {
+            views[index] = new ViewState();
+        }
     }
 
     public void beginFrame(long value, EpochToken epochs) {
@@ -53,35 +55,36 @@ public final class FrameCoordinator {
         frameActive = true;
         frameId = value;
         frameEpochs = epochs;
-        views.clear();
+        clearViews();
     }
 
     public FrameStamp beginPrimaryView() {
         threadGuard.check();
-        require(frameActive && views.isEmpty(), "primary view lifecycle");
-        ViewState view = new ViewState(newStamp());
-        views.push(view);
+        require(frameActive && viewDepth == 0, "primary view lifecycle");
+        ViewState view = views[viewDepth++];
+        view.reset(newStamp());
         return view.stamp;
     }
 
     /** Starts an independently ordered recursive portal view at a hard barrier. */
     public FrameStamp beginPortalView() {
         threadGuard.check();
-        require(frameActive && !views.isEmpty() && views.size() < MAX_VIEW_DEPTH,
+        require(frameActive && viewDepth > 0 && viewDepth < MAX_VIEW_DEPTH,
             "portal view lifecycle");
         hardBarrier("portal-enter", true);
-        ViewState nested = new ViewState(newStamp());
-        views.push(nested);
+        ViewState nested = views[viewDepth++];
+        nested.reset(newStamp());
         return nested.stamp;
     }
 
     public void endPortalView() {
         threadGuard.check();
-        require(views.size() > 1, "portal view underflow");
-        ViewState current = views.peek();
+        require(viewDepth > 1, "portal view underflow");
+        ViewState current = views[viewDepth - 1];
         require(current.activePass == null, "portal pass still active");
         hardBarrier("portal-exit", true);
-        views.pop();
+        current.clear();
+        viewDepth--;
     }
 
     public void beginPass(RenderPass pass, RenderBackendId backend) {
@@ -117,9 +120,9 @@ public final class FrameCoordinator {
      */
     public long beginObservedPass(RenderPass pass, RenderBackendId backend) {
         threadGuard.check();
-        if (!frameActive || views.isEmpty() || pass == null
+        if (!frameActive || viewDepth == 0 || pass == null
             || pass == RenderPass.PORTAL_RECURSIVE || backend == null) return 0L;
-        ViewState view = views.peek();
+        ViewState view = views[viewDepth - 1];
         long token = nextObservedToken();
         if (view.observedDepth >= MAX_OBSERVED_PASS_DEPTH) {
             view.observedOverflow++;
@@ -151,8 +154,8 @@ public final class FrameCoordinator {
     public boolean endObservedPass(long token) {
         threadGuard.check();
         if (token == 0L) return true;
-        if (!frameActive || views.isEmpty()) return false;
-        ViewState view = views.peek();
+        if (!frameActive || viewDepth == 0) return false;
+        ViewState view = views[viewDepth - 1];
         if (token < 0L) {
             if (view.observedOverflow > 0) {
                 view.observedOverflow--;
@@ -201,15 +204,16 @@ public final class FrameCoordinator {
 
     public void endPrimaryView() {
         threadGuard.check();
-        require(views.size() == 1 && views.peek().activePass == null,
+        require(viewDepth == 1 && views[0].activePass == null,
             "primary view lifecycle");
         hardBarrier("view-end", false);
-        views.pop();
+        views[0].clear();
+        viewDepth = 0;
     }
 
     public void endFrame() {
         threadGuard.check();
-        require(frameActive && views.isEmpty(), "frame lifecycle");
+        require(frameActive && viewDepth == 0, "frame lifecycle");
         batchBarrier.flush("frame-end");
         frameActive = false;
         frameId = 0L;
@@ -229,7 +233,7 @@ public final class FrameCoordinator {
         catch (Throwable failure) {
             cleanupFailure = appendFailure(cleanupFailure, failure);
         }
-        try { views.clear(); }
+        try { clearViews(); }
         catch (Throwable failure) {
             cleanupFailure = appendFailure(cleanupFailure, failure);
         }
@@ -247,17 +251,21 @@ public final class FrameCoordinator {
     }
 
     public FrameStamp currentStamp() {
-        ViewState view = views.peek();
+        ViewState view = viewDepth == 0 ? null : views[viewDepth - 1];
         return view == null ? null : view.stamp;
     }
 
+    /** Allocation-free lifecycle probes used by the per-frame fast path. */
+    public boolean isFrameActive() { return frameActive; }
+    public int viewDepth() { return viewDepth; }
+
     public FrameCoordinatorStatus snapshot() {
-        ViewState view = views.peek();
+        ViewState view = viewDepth == 0 ? null : views[viewDepth - 1];
         return new FrameCoordinatorStatus(frameActive, frameId,
             view == null ? 0L : view.stamp.getViewId(),
             view == null ? null : view.activePass,
             view == null ? RenderBackendId.LEGACY : view.backend,
-            views.size(), barriers, failures, observedDeviations);
+            viewDepth, barriers, failures, observedDeviations);
     }
 
     private long nextObservedToken() {
@@ -295,8 +303,12 @@ public final class FrameCoordinator {
     }
 
     private ViewState currentView() {
-        require(frameActive && !views.isEmpty(), "view required");
-        return views.peek();
+        require(frameActive && viewDepth > 0, "view required");
+        return views[viewDepth - 1];
+    }
+
+    private void clearViews() {
+        while (viewDepth > 0) views[--viewDepth].clear();
     }
 
     private void hardBarrier(String reason, boolean invalidate) {
@@ -332,7 +344,7 @@ public final class FrameCoordinator {
     }
 
     private static final class ViewState {
-        private final FrameStamp stamp;
+        private FrameStamp stamp;
         private final EnumSet<RenderPass> completed = EnumSet.noneOf(RenderPass.class);
         private int lastCompletedIndex = -1;
         private RenderPass activePass;
@@ -342,11 +354,30 @@ public final class FrameCoordinator {
         private int observedDepth;
         private int observedOverflow;
 
-        private ViewState(FrameStamp stamp) {
-            this.stamp = stamp;
+        private ViewState() {
             for (int index = 0; index < observed.length; index++) {
                 observed[index] = new ObservedPass();
             }
+        }
+
+        private void reset(FrameStamp value) {
+            stamp = value;
+            completed.clear();
+            lastCompletedIndex = -1;
+            activePass = null;
+            backend = RenderBackendId.LEGACY;
+            observedDepth = 0;
+            observedOverflow = 0;
+        }
+
+        private void clear() {
+            while (observedDepth > 0) observed[--observedDepth].clear();
+            stamp = null;
+            completed.clear();
+            lastCompletedIndex = -1;
+            activePass = null;
+            backend = RenderBackendId.LEGACY;
+            observedOverflow = 0;
         }
     }
 

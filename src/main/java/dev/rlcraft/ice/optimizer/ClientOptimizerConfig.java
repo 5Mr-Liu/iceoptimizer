@@ -16,6 +16,7 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
     private final long directCacheBudgetBytes;
     private final long gpuCacheBudgetBytes;
     private final int circuitBreakerFailures;
+    private final boolean incompletePlayerSkullProfileLookupAllowed;
     private final int skullProfileCacheEntries;
     private final int skullProfilePositiveTtlMinutes;
     private final int skullProfileNegativeTtlSeconds;
@@ -35,6 +36,7 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
         directCacheBudgetBytes = toBytes(source.directCacheBudgetMiB);
         gpuCacheBudgetBytes = toBytes(source.gpuCacheBudgetMiB);
         circuitBreakerFailures = Math.max(1, source.circuitBreakerFailures);
+        incompletePlayerSkullProfileLookupAllowed = source.allowIncompletePlayerSkullProfileLookup;
         skullProfileCacheEntries = Math.max(64, Math.min(8192, source.skullProfileCacheEntries));
         skullProfilePositiveTtlMinutes = Math.max(5, Math.min(1440, source.skullProfilePositiveTtlMinutes));
         skullProfileNegativeTtlSeconds = Math.max(10, Math.min(3600, source.skullProfileNegativeTtlSeconds));
@@ -58,6 +60,9 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
     public long getDirectCacheBudgetBytes() { return directCacheBudgetBytes; }
     public long getGpuCacheBudgetBytes() { return gpuCacheBudgetBytes; }
     @Override public int getCircuitBreakerFailures() { return circuitBreakerFailures; }
+    public boolean isIncompletePlayerSkullProfileLookupAllowed() {
+        return incompletePlayerSkullProfileLookupAllowed;
+    }
     public int getSkullProfileCacheEntries() { return skullProfileCacheEntries; }
     public int getSkullProfilePositiveTtlMinutes() { return skullProfilePositiveTtlMinutes; }
     public int getSkullProfileNegativeTtlSeconds() { return skullProfileNegativeTtlSeconds; }

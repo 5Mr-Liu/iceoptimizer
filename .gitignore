@@ -19,7 +19,7 @@ logs/
 crash-reports/
 saves/
 world/
-config/
+/config/
 ice-optimizer/
 
 # Local profiling and diagnostic data

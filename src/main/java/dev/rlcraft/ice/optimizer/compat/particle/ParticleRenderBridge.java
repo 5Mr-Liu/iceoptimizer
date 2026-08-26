@@ -65,6 +65,10 @@ public final class ParticleRenderBridge {
     }
 
     public static long begin(Object manager, Entity camera, float partialTicks) {
+        ModernRendererRuntime runtime =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (runtime != null && !runtime.shouldObserveBackend(
+            OptimizationModule.MODERN_PARTICLE_BACKEND)) return 0L;
         long token = nextPositive();
         if (token == 0L) return 0L;
         TraversalState scopes = SCOPES.get();
@@ -80,16 +84,14 @@ public final class ParticleRenderBridge {
             return -token;
         }
         if (outer != null) {
-            scopes.push(new Scope(token, null, null, null, null, false, 0L));
+            scopes.push(token, null, null, null, null, false, 0L);
             return token;
         }
-        ModernRendererRuntime runtime = null;
         ModernRendererRuntime.RenderBackendSample sample = null;
         ParticleInstanceStream stream = null;
         LwjglParticleRenderer renderer = null;
         boolean modern = false;
         try {
-            runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
             if (runtime != null) {
                 sample = runtime.beginRenderBackendSample(
                     OptimizationModule.MODERN_PARTICLE_BACKEND,
@@ -127,8 +129,7 @@ public final class ParticleRenderBridge {
                 modern = false;
             }
         }
-        scopes.push(new Scope(token, runtime, sample, stream, renderer, modern,
-            passToken));
+        scopes.push(token, runtime, sample, stream, renderer, modern, passToken);
         return token;
     }
 
@@ -137,7 +138,9 @@ public final class ParticleRenderBridge {
         try {
             ModernRendererRuntime runtime =
                 ClientOptimizerRuntime.INSTANCE.modernRenderer();
-            return runtime == null ? 0L : runtime.beginObservedPass(
+            return runtime == null || !runtime.shouldObserveBackend(
+                OptimizationModule.MODERN_PARTICLE_BACKEND) ? 0L
+                : runtime.beginObservedPass(
                 RenderPass.LIT_PARTICLES, RenderBackendId.LEGACY);
         } catch (Throwable failure) {
             FatalErrors.rethrowIfFatal(failure);
@@ -268,7 +271,6 @@ public final class ParticleRenderBridge {
         if (token < 0L) {
             if (scopes.overflowDepth > 0) {
                 scopes.overflowDepth--;
-                if (scopes.isEmpty()) SCOPES.remove();
             } else {
                 drainAndRemove(scopes, new IllegalStateException(
                     "particle overflow token mismatch"));
@@ -282,8 +284,8 @@ public final class ParticleRenderBridge {
             return;
         }
         scopes.pop();
-        if (scopes.isEmpty()) SCOPES.remove();
         complete(scope, error);
+        scope.clear();
     }
 
     private static void drainAndRemove(TraversalState scopes,
@@ -401,16 +403,27 @@ public final class ParticleRenderBridge {
         private int size;
         private int overflowDepth;
 
+        private TraversalState() {
+            for (int index = 0; index < values.length; index++) {
+                values[index] = new Scope();
+            }
+        }
+
         private boolean hasRoom() { return size < values.length; }
         private boolean isEmpty() { return size == 0 && overflowDepth == 0; }
         private Scope peek() {
             return overflowDepth != 0 || size == 0 ? null : values[size - 1];
         }
-        private void push(Scope scope) { values[size++] = scope; }
+        private void push(long token, ModernRendererRuntime runtime,
+                          ModernRendererRuntime.RenderBackendSample sample,
+                          ParticleInstanceStream stream,
+                          LwjglParticleRenderer renderer, boolean modern,
+                          long passToken) {
+            values[size++].reset(token, runtime, sample, stream, renderer,
+                modern, passToken);
+        }
         private Scope pop() {
-            Scope result = values[--size];
-            values[size] = null;
-            return result;
+            return values[--size];
         }
 
         private void degradeAll(Throwable reason) {
@@ -425,6 +438,8 @@ public final class ParticleRenderBridge {
                 try { scope.drain(reason); }
                 catch (Throwable drainFailure) {
                     failure = appendFailure(failure, drainFailure);
+                } finally {
+                    scope.clear();
                 }
             }
             FatalErrors.rethrowIfFatal(failure);
@@ -432,11 +447,11 @@ public final class ParticleRenderBridge {
     }
 
     private static final class Scope {
-        private final long token;
-        private final ModernRendererRuntime runtime;
-        private final ModernRendererRuntime.RenderBackendSample sample;
-        private final ParticleInstanceStream stream;
-        private final LwjglParticleRenderer renderer;
+        private long token;
+        private ModernRendererRuntime runtime;
+        private ModernRendererRuntime.RenderBackendSample sample;
+        private ParticleInstanceStream stream;
+        private LwjglParticleRenderer renderer;
         private boolean modern;
         private final double[] corners = new double[12];
         private long nextSequence;
@@ -450,11 +465,14 @@ public final class ParticleRenderBridge {
         private Emission lastEmission = Emission.NONE;
         private long passToken;
 
-        private Scope(long token, ModernRendererRuntime runtime,
-                      ModernRendererRuntime.RenderBackendSample sample,
-                      ParticleInstanceStream stream,
-                      LwjglParticleRenderer renderer, boolean modern,
-                      long passToken) {
+        private Scope() {
+        }
+
+        private void reset(long token, ModernRendererRuntime runtime,
+                           ModernRendererRuntime.RenderBackendSample sample,
+                           ParticleInstanceStream stream,
+                           LwjglParticleRenderer renderer, boolean modern,
+                           long passToken) {
             this.token = token;
             this.runtime = runtime;
             this.sample = sample;
@@ -462,6 +480,28 @@ public final class ParticleRenderBridge {
             this.renderer = renderer;
             this.modern = modern;
             this.passToken = passToken;
+            nextSequence = 0L;
+            stateSerial = Long.MIN_VALUE;
+            state = null;
+            eligible = 0;
+            submittedInstances = 0;
+            legacyFallbacks = 0;
+            failed = false;
+            buffer = null;
+            lastEmission = Emission.NONE;
+        }
+
+        private void clear() {
+            token = 0L;
+            runtime = null;
+            sample = null;
+            stream = null;
+            renderer = null;
+            modern = false;
+            state = null;
+            buffer = null;
+            passToken = 0L;
+            lastEmission = Emission.NONE;
         }
 
         private void beginBuffer(BufferBuilder value) {

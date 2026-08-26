@@ -74,6 +74,15 @@ public final class ModelMeshCaptureBridge {
 
     public static void begin(Object owner) {
         captureBegins = safeAdd(captureBegins, 1L);
+        ModernRendererRuntime runtime =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (runtime != null && !runtime.mayUseBackendCandidate(
+            dev.rlcraft.ice.optimizer.OptimizationModule.MODERN_ENTITY_BACKEND)
+            && !runtime.mayUseBackendCandidate(
+                dev.rlcraft.ice.optimizer.OptimizationModule.MODERN_TESR_BACKEND)) {
+            disabledCaptures = safeAdd(disabledCaptures, 1L);
+            return;
+        }
         CaptureState state = CAPTURES.get();
         if (state.overflow != 0 || state.stack.size() >= MAX_CAPTURE_DEPTH) {
             state.overflow++;
@@ -298,11 +307,9 @@ public final class ModelMeshCaptureBridge {
         CaptureState state = CAPTURES.get();
         if (state.overflow > 0) {
             state.overflow--;
-            if (state.overflow == 0 && state.stack.isEmpty()) CAPTURES.remove();
             return null;
         }
         Capture capture = state.stack.poll();
-        if (state.stack.isEmpty()) CAPTURES.remove();
         if (capture == null || capture.owner != owner) {
             state.stack.clear();
             state.overflow = 0;

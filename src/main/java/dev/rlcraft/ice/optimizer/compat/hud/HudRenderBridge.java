@@ -76,6 +76,10 @@ public final class HudRenderBridge {
     }
 
     public static long begin(Object overlay, float partialTicks) {
+        ModernRendererRuntime candidate =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (candidate != null && !candidate.shouldObserveBackend(
+            OptimizationModule.MODERN_HUD_STREAM)) return 0L;
         long token = nextToken();
         if (token == 0L) return 0L;
         State state = STATE.get();
@@ -97,7 +101,7 @@ public final class HudRenderBridge {
             if (minecraft == null || !minecraft.isCallingFromMinecraftThread()) {
                 return token;
             }
-            ModernRendererRuntime runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
+            ModernRendererRuntime runtime = candidate;
             LwjglHudRenderer renderer = runtime == null ? null : runtime.hudRenderer();
             if (runtime == null || renderer == null) return token;
             scope.runtime = runtime;
@@ -158,6 +162,7 @@ public final class HudRenderBridge {
     public static boolean post(final Object bus, final Object event) {
         State state = STATE.get();
         HudScope scope = state.currentHud();
+        if (scope == null) return ((EventBus) bus).post((Event) event);
         if (scope != null) barrier();
         boolean legacyBoundary = scope != null && scope.runtime != null
             && scope.requiresLegacyBoundary;

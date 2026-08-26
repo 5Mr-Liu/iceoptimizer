@@ -13,12 +13,16 @@ public final class BackendStatus {
     private final int evaluatedWorkloadProfiles;
     private final int workloadRetests;
     private final long nextRetestFrame;
+    private final boolean workloadRetestsDisabled;
+    private final long timedOutTransitions;
 
     BackendStatus(BackendLifecycleState state, long generation, boolean active,
                   String detail, double medianImprovement, double p95Regression,
                   int measurementSamples, long ignoredUnstableSamples,
                   int workloadBucket, int evaluatedWorkloadProfiles,
-                  int workloadRetests, long nextRetestFrame) {
+                  int workloadRetests, long nextRetestFrame,
+                  boolean workloadRetestsDisabled,
+                  long timedOutTransitions) {
         this.state = state;
         this.generation = generation;
         this.active = active;
@@ -31,6 +35,8 @@ public final class BackendStatus {
         this.evaluatedWorkloadProfiles = evaluatedWorkloadProfiles;
         this.workloadRetests = workloadRetests;
         this.nextRetestFrame = nextRetestFrame;
+        this.workloadRetestsDisabled = workloadRetestsDisabled;
+        this.timedOutTransitions = timedOutTransitions;
     }
 
     public BackendLifecycleState getState() { return state; }
@@ -47,4 +53,8 @@ public final class BackendStatus {
     }
     public int getWorkloadRetests() { return workloadRetests; }
     public long getNextRetestFrame() { return nextRetestFrame; }
+    public boolean isWorkloadRetestsDisabled() {
+        return workloadRetestsDisabled;
+    }
+    public long getTimedOutTransitions() { return timedOutTransitions; }
 }

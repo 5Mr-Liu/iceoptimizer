@@ -2,10 +2,9 @@ package dev.rlcraft.ice.optimizer.compat.chunk;
 
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 
-/** Hardware-identity-free bound for vanilla's chunk dispatcher. */
+/** Preserves the already hardware-aware Vanilla/external dispatcher policy. */
 public final class ChunkRenderPolicyBridge {
     private static final String MODULE = "vanilla-chunk-dispatch";
-    private static final int SAFE_WORKER_CAP = 2;
     private static volatile int observedVanillaWorkers;
     private static volatile int effectiveWorkers;
     private static volatile int effectiveBuilders;
@@ -47,7 +46,7 @@ public final class ChunkRenderPolicyBridge {
         try {
             int original = Math.max(1, dispatcher.ice$builderCount());
             int workers = effectiveWorkers > 0 ? effectiveWorkers
-                : SAFE_WORKER_CAP;
+                : Math.max(1, observedVanillaWorkers);
             int tuned = computeBuilderCount(original, workers);
             if (tuned != original) dispatcher.ice$setBuilderCount(tuned);
             effectiveBuilders = tuned;
@@ -59,17 +58,19 @@ public final class ChunkRenderPolicyBridge {
     }
 
     static int computeWorkerCount(int vanillaWorkers) {
-        return Math.max(1, Math.min(Math.max(1, vanillaWorkers),
-            SAFE_WORKER_CAP));
+        // This hook runs after Vanilla and performance coremods have already
+        // incorporated CPU topology. Reducing their result cannot react to a
+        // later backlog and was the source of the permanent two-worker cap.
+        return Math.max(1, vanillaWorkers);
     }
 
-    /** Compatibility overload proving that CPU count cannot influence policy. */
+    /** Compatibility overload retained for transformer/test ABI stability. */
     static int computeWorkerCount(int vanillaWorkers,
                                   int ignoredLogicalProcessors) {
         return computeWorkerCount(vanillaWorkers);
     }
 
-    /** Compatibility overload proving that CPU count and heap size are ignored. */
+    /** Compatibility overload retained for transformer/test ABI stability. */
     static int computeWorkerCount(int vanillaWorkers,
                                   int ignoredLogicalProcessors,
                                   long ignoredMaximumHeapBytes) {
@@ -77,9 +78,10 @@ public final class ChunkRenderPolicyBridge {
     }
 
     static int computeBuilderCount(int vanillaBuilders, int workers) {
-        int original = Math.max(1, vanillaBuilders);
-        int minimumPipeline = Math.max(4, Math.max(1, workers) * 4);
-        return Math.min(original, minimumPipeline);
+        // Builders are the dispatcher's back-pressure reservoir. Shrinking an
+        // externally tuned pool here hides upstream chunksToUpdate pressure
+        // and starves exploration; never override the authoritative result.
+        return Math.max(1, vanillaBuilders);
     }
 
     static int vanillaWorkers() { return observedVanillaWorkers; }
@@ -92,8 +94,8 @@ public final class ChunkRenderPolicyBridge {
         synchronized (ChunkRenderPolicyBridge.class) {
             if (activated) return;
             activated = true;
-            OptimizerBridge.activate(MODULE, "区块线程 " + observedVanillaWorkers + "→"
-                + effectiveWorkers + "，复用构建器 " + effectiveBuilders);
+            OptimizerBridge.activate(MODULE, "保留原版/外部区块线程策略：线程 "
+                + effectiveWorkers + "，构建器 " + effectiveBuilders);
         }
     }
 }

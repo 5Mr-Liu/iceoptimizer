@@ -64,6 +64,15 @@ public final class AnimatedTextureUploadBridge {
     }
 
     public static long begin(Object atlas) {
+        ModernRendererRuntime candidate =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (candidate != null
+            && !candidate.shouldObserveBackend(
+                OptimizationModule.MODERN_TEXTURE_STREAM)
+            && !candidate.shouldObserveBackend(
+                OptimizationModule.MODERN_TEXTURE_VISIBILITY)
+            && !candidate.shouldObserveBackend(
+                OptimizationModule.MODERN_TEXTURE_PERSISTENT_RING)) return 0L;
         long token = nextToken();
         if (token == 0L) return 0L;
         State state = STATE.get();
@@ -92,7 +101,7 @@ public final class AnimatedTextureUploadBridge {
                 || minecraft.gameSettings == null || minecraft.gameSettings.anaglyph) {
                 return token;
             }
-            ModernRendererRuntime runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
+            ModernRendererRuntime runtime = candidate;
             LwjglAnimatedTextureUploadStream uploader = runtime == null
                 ? null : runtime.animatedTextures();
             if (runtime == null || uploader == null) return token;

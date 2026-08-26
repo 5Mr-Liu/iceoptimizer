@@ -22,6 +22,10 @@ public final class AdaptiveBackendController {
     private static final int DEFAULT_PROFILE_WARMUP_FRAMES = 30;
     private static final long DEFAULT_RETEST_COOLDOWN_FRAMES = 600L;
     private static final int DEFAULT_MAX_WORKLOAD_RETESTS = 3;
+    private static final long DEFAULT_TRANSITION_TIMEOUT_FRAMES = 600L;
+    private static final int MAX_CONSECUTIVE_EMPTY_MODERN_ARMS = 8;
+    private static final double SEVERE_MEDIAN_REGRESSION = -0.25D;
+    private static final double SEVERE_P95_REGRESSION = 0.25D;
 
     private final ModuleCircuitBreaker breaker;
     private final EnumSet<ModernCapability> requiredCapabilities;
@@ -65,6 +69,13 @@ public final class AdaptiveBackendController {
     private int evaluatedWorkloadProfiles;
     private int workloadRetests;
     private int highestEvaluatedBucket = -1;
+    private boolean workloadRetestsDisabled;
+    private BackendLifecycleState timedState;
+    private long timedStateStartedFrame = Long.MIN_VALUE;
+    private int timedStateProgress = Integer.MIN_VALUE;
+    private long timedOutTransitions;
+    private int consecutiveEmptyModernArms;
+    private long lastEmptyModernFrame = Long.MIN_VALUE;
 
     public AdaptiveBackendController(ModuleCircuitBreaker breaker,
                                      EnumSet<ModernCapability> requiredCapabilities) {
@@ -132,6 +143,11 @@ public final class AdaptiveBackendController {
         evaluatedWorkloadProfiles = 0;
         workloadRetests = 0;
         highestEvaluatedBucket = -1;
+        workloadRetestsDisabled = false;
+        resetTransitionTimer();
+        timedOutTransitions = 0L;
+        consecutiveEmptyModernArms = 0;
+        lastEmptyModernFrame = Long.MIN_VALUE;
         learnedImprovement = 0.0D;
         learnedP95Regression = 0.0D;
         recoverableFailurePending = false;
@@ -212,14 +228,25 @@ public final class AdaptiveBackendController {
         }
         if (profile == PROFILE_LEGACY) {
             resetBucketObservation();
+            if (state == BackendLifecycleState.LEGACY
+                && retestCooldownElapsed(frameId)) deferRetest(frameId);
             return false;
         }
         if (state != BackendLifecycleState.LEGACY
             && state != BackendLifecycleState.MODERN
             && state != BackendLifecycleState.REGRESSION_MONITOR) return false;
         if (evaluatedWorkloadProfiles == 0 || bucket <= highestEvaluatedBucket
+            || workloadRetestsDisabled
             || workloadRetests >= maximumWorkloadRetests
             || !retestCooldownElapsed(frameId)) {
+            // A due probe which still sees an equal/lighter workload has
+            // learned everything it can this frame.  Re-arm the cooldown so
+            // terminal Legacy rendering does not keep every transformed hot
+            // hook alive indefinitely while waiting for a denser scene.
+            if (state == BackendLifecycleState.LEGACY
+                && evaluatedWorkloadProfiles > 0
+                && bucket <= highestEvaluatedBucket
+                && retestCooldownElapsed(frameId)) deferRetest(frameId);
             return false;
         }
         if (!observeWarmBucket(bucket, frameId)) return false;
@@ -241,6 +268,94 @@ public final class AdaptiveBackendController {
             || state == BackendLifecycleState.REGRESSION_MONITOR;
     }
 
+    /**
+     * Includes the one Legacy case that can still enter a bounded, heavier
+     * workload remeasurement. Terminal Legacy and quarantined controllers are
+     * deliberately false so transformed hot paths can bypass ICE entirely.
+     */
+    public boolean mayInspectOrRetestCandidate() {
+        return mayInspectOrRetestCandidate(Long.MAX_VALUE);
+    }
+
+    /** Frame-aware hot-path form which sleeps between bounded retest probes. */
+    public boolean mayInspectOrRetestCandidate(long frameId) {
+        if (shouldInspectCandidate()) return true;
+        return state == BackendLifecycleState.LEGACY && profiledWorkloads
+            && evaluatedWorkloadProfiles > 0 && !workloadRetestsDisabled
+            && workloadRetests < maximumWorkloadRetests
+            && frameId > 0L && retestCooldownElapsed(frameId);
+    }
+
+    /** True when no ordinary render callback can make this controller useful. */
+    public boolean isDormant() {
+        return state == BackendLifecycleState.QUARANTINED
+            || state == BackendLifecycleState.LEGACY
+                && !mayInspectOrRetestCandidate();
+    }
+
+    /** True when this controller needs no observed render work this frame. */
+    public boolean isDormant(long frameId) {
+        return state == BackendLifecycleState.QUARANTINED
+            || state == BackendLifecycleState.LEGACY
+                && !mayInspectOrRetestCandidate(frameId);
+    }
+
+    /**
+     * Advances bounded lifecycle watchdogs without allocating. Validation and
+     * ABBA states which receive no useful progress fall back to dormant Legacy
+     * instead of charging every remaining frame in the session.
+     */
+    public boolean advanceFrame(long frameId) {
+        if (frameId <= 0L || !isTimedTransition(state)) {
+            resetTransitionTimer();
+            return false;
+        }
+        int progress = transitionProgress();
+        if (timedState != state || timedStateProgress != progress
+            || timedStateStartedFrame == Long.MIN_VALUE
+            || frameId < timedStateStartedFrame) {
+            timedState = state;
+            timedStateProgress = progress;
+            timedStateStartedFrame = frameId;
+            return false;
+        }
+        if (frameId - timedStateStartedFrame < DEFAULT_TRANSITION_TIMEOUT_FRAMES) {
+            return false;
+        }
+        BackendLifecycleState expired = state;
+        timedOutTransitions++;
+        workloadRetestsDisabled = true;
+        fallback(expired.name() + " made no progress for "
+            + DEFAULT_TRANSITION_TIMEOUT_FRAMES + " frames; dormant Legacy", false);
+        resetTransitionTimer();
+        return true;
+    }
+
+    /**
+     * Records a MODERN ABBA arm which had no eligible work to submit. Eight
+     * distinct frames are enough to prove that the current hook cannot finish
+     * this measurement; duplicate traversals in one frame do not accelerate it.
+     */
+    public boolean recordEmptyModernArm(MeasurementArm arm, long frameId) {
+        if (state != BackendLifecycleState.PAIRED_MEASURE
+            || arm != MeasurementArm.MODERN
+            || expectedMeasurementArm() != MeasurementArm.MODERN
+            || frameId <= 0L) return false;
+        if (lastEmptyModernFrame == frameId) return false;
+        lastEmptyModernFrame = frameId;
+        ignoredUnstableSamples++;
+        if (consecutiveEmptyModernArms < MAX_CONSECUTIVE_EMPTY_MODERN_ARMS) {
+            consecutiveEmptyModernArms++;
+        }
+        if (consecutiveEmptyModernArms < MAX_CONSECUTIVE_EMPTY_MODERN_ARMS) {
+            return false;
+        }
+        workloadRetestsDisabled = true;
+        fallback("modern measurement produced no candidate work for "
+            + MAX_CONSECUTIVE_EMPTY_MODERN_ARMS + " frames; dormant Legacy", false);
+        return true;
+    }
+
     public void recordMeasurement(SceneFingerprint scene, MeasurementArm arm,
                                   long frameNanos, boolean stable) {
         requireState(BackendLifecycleState.PAIRED_MEASURE);
@@ -260,7 +375,11 @@ public final class AdaptiveBackendController {
             return;
         }
         if (arm == MeasurementArm.LEGACY) legacySamples[legacyCount++] = frameNanos;
-        else modernSamples[modernCount++] = frameNanos;
+        else {
+            modernSamples[modernCount++] = frameNanos;
+            consecutiveEmptyModernArms = 0;
+            lastEmptyModernFrame = Long.MIN_VALUE;
+        }
         abbaIndex++;
         if (abbaIndex >= requiredAbbaCycles * ABBA.length) evaluateMeasurements();
     }
@@ -289,6 +408,10 @@ public final class AdaptiveBackendController {
         double regression = modernP95Nanos / (double) legacyP95Nanos - 1.0D;
         if (improvement < minimumMedianImprovement
             || regression > maximumP95Regression) {
+            if (improvement <= SEVERE_MEDIAN_REGRESSION
+                || regression >= SEVERE_P95_REGRESSION) {
+                workloadRetestsDisabled = true;
+            }
             fallback("online benefit regressed", false);
         }
     }
@@ -379,7 +502,8 @@ public final class AdaptiveBackendController {
         return new BackendStatus(state, generation, isModernActive(), detail,
             learnedImprovement, learnedP95Regression, legacyCount + modernCount,
             ignoredUnstableSamples, measurementBucket, evaluatedWorkloadProfiles,
-            workloadRetests, nextRetestFrame);
+            workloadRetests, nextRetestFrame, workloadRetestsDisabled,
+            timedOutTransitions);
     }
 
     private void evaluateMeasurements() {
@@ -397,6 +521,10 @@ public final class AdaptiveBackendController {
         learnedLegacyP95 = legacyP95;
         boolean beneficial = learnedImprovement >= minimumMedianImprovement
             && learnedP95Regression <= maximumP95Regression;
+        if (!beneficial && (learnedImprovement <= SEVERE_MEDIAN_REGRESSION
+            || learnedP95Regression >= SEVERE_P95_REGRESSION)) {
+            workloadRetestsDisabled = true;
+        }
         rememberMeasuredProfile(beneficial);
         if (beneficial) {
             state = BackendLifecycleState.MODERN;
@@ -432,6 +560,8 @@ public final class AdaptiveBackendController {
         learnedLegacyMedian = 0L;
         learnedLegacyP95 = 0L;
         regressionCount = 0;
+        consecutiveEmptyModernArms = 0;
+        lastEmptyModernFrame = Long.MIN_VALUE;
         Arrays.fill(legacySamples, 0L);
         Arrays.fill(modernSamples, 0L);
         Arrays.fill(regressionSamples, 0L);
@@ -484,6 +614,11 @@ public final class AdaptiveBackendController {
             || frameId - nextRetestFrame >= 0L;
     }
 
+    private void deferRetest(long frameId) {
+        nextRetestFrame = frameId > Long.MAX_VALUE - retestCooldownFrames
+            ? Long.MAX_VALUE : frameId + retestCooldownFrames;
+    }
+
     private void rememberMeasuredProfile(boolean modern) {
         if (!profiledWorkloads || measurementBucket < 0
             || measurementBucket >= workloadProfiles.length) return;
@@ -516,6 +651,25 @@ public final class AdaptiveBackendController {
         nextRetestFrame = base > Long.MAX_VALUE - retestCooldownFrames
             ? Long.MAX_VALUE : base + retestCooldownFrames;
         resetBucketObservation();
+    }
+
+    private int transitionProgress() {
+        if (state == BackendLifecycleState.WARMUP) return warmupSeen;
+        if (state == BackendLifecycleState.OUTPUT_VALIDATE) return validationsSeen;
+        if (state == BackendLifecycleState.PAIRED_MEASURE) return abbaIndex;
+        return 0;
+    }
+
+    private static boolean isTimedTransition(BackendLifecycleState value) {
+        return value == BackendLifecycleState.WARMUP
+            || value == BackendLifecycleState.OUTPUT_VALIDATE
+            || value == BackendLifecycleState.PAIRED_MEASURE;
+    }
+
+    private void resetTransitionTimer() {
+        timedState = null;
+        timedStateStartedFrame = Long.MIN_VALUE;
+        timedStateProgress = Integer.MIN_VALUE;
     }
 
     private void requireState(BackendLifecycleState expected) {

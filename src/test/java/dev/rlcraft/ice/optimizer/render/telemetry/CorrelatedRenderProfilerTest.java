@@ -144,13 +144,13 @@ public final class CorrelatedRenderProfilerTest {
         assertNull(profiler.beginGpu(stamp, RenderPass.MAIN_SOLID,
             RenderBackendId.ICE_NATIVE));
         CorrelatedRenderProfiler.GpuScope beginRecovered = profiler.beginGpu(stamp,
-            RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE);
+            RenderPass.MAIN_CUTOUT, RenderBackendId.ICE_NATIVE);
         assertNotNull(beginRecovered);
         driver.failTimestampCall = driver.timestampCalls + 1;
         beginRecovered.close();
 
         CorrelatedRenderProfiler.GpuScope endRecovered = profiler.beginGpu(stamp,
-            RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE);
+            RenderPass.MAIN_CUTOUT_MIPPED, RenderBackendId.ICE_NATIVE);
         assertNotNull("other healthy slots must remain usable", endRecovered);
         endRecovered.close();
         assertEquals(Arrays.asList(Integer.valueOf(1), Integer.valueOf(3),
@@ -170,7 +170,7 @@ public final class CorrelatedRenderProfilerTest {
 
         for (int i = 0; i < 4; i++) {
             driver.failTimestampCall = driver.timestampCalls + 1;
-            assertNull(profiler.beginGpu(stamp, RenderPass.MAIN_SOLID,
+            assertNull(profiler.beginGpu(stamp, RenderPass.values()[i],
                 RenderBackendId.ICE_NATIVE));
         }
         assertNull("a fully poisoned ring must fail open instead of reusing IDs",
@@ -196,14 +196,14 @@ public final class CorrelatedRenderProfilerTest {
         assertEquals(0, profiler.pollGpu(4));
         driver.failAvailability = false;
         CorrelatedRenderProfiler.GpuScope afterAvailabilityFailure =
-            profiler.beginGpu(stamp, RenderPass.MAIN_SOLID,
+            profiler.beginGpu(stamp, RenderPass.MAIN_CUTOUT,
                 RenderBackendId.ICE_NATIVE);
         assertNotNull(afterAvailabilityFailure);
         afterAvailabilityFailure.close();
 
         for (int i = 0; i < 512; i++) profiler.pollGpu(4);
         CorrelatedRenderProfiler.GpuScope afterTimeout = profiler.beginGpu(stamp,
-            RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE);
+            RenderPass.MAIN_CUTOUT_MIPPED, RenderBackendId.ICE_NATIVE);
         assertNotNull("other slots must survive an unavailable query timeout",
             afterTimeout);
         assertEquals(Integer.valueOf(5), driver.timestampQueryIds.get(
@@ -224,7 +224,7 @@ public final class CorrelatedRenderProfilerTest {
         driver.available = true;
         driver.failResult = true;
         assertEquals(0, profiler.pollGpu(4));
-        assertNotNull(profiler.beginGpu(stamp, RenderPass.MAIN_SOLID,
+        assertNotNull(profiler.beginGpu(stamp, RenderPass.MAIN_CUTOUT,
             RenderBackendId.ICE_NATIVE));
 
         driver.failDeleteCall = 1;
@@ -239,6 +239,54 @@ public final class CorrelatedRenderProfilerTest {
         assertNull("failed cleanup must still detach the dead ring",
             profiler.beginGpu(stamp, RenderPass.MAIN_SOLID,
                 RenderBackendId.ICE_NATIVE));
+    }
+
+    @Test
+    public void issuesAtMostOneGpuQueryForEachFramePassBackend() {
+        ClientEpochs epochs = new ClientEpochs();
+        FrameStamp stamp = new FrameStamp(1L, 1L, epochs.snapshot());
+        CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(8);
+        FakeGpuDriver driver = new FakeGpuDriver();
+        profiler.attachGpuQueries(driver, 4);
+        CorrelatedRenderProfiler.GpuScope first = profiler.beginGpu(stamp,
+            RenderPass.PARTICLES, RenderBackendId.ICE_NATIVE);
+        assertNotNull(first);
+        assertNull(profiler.beginGpu(stamp, RenderPass.PARTICLES,
+            RenderBackendId.ICE_NATIVE));
+        assertEquals(1, driver.timestampCalls);
+        first.close();
+    }
+
+    @Test
+    public void fullRingBacksOffForTheRestOfTheFrame() {
+        ClientEpochs epochs = new ClientEpochs();
+        FrameStamp stamp = new FrameStamp(1L, 1L, epochs.snapshot());
+        CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(8);
+        FakeGpuDriver driver = new FakeGpuDriver();
+        profiler.attachGpuQueries(driver, 4);
+        for (int index = 0; index < 4; index++) {
+            assertNotNull(profiler.beginGpu(stamp, RenderPass.values()[index],
+                RenderBackendId.ICE_NATIVE));
+        }
+        assertNull(profiler.beginGpu(stamp, RenderPass.SKY,
+            RenderBackendId.ICE_NATIVE));
+        assertNull(profiler.beginGpu(stamp, RenderPass.MAIN_SOLID,
+            RenderBackendId.LEGACY));
+        assertEquals(4, driver.timestampCalls);
+        assertEquals(1L, profiler.snapshot().getDroppedGpuQueries());
+    }
+
+    @Test
+    public void frameBucketsExpireOnlyTheReusedBucket() {
+        ClientEpochs epochs = new ClientEpochs();
+        CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(4);
+        for (long frame = 1L; frame <= 20L; frame++) {
+            FrameStamp stamp = new FrameStamp(frame, frame, epochs.snapshot());
+            profiler.addCounter(stamp, RenderPass.MAIN_SOLID,
+                RenderBackendId.LEGACY, RenderCounter.DRAW, 1L);
+        }
+        assertEquals(4, profiler.snapshot().getProfiles().size());
+        assertEquals(16L, profiler.snapshot().getDroppedFrames());
     }
 
     @Test

@@ -217,7 +217,18 @@ public final class OptimizerConfig {
         })
         public boolean otgSynchronousFileCache = true;
 
-        @Config.Comment("Resolve incomplete player-skull profiles away from the render thread with bounded positive, negative and in-flight caches.")
+        @Config.Comment({
+            "Allow incomplete player-skull profiles to be resolved through Mojang/Authlib.",
+            "False preserves profiles that already contain texture data, renders incomplete profiles with the default skin,",
+            "and performs no synchronous or background profile lookup. Changing this value requires a client restart."
+        })
+        @Config.RequiresMcRestart
+        public boolean allowIncompletePlayerSkullProfileLookup = false;
+
+        @Config.Comment({
+            "Resolve incomplete player-skull profiles away from the render thread with bounded positive, negative and in-flight caches.",
+            "This setting is used only when allowIncompletePlayerSkullProfileLookup is true; false keeps vanilla synchronous lookup."
+        })
         public boolean skullProfileAsync = true;
 
         @Config.Comment({

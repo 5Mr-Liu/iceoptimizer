@@ -17,6 +17,7 @@ final class RenderQueueMonitor {
     private static final Pattern UPLOAD_QUEUE = Pattern.compile("(?:^|[,\\s])pU\\s*:\\s*(\\d+)");
     private static final long RETRY_MILLIS = 10_000L;
     private Field dispatcherField;
+    private Field upstreamUpdatesField;
     private Field updatesField;
     private Field uploadsField;
     private long retryAfterMillis;
@@ -38,6 +39,8 @@ final class RenderQueueMonitor {
                 if (result[0] < 0 && updatesField != null) result[0] = size(updatesField.get(dispatcher));
                 if (result[1] < 0 && uploadsField != null) result[1] = size(uploadsField.get(dispatcher));
             }
+            int upstream = upstreamSize(minecraft.renderGlobal);
+            result[0] = combinedPending(result[0], upstream);
             if (result[0] >= 0 || result[1] >= 0) failureLogged = false;
             return result;
         } catch (Throwable error) {
@@ -49,6 +52,26 @@ final class RenderQueueMonitor {
             }
             return new int[] { -1, -1 };
         }
+    }
+
+    /** Includes RenderGlobal.chunksToUpdate, which precedes the dispatcher. */
+    private int upstreamSize(Object renderGlobal) throws IllegalAccessException {
+        if (renderGlobal == null) return -1;
+        if (upstreamUpdatesField == null
+            || !upstreamUpdatesField.getDeclaringClass().isInstance(renderGlobal)) {
+            upstreamUpdatesField = findNamedField(renderGlobal.getClass(),
+                "chunksToUpdate", "field_175009_l");
+            if (upstreamUpdatesField != null) upstreamUpdatesField.setAccessible(true);
+        }
+        return upstreamUpdatesField == null ? -1
+            : size(upstreamUpdatesField.get(renderGlobal));
+    }
+
+    static int combinedPending(int dispatcher, int upstream) {
+        if (dispatcher < 0) return upstream;
+        if (upstream < 0) return dispatcher;
+        long total = (long) dispatcher + (long) upstream;
+        return total >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
     }
 
     private Object dispatcher(Object renderGlobal) throws IllegalAccessException, NoSuchFieldException {

@@ -73,7 +73,7 @@ public final class OptimizerSideSelectionTest {
         assertTrue(client.enabled(OptimizationModule.BETTER_FOLIAGE_OPTIFINE_COLORS));
         assertTrue(client.enabled(OptimizationModule.QUALITY_TOOLS_ATTRIBUTES));
         assertTrue(client.enabled(OptimizationModule.QUARK_ITEM_SYNC));
-        assertTrue(client.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
+        assertFalse(client.enabled(OptimizationModule.SKULL_PROFILE_ASYNC));
         assertTrue(client.enabled(OptimizationModule.KONKRETE_LOCALE_LOOKUP));
         assertTrue(client.enabled(OptimizationModule.VANILLA_CHUNK_COMPRESSION));
         assertTrue(client.enabled(OptimizationModule.FORGE_BLOCKSTATE_DIRECT_CALLS));

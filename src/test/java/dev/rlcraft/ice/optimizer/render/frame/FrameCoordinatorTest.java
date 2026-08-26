@@ -44,7 +44,8 @@ public final class FrameCoordinatorTest {
         coordinator.endPass(RenderPass.MAIN_SOLID);
         coordinator.endPrimaryView();
         coordinator.endFrame();
-        assertFalse(coordinator.snapshot().isFrameActive());
+        assertFalse(coordinator.isFrameActive());
+        assertEquals(0, coordinator.viewDepth());
         assertTrue(flushes.get() >= 6);
     }
 

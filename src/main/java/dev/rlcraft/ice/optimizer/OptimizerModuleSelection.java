@@ -58,7 +58,8 @@ final class OptimizerModuleSelection {
             case OTG_CONFIG_PARSER: return source.otgConfigParser;
             case OTG_BO4_LAYOUT: return source.otgBo4Layout;
             case OTG_SYNC_FILE_CACHE: return source.otgSynchronousFileCache;
-            case SKULL_PROFILE_ASYNC: return source.skullProfileAsync;
+            case SKULL_PROFILE_ASYNC:
+                return source.allowIncompletePlayerSkullProfileLookup && source.skullProfileAsync;
             case KONKRETE_LOCALE_LOOKUP: return source.konkreteLocaleLookup;
             case VANILLA_CHUNK_COMPRESSION: return source.vanillaChunkCompression;
             case FORGE_BLOCKSTATE_DIRECT_CALLS: return source.forgeBlockStateDirectCalls;

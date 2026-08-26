@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.compat.optifine;
 
 import dev.rlcraft.ice.optimizer.FatalErrors;
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.client.ModernRendererRuntime;
@@ -51,6 +52,10 @@ public final class OptifineRegionBridge {
     }
 
     public static long begin(Object region) {
+        ModernRendererRuntime runtime =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (runtime == null || !runtime.shouldObserveBackend(
+            OptimizationModule.OPTIFINE_REGION_BACKEND)) return 0L;
         long token = nextToken();
         if (token == 0L) return 0L;
         State state = STATE.get();
@@ -65,9 +70,8 @@ public final class OptifineRegionBridge {
                 throw new IllegalStateException("VboRegion access ABI unavailable");
             }
             OptifineVboRegionAccess access = (OptifineVboRegionAccess) region;
-            scope.runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
-            scope.sample = scope.runtime == null ? null
-                : scope.runtime.beginOptifineRegionDraw(access.ice$layer(),
+            scope.runtime = runtime;
+            scope.sample = scope.runtime.beginOptifineRegionDraw(access.ice$layer(),
                     access.ice$indexPosition(), access.ice$countPosition(),
                     access.ice$commandCapacity(), access.ice$drawMode(),
                     access.ice$bufferId(), access.ice$positionTop(),
@@ -94,7 +98,6 @@ public final class OptifineRegionBridge {
         State state = STATE.get();
         if (token < 0L) {
             if (state.overflow > 0) state.overflow--;
-            if (state.depth == 0 && state.overflow == 0) STATE.remove();
             return;
         }
         Scope scope = state.current();
@@ -125,7 +128,6 @@ public final class OptifineRegionBridge {
         } finally {
             scope.clear();
             state.depth--;
-            if (state.depth == 0 && state.overflow == 0) STATE.remove();
         }
     }
 
@@ -193,6 +195,16 @@ public final class OptifineRegionBridge {
     }
 
     static int depthForTest() { return STATE.get().depth; }
+    static long beginScopeForTest() {
+        long token = nextToken();
+        if (token == 0L) return 0L;
+        State state = STATE.get();
+        if (state.depth >= MAX_DEPTH) throw new IllegalStateException(
+            "test region scope capacity exhausted");
+        state.scopes[state.depth++].reset(token);
+        return token;
+    }
+    static Object stateIdentityForTest() { return STATE.get(); }
     static void unwindBeginFailureForTest(Throwable failure) {
         State state = STATE.get();
         int previousDepth = state.depth;

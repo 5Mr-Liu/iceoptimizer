@@ -20,7 +20,7 @@ public final class ModernTerrainBridge {
                                     BufferBuilder builder, VertexBuffer vertexBuffer) {
         if (context == null || builder == null || vertexBuffer == null) return false;
         ModernRendererRuntime renderer = ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (renderer == null) return false;
+        if (renderer == null || !renderer.shouldObserveTerrain()) return false;
         try {
             return renderer.tryUploadTerrain(context, builder, vertexBuffer);
         } catch (Throwable error) {
@@ -54,7 +54,7 @@ public final class ModernTerrainBridge {
     public static boolean tryRender(Object container, BlockRenderLayer layer) {
         if (container == null || layer == null) return false;
         ModernRendererRuntime renderer = ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (renderer == null) return false;
+        if (renderer == null || !renderer.shouldObserveTerrain()) return false;
         try {
             return renderer.tryRenderTerrain(container, layer);
         } catch (Throwable error) {
@@ -88,7 +88,7 @@ public final class ModernTerrainBridge {
     public static long beginRender(BlockRenderLayer layer) {
         if (layer == null) return 0L;
         ModernRendererRuntime renderer = ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (renderer == null) return 0L;
+        if (renderer == null || !renderer.shouldObserveTerrain()) return 0L;
         try {
             return renderer.beginObservedPass(pass(layer),
                 OptimizationModule.MODERN_TERRAIN_BACKEND);
@@ -117,7 +117,7 @@ public final class ModernTerrainBridge {
     public static void afterRender(Object container, BlockRenderLayer layer) {
         if (container == null || layer == null) return;
         ModernRendererRuntime renderer = ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (renderer == null) return;
+        if (renderer == null || !renderer.shouldObserveTerrain()) return;
         try { renderer.afterLegacyTerrainLayer(container, layer); }
         catch (Throwable error) {
             FatalErrors.rethrowIfFatal(error);

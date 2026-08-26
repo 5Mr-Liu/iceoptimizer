@@ -3,8 +3,12 @@
 **稳定维护版本 / Stable maintenance release**<br>
 发布日期 / Released: 2026-08-22
 
-适用于 Minecraft 1.12.2、Forge 14.23.5.2860、Java 8、RLCraft 与 RLCraft Dregora。<br>
-For Minecraft 1.12.2, Forge 14.23.5.2860, Java 8, RLCraft, and RLCraft Dregora.
+仅适用于 Minecraft 1.12.2、Forge 14.23.5.2860、Java 8 和 RLCraft Dregora。<br>
+For RLCraft Dregora only, on Minecraft 1.12.2, Forge 14.23.5.2860, and Java 8.
+
+> [!IMPORTANT]
+> **兼容范围 / Compatibility scope:** 从 1.0.5 起，ICE 仅支持 RLCraft Dregora，不再支持原版 RLCraft。原版 RLCraft 用户请继续使用 1.0.4 或更早版本；由原版 RLCraft 模组组合引起的启动或注入冲突不在 1.0.5 的支持范围内。<br>
+> Starting with 1.0.5, ICE supports RLCraft Dregora only and no longer supports standard/original RLCraft. Standard RLCraft users should stay on 1.0.4 or earlier; startup or injection conflicts caused by the standard RLCraft mod set are outside the support scope of 1.0.5.
 
 ## 主要更新 / Highlights
 

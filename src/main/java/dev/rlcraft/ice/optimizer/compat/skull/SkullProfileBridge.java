@@ -4,9 +4,13 @@ import dev.rlcraft.ice.optimizer.FatalErrors;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.mojang.authlib.GameProfile;
+import com.mojang.authlib.minecraft.MinecraftProfileTexture;
+import com.mojang.authlib.minecraft.MinecraftProfileTexture.Type;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
+import java.util.Collections;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -15,15 +19,19 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import net.minecraft.client.resources.SkinManager;
 import net.minecraft.tileentity.TileEntitySkull;
 
 /**
- * Removes Mojang/Authlib I/O from head rendering while preserving vanilla's
- * eventual GameProfile result and its default-skin fallback.
+ * Applies the configured player-skull profile policy without ever waiting on
+ * Mojang/Authlib from the render thread. Existing-only mode performs no
+ * profile lookup; asynchronous mode preserves the eventual vanilla result.
  */
 public final class SkullProfileBridge {
     private static final ConcurrentMap<String, Long> IN_FLIGHT =
         new ConcurrentHashMap<String, Long>();
+    private static final Map<Type, MinecraftProfileTexture> NO_TEXTURES =
+        Collections.emptyMap();
     private static final ProfileLookup VANILLA_LOOKUP = new ProfileLookup() {
         @Override public GameProfile lookup(GameProfile input) {
             return TileEntitySkull.updateGameProfile(input);
@@ -35,46 +43,86 @@ public final class SkullProfileBridge {
     private static volatile ThreadPoolExecutor executor;
     private static volatile ProfileLookup lookup = VANILLA_LOOKUP;
     private static volatile long configurationGeneration;
+    private static volatile LookupMode lookupMode = LookupMode.VANILLA;
 
     private SkullProfileBridge() {
     }
 
-    public static synchronized void configure(int entries, int positiveTtlMinutes,
+    public static void configure(int entries, int positiveTtlMinutes,
+                                 int negativeTtlSeconds, int queueCapacity) {
+        configure(true, true, entries, positiveTtlMinutes, negativeTtlSeconds, queueCapacity);
+    }
+
+    public static synchronized void configure(boolean allowIncompleteLookup, boolean asynchronous,
+                                              int entries, int positiveTtlMinutes,
                                               int negativeTtlSeconds, int queueCapacity) {
+        LookupMode nextMode = !allowIncompleteLookup ? LookupMode.EXISTING_ONLY
+            : asynchronous ? LookupMode.ASYNC : LookupMode.VANILLA;
         configurationGeneration++;
+        // Publish a non-querying transition before retiring an old worker. A
+        // render racing reconfiguration must never fall into synchronous I/O.
+        lookupMode = nextMode == LookupMode.ASYNC ? LookupMode.EXISTING_ONLY : nextMode;
         shutdownExecutor();
         Cache<String, GameProfile> oldPositive = positive;
         Cache<String, Boolean> oldNegative = negative;
         if (oldPositive != null) oldPositive.invalidateAll();
         if (oldNegative != null) oldNegative.invalidateAll();
-        positive = Caffeine.newBuilder()
+        positive = null;
+        negative = null;
+        IN_FLIGHT.clear();
+        if (nextMode != LookupMode.ASYNC) return;
+
+        Cache<String, GameProfile> newPositive = Caffeine.newBuilder()
             .maximumSize(Math.max(64, entries))
             .expireAfterAccess(Math.max(5, positiveTtlMinutes), TimeUnit.MINUTES)
             .build();
-        negative = Caffeine.newBuilder()
+        Cache<String, Boolean> newNegative = Caffeine.newBuilder()
             .maximumSize(Math.max(64, entries))
             .expireAfterWrite(Math.max(10, negativeTtlSeconds), TimeUnit.SECONDS)
             .build();
-        executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        ThreadPoolExecutor newExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<Runnable>(Math.max(16, queueCapacity)),
             new SkullLookupThreadFactory(), new ThreadPoolExecutor.AbortPolicy());
-        executor.prestartAllCoreThreads();
-        IN_FLIGHT.clear();
+        newExecutor.prestartAllCoreThreads();
+        positive = newPositive;
+        negative = newNegative;
+        executor = newExecutor;
+        lookupMode = LookupMode.ASYNC;
     }
 
     /** Replaces LayerCustomHead's original synchronous TileEntitySkull call. */
     public static GameProfile resolveForRenderLookup(GameProfile input) {
-        if (!enabled()) return TileEntitySkull.updateGameProfile(input);
+        LookupMode currentMode = lookupMode;
+        if (currentMode == LookupMode.EXISTING_ONLY) return input;
+        if (currentMode != LookupMode.ASYNC || !enabled()) {
+            return TileEntitySkull.updateGameProfile(input);
+        }
         return resolveWithoutBlocking(input);
     }
 
     /** Rechecks the bounded cache immediately before the head is rendered. */
     public static GameProfile decorateForRender(GameProfile input) {
-        if (!enabled()) return input;
+        if (lookupMode != LookupMode.ASYNC || !enabled()) return input;
         return resolveWithoutBlocking(input);
     }
 
+    /**
+     * Replaces TileEntitySkullRenderer's direct SkinManager call. The default
+     * existing-only policy must stop before CustomSkinLoader or vanilla's
+     * SkinManager can schedule work for an incomplete profile.
+     */
+    public static Map<Type, MinecraftProfileTexture> loadSkinFromCacheForRender(
+        SkinManager skinManager, GameProfile input) {
+        if (input == null) return NO_TEXTURES;
+        LookupMode currentMode = lookupMode;
+        if (hasTextureData(input)) return skinManager.loadSkinFromCache(input);
+        if (currentMode == LookupMode.EXISTING_ONLY) return NO_TEXTURES;
+        if (currentMode == LookupMode.ASYNC && enabled()) return NO_TEXTURES;
+        return skinManager.loadSkinFromCache(input);
+    }
+
     public static synchronized void shutdown() {
+        lookupMode = LookupMode.VANILLA;
         configurationGeneration++;
         shutdownExecutor();
         Cache<String, GameProfile> positiveCache = positive;
@@ -88,7 +136,7 @@ public final class SkullProfileBridge {
 
     private static GameProfile resolveWithoutBlocking(final GameProfile input) {
         if (input == null || input.getName() == null || input.getName().isEmpty()) return input;
-        if (input.isComplete() && input.getProperties().containsKey("textures")) return input;
+        if (hasTextureData(input)) return input;
         ensureConfigured();
         final String key = input.getName().toLowerCase(Locale.ROOT);
         Cache<String, GameProfile> positiveCache = positive;
@@ -152,7 +200,11 @@ public final class SkullProfileBridge {
 
     private static boolean useful(GameProfile profile) {
         return profile != null && (profile.getId() != null ||
-            profile.getProperties().containsKey("textures"));
+            hasTextureData(profile));
+    }
+
+    private static boolean hasTextureData(GameProfile profile) {
+        return profile != null && profile.getProperties().containsKey("textures");
     }
 
     private static void cacheNegative(String key) {
@@ -193,8 +245,18 @@ public final class SkullProfileBridge {
         lookup = VANILLA_LOOKUP;
     }
 
+    static boolean hasExecutorForTests() {
+        return executor != null;
+    }
+
     interface ProfileLookup {
         GameProfile lookup(GameProfile input) throws Exception;
+    }
+
+    private enum LookupMode {
+        EXISTING_ONLY,
+        ASYNC,
+        VANILLA
     }
 
     private static final class SkullLookupThreadFactory implements ThreadFactory {

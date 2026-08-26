@@ -53,6 +53,11 @@ public final class OptifineShaderLifecycleBridge {
     }
 
     public static long begin(Object requestedProgram) {
+        ModernRendererRuntime candidate =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (candidate != null && !candidate.isFrameInfrastructureActive()) {
+            return 0L;
+        }
         long token = nextToken();
         if (token == 0L) return 0L;
         State state = STATE.get();
@@ -76,7 +81,7 @@ public final class OptifineShaderLifecycleBridge {
         Scope scope = state.scopes[state.depth++];
         scope.reset(token);
         try {
-            scope.runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
+            scope.runtime = candidate;
             scope.changed = INTROSPECTOR.willChange(requestedProgram);
             if (scope.runtime != null) {
                 scope.runtime.beforeOptifineProgramSwitch(requestedProgram,
@@ -125,7 +130,6 @@ public final class OptifineShaderLifecycleBridge {
         State state = STATE.get();
         if (token < 0L) {
             if (state.overflow > 0) state.overflow--;
-            if (state.depth == 0 && state.overflow == 0) STATE.remove();
             return;
         }
         Scope scope = state.current();
@@ -157,7 +161,6 @@ public final class OptifineShaderLifecycleBridge {
         } finally {
             scope.clear();
             state.depth--;
-            if (state.depth == 0 && state.overflow == 0) STATE.remove();
         }
     }
 
@@ -227,6 +230,7 @@ public final class OptifineShaderLifecycleBridge {
 
     static int depthForTest() { return STATE.get().depth; }
     static int overflowForTest() { return STATE.get().overflow; }
+    static Object stateIdentityForTest() { return STATE.get(); }
     static void unwindBeginFailureForTest(Throwable failure) {
         State state = STATE.get();
         int previousDepth = state.depth;

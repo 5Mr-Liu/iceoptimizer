@@ -20,9 +20,7 @@ public final class OptifinePassLifecycleBridge {
     private static final String MODULE = "optifine-shader-bridge";
     private static final int MAX_DEPTH = 8;
     private static final AtomicLong NEXT_TOKEN = new AtomicLong(1L);
-    private static final ThreadLocal<State> STATE = new ThreadLocal<State>() {
-        @Override protected State initialValue() { return new State(); }
-    };
+    private static final ThreadLocal<State> STATE = new ThreadLocal<State>();
     private static volatile boolean coreBridgeInstalled;
 
     private OptifinePassLifecycleBridge() {
@@ -55,7 +53,9 @@ public final class OptifinePassLifecycleBridge {
     }
 
     public static long beginShadow() {
-        State state = STATE.get();
+        ModernRendererRuntime runtime = currentRuntime();
+        if (runtime != null && !runtime.isFrameInfrastructureActive()) return 0L;
+        State state = state();
         long token = nextToken();
         if (token == 0L) return 0L;
         if (state.shadowDepth >= MAX_DEPTH) {
@@ -77,7 +77,8 @@ public final class OptifinePassLifecycleBridge {
     /** True only while the reviewed ShadersRender shadow entry is on-stack. */
     public static boolean isShadowPass() {
         State state = STATE.get();
-        return state.shadowDepth > 0 || state.shadowOverflow > 0;
+        return state != null
+            && (state.shadowDepth > 0 || state.shadowOverflow > 0);
     }
 
     public static long beginDeferred() {
@@ -91,7 +92,9 @@ public final class OptifinePassLifecycleBridge {
     }
 
     public static long beginComposite() {
-        State state = STATE.get();
+        ModernRendererRuntime runtime = currentRuntime();
+        if (runtime != null && !runtime.isFrameInfrastructureActive()) return 0L;
+        State state = state();
         long token = nextToken();
         if (token == 0L) return 0L;
         if (state.compositeDepth >= MAX_DEPTH) {
@@ -109,6 +112,10 @@ public final class OptifinePassLifecycleBridge {
     /** Called at the exact private renderFinal invocation inside composites. */
     public static void transitionFinal() {
         State state = STATE.get();
+        // beginComposite() deliberately returns the zero sentinel while the
+        // renderer is quiescent.  Its transformed transition hook still runs,
+        // but must not recreate a State merely to discover that no scope exists.
+        if (state == null) return;
         if (state.compositeOverflow != 0 || state.compositeDepth == 0) {
             safeBarrier("OptiFine final without composite scope");
             return;
@@ -132,43 +139,43 @@ public final class OptifinePassLifecycleBridge {
     private static void finishShadow(long token) {
         if (token == 0L) return;
         State state = STATE.get();
-        try {
-            if (token < 0L) {
-                if (state.shadowOverflow > 0) state.shadowOverflow--;
-                else drainShadow(state);
-                return;
-            }
-            if (state.shadowDepth == 0
-                || state.shadowTokens[state.shadowDepth - 1] != token) {
-                drainShadow(state);
-            } else {
-                state.shadowTokens[--state.shadowDepth] = 0L;
-                safeBarrier("OptiFine shadow exit");
-            }
-        } finally {
-            cleanupThreadLocal(state);
+        if (state == null) {
+            safeBarrier("OptiFine shadow end without state");
+            return;
+        }
+        if (token < 0L) {
+            if (state.shadowOverflow > 0) state.shadowOverflow--;
+            else drainShadow(state);
+            return;
+        }
+        if (state.shadowDepth == 0
+            || state.shadowTokens[state.shadowDepth - 1] != token) {
+            drainShadow(state);
+        } else {
+            state.shadowTokens[--state.shadowDepth] = 0L;
+            safeBarrier("OptiFine shadow exit");
         }
     }
 
     private static void finishComposite(long token) {
         if (token == 0L) return;
         State state = STATE.get();
-        try {
-            if (token < 0L) {
-                if (state.compositeOverflow > 0) state.compositeOverflow--;
-                else drainComposite(state);
-                return;
-            }
-            if (state.compositeDepth == 0
-                || state.composites[state.compositeDepth - 1].token != token) {
-                drainComposite(state);
-            } else {
-                CompositeScope scope = state.composites[--state.compositeDepth];
-                try { endObserved(scope.passToken); }
-                finally { scope.clear(); }
-            }
-        } finally {
-            cleanupThreadLocal(state);
+        if (state == null) {
+            safeBarrier("OptiFine composite end without state");
+            return;
+        }
+        if (token < 0L) {
+            if (state.compositeOverflow > 0) state.compositeOverflow--;
+            else drainComposite(state);
+            return;
+        }
+        if (state.compositeDepth == 0
+            || state.composites[state.compositeDepth - 1].token != token) {
+            drainComposite(state);
+        } else {
+            CompositeScope scope = state.composites[--state.compositeDepth];
+            try { endObserved(scope.passToken); }
+            finally { scope.clear(); }
         }
     }
 
@@ -241,11 +248,17 @@ public final class OptifinePassLifecycleBridge {
         }
     }
 
-    private static void cleanupThreadLocal(State state) {
-        if (state.shadowDepth == 0 && state.shadowOverflow == 0
-            && state.compositeDepth == 0 && state.compositeOverflow == 0) {
-            STATE.remove();
+    private static ModernRendererRuntime currentRuntime() {
+        return ClientOptimizerRuntime.INSTANCE.modernRenderer();
+    }
+
+    private static State state() {
+        State state = STATE.get();
+        if (state == null) {
+            state = new State();
+            STATE.set(state);
         }
+        return state;
     }
 
     private static long nextToken() {
@@ -253,8 +266,15 @@ public final class OptifinePassLifecycleBridge {
             "OptiFine pass bridge token");
     }
 
-    static int shadowDepthForTest() { return STATE.get().shadowDepth; }
-    static int compositeDepthForTest() { return STATE.get().compositeDepth; }
+    static int shadowDepthForTest() {
+        State state = STATE.get();
+        return state == null ? 0 : state.shadowDepth;
+    }
+    static int compositeDepthForTest() {
+        State state = STATE.get();
+        return state == null ? 0 : state.compositeDepth;
+    }
+    static Object stateIdentityForTest() { return STATE.get(); }
     static void resetForTest() { STATE.remove(); }
 
     private static final class State {

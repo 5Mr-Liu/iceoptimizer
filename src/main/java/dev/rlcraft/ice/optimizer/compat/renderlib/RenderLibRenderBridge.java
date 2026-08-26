@@ -171,6 +171,9 @@ public final class RenderLibRenderBridge {
     }
 
     private static long begin(Object owner, OptimizationModule module, RenderPass pass) {
+        ModernRendererRuntime runtime =
+            ClientOptimizerRuntime.INSTANCE.modernRenderer();
+        if (runtime != null && !runtime.shouldObserveBackend(module)) return 0L;
         long token = nextTraversalToken();
         if (token == 0L) return 0L;
         TraversalStack stack = TRAVERSALS.get();
@@ -184,13 +187,12 @@ public final class RenderLibRenderBridge {
             return -token;
         }
         if (outer != null) {
-            stack.push(new Traversal(token, owner, module, null, null));
+            stack.push(token, owner, module, null, null);
             return token;
         }
-        ModernRendererRuntime runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
         ModernRendererRuntime.RenderBackendSample sample = runtime == null
             ? null : runtime.beginRenderBackendSample(module, pass);
-        stack.push(new Traversal(token, owner, module, runtime, sample));
+        stack.push(token, owner, module, runtime, sample);
         return token;
     }
 
@@ -205,7 +207,6 @@ public final class RenderLibRenderBridge {
             } finally {
                 TRAVERSALS.remove();
             }
-            if (stack.isEmpty()) TRAVERSALS.remove();
             return;
         }
         Traversal traversal = stack.peek();
@@ -219,8 +220,8 @@ public final class RenderLibRenderBridge {
             return;
         }
         stack.pop();
-        if (stack.isEmpty()) TRAVERSALS.remove();
         complete(traversal, error);
+        traversal.clear();
     }
 
     private static void complete(Traversal traversal, Throwable error) {
@@ -386,7 +387,7 @@ public final class RenderLibRenderBridge {
                 "RenderLib traversal depth exceeded " + MAX_TRAVERSAL_DEPTH));
             return -token;
         }
-        stack.push(new Traversal(token, owner, module, null, null));
+        stack.push(token, owner, module, null, null);
         return token;
     }
 
@@ -413,16 +414,24 @@ public final class RenderLibRenderBridge {
         private int size;
         private int overflowDepth;
 
+        private TraversalStack() {
+            for (int index = 0; index < values.length; index++) {
+                values[index] = new Traversal();
+            }
+        }
+
         private boolean hasRoom() { return size < values.length; }
         private boolean isEmpty() { return size == 0 && overflowDepth == 0; }
         private Traversal peek() {
             return overflowDepth != 0 || size == 0 ? null : values[size - 1];
         }
-        private void push(Traversal value) { values[size++] = value; }
+        private void push(long token, Object owner, OptimizationModule module,
+                          ModernRendererRuntime runtime,
+                          ModernRendererRuntime.RenderBackendSample sample) {
+            values[size++].reset(token, owner, module, runtime, sample);
+        }
         private Traversal pop() {
-            Traversal value = values[--size];
-            values[size] = null;
-            return value;
+            return values[--size];
         }
         private void degradeAll(Throwable error) {
             for (int i = size - 1; i >= 0; i--) {
@@ -433,9 +442,12 @@ public final class RenderLibRenderBridge {
             overflowDepth = 0;
             Throwable fatal = null;
             while (size > 0) {
-                try { pop().drain(error); }
+                Traversal traversal = pop();
+                try { traversal.drain(error); }
                 catch (Throwable failure) {
                     fatal = appendFailure(fatal, failure);
+                } finally {
+                    traversal.clear();
                 }
             }
             FatalErrors.rethrowIfFatal(fatal);
@@ -443,11 +455,11 @@ public final class RenderLibRenderBridge {
     }
 
     private static final class Traversal {
-        private final long token;
-        @SuppressWarnings("unused") private final Object owner;
-        private final OptimizationModule module;
-        private final ModernRendererRuntime runtime;
-        private final ModernRendererRuntime.RenderBackendSample sample;
+        private long token;
+        @SuppressWarnings("unused") private Object owner;
+        private OptimizationModule module;
+        private ModernRendererRuntime runtime;
+        private ModernRendererRuntime.RenderBackendSample sample;
         private long sequence;
         private final ObjectScope[] nestedObjects =
             new ObjectScope[MAX_OBJECT_DEPTH];
@@ -465,17 +477,52 @@ public final class RenderLibRenderBridge {
         private int eligibleDraws;
         private int modernDraws;
 
-        private Traversal(long token, Object owner, OptimizationModule module,
-                          ModernRendererRuntime runtime,
-                          ModernRendererRuntime.RenderBackendSample sample) {
+        private Traversal() {
+            for (int i = 0; i < nestedObjects.length; i++) {
+                nestedObjects[i] = new ObjectScope();
+            }
+        }
+
+        private void reset(long token, Object owner,
+                           OptimizationModule module,
+                           ModernRendererRuntime runtime,
+                           ModernRendererRuntime.RenderBackendSample sample) {
             this.token = token;
             this.owner = owner;
             this.module = module;
             this.runtime = runtime;
             this.sample = sample;
-            for (int i = 0; i < nestedObjects.length; i++) {
-                nestedObjects[i] = new ObjectScope();
-            }
+            sequence = 0L;
+            objectDepth = 0;
+            objectOverflowDepth = 0;
+            eventScope = -1L;
+            passToken = 0L;
+            runPassToken = 0L;
+            runPass = null;
+            object = null;
+            objectPass = null;
+            objectActive = false;
+            objectCandidateAllowed = false;
+            failed = false;
+            eligibleDraws = 0;
+            modernDraws = 0;
+        }
+
+        private void clear() {
+            token = 0L;
+            owner = null;
+            module = null;
+            runtime = null;
+            sample = null;
+            object = null;
+            objectPass = null;
+            runPass = null;
+            objectActive = false;
+            objectCandidateAllowed = false;
+            passToken = 0L;
+            runPassToken = 0L;
+            while (objectDepth > 0) nestedObjects[--objectDepth].clear();
+            objectOverflowDepth = 0;
         }
 
         private void nestedBarrier(boolean recordFailure, Throwable error) {

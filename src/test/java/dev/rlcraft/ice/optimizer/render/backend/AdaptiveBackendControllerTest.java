@@ -164,6 +164,65 @@ public final class AdaptiveBackendControllerTest {
     }
 
     @Test
+    public void rejectedKnownLoadRearmsCooldownInsteadOfKeepingHooksHot() {
+        AdaptiveBackendController controller = profiledForMeasurement(
+            configuredBreaker());
+        assertFalse(controller.prepareProfiledWorkload(1, 1L));
+        assertTrue(controller.prepareProfiledWorkload(1, 2L));
+        recordWindow(controller, sceneWithEntities(20), 100L, 110L);
+
+        assertTrue(controller.isDormant(6L));
+        assertFalse(controller.isDormant(7L));
+        assertFalse(controller.prepareProfiledWorkload(1, 7L));
+        assertEquals(12L, controller.snapshot().getNextRetestFrame());
+        assertTrue(controller.isDormant(8L));
+        assertFalse(controller.isDormant(12L));
+    }
+
+    @Test
+    public void severeRegressionPermanentlyDisablesHeavierBucketRetests() {
+        AdaptiveBackendController controller = profiledForMeasurement(
+            configuredBreaker());
+        assertFalse(controller.prepareProfiledWorkload(1, 1L));
+        assertTrue(controller.prepareProfiledWorkload(1, 2L));
+        recordWindow(controller, sceneWithEntities(20), 100L, 150L);
+        assertEquals(BackendLifecycleState.LEGACY,
+            controller.lifecycleState());
+        assertTrue(controller.snapshot().isWorkloadRetestsDisabled());
+        assertFalse(controller.prepareProfiledWorkload(7, 10_000L));
+        assertEquals(0, controller.snapshot().getWorkloadRetests());
+        assertTrue(controller.isDormant());
+    }
+
+    @Test
+    public void stalledMeasurementTimesOutToDormantLegacy() {
+        AdaptiveBackendController controller = readyForMeasurement(
+            configuredBreaker());
+        assertFalse(controller.advanceFrame(1L));
+        assertTrue(controller.advanceFrame(601L));
+        assertEquals(BackendLifecycleState.LEGACY,
+            controller.lifecycleState());
+        assertEquals(1L, controller.snapshot().getTimedOutTransitions());
+        assertTrue(controller.isDormant());
+    }
+
+    @Test
+    public void repeatedEmptyModernArmStopsAfterEightDistinctFrames() {
+        AdaptiveBackendController controller = readyForMeasurement(
+            configuredBreaker());
+        controller.recordMeasurement(scene(), MeasurementArm.LEGACY, 100L,
+            true);
+        for (long frame = 1L; frame < 8L; frame++) {
+            assertFalse(controller.recordEmptyModernArm(
+                MeasurementArm.MODERN, frame));
+        }
+        assertTrue(controller.recordEmptyModernArm(MeasurementArm.MODERN, 8L));
+        assertEquals(BackendLifecycleState.LEGACY,
+            controller.lifecycleState());
+        assertTrue(controller.isDormant());
+    }
+
+    @Test
     public void parentSuspensionConvergesAWaitingChildToLegacy() {
         AdaptiveBackendController child = readyForMeasurement(
             configuredBreaker());

@@ -6,8 +6,8 @@ import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import dev.rlcraft.ice.optimizer.render.backend.RenderBackendId;
 import dev.rlcraft.ice.optimizer.render.frame.FrameStamp;
 import dev.rlcraft.ice.optimizer.render.frame.RenderPass;
+import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -24,6 +24,7 @@ public final class CorrelatedRenderProfiler {
     private final int maximumFrames;
     private final LinkedHashMap<RenderProfileKey, MutableProfile> profiles =
         new LinkedHashMap<RenderProfileKey, MutableProfile>();
+    private final FrameBucket[] frameBuckets;
     private final ThreadLocal<CpuScopeStack> cpuScopes =
         new ThreadLocal<CpuScopeStack>() {
             @Override protected CpuScopeStack initialValue() {
@@ -37,6 +38,10 @@ public final class CorrelatedRenderProfiler {
 
     public CorrelatedRenderProfiler(int maximumFrames) {
         this.maximumFrames = Math.max(4, maximumFrames);
+        frameBuckets = new FrameBucket[this.maximumFrames];
+        for (int index = 0; index < frameBuckets.length; index++) {
+            frameBuckets[index] = new FrameBucket();
+        }
     }
 
     public synchronized void attachGpuQueries(GpuTimestampDriver driver, int slots) {
@@ -84,13 +89,20 @@ public final class CorrelatedRenderProfiler {
     public synchronized GpuScope beginGpu(FrameStamp stamp, RenderPass pass,
                                           RenderBackendId backend,
                                           GpuCompletion completion) {
-        return gpu == null ? null : gpu.begin(
-            new RenderProfileKey(stamp, pass, backend), completion);
+        if (gpu == null) return null;
+        RenderProfileKey key = new RenderProfileKey(stamp, pass, backend);
+        if (!markGpuIssued(key)) return null;
+        return gpu.begin(key, completion);
     }
 
     /** Poll a bounded number of old query slots. Unavailable results are skipped. */
     public synchronized int pollGpu(int maximumChecks) {
         return gpu == null ? 0 : gpu.poll(Math.max(0, maximumChecks));
+    }
+
+    /** Allocation-free gate used to avoid polling an idle query ring. */
+    public synchronized boolean hasPendingGpuQueries() {
+        return gpu != null && gpu.hasPending();
     }
 
     public synchronized void resetGpu(boolean contextValid) {
@@ -128,28 +140,86 @@ public final class CorrelatedRenderProfiler {
 
     private MutableProfile mutable(RenderProfileKey key) {
         long frame = key.getStamp().getFrameId();
-        if (frame > newestFrame) {
-            newestFrame = frame;
-            trimFrames();
-        }
+        advanceFrameBuckets(frame);
         MutableProfile value = profiles.get(key);
         if (value == null) {
             value = new MutableProfile();
+            if (isExpired(frame)) {
+                droppedFrames++;
+                return value;
+            }
             profiles.put(key, value);
+            bucket(frame).profileKeys.add(key);
         }
         return value;
     }
 
-    private void trimFrames() {
-        long minimum = newestFrame - maximumFrames + 1L;
-        Iterator<Map.Entry<RenderProfileKey, MutableProfile>> iterator =
-            profiles.entrySet().iterator();
-        while (iterator.hasNext()) {
-            if (iterator.next().getKey().getStamp().getFrameId() < minimum) {
-                iterator.remove();
+    private boolean markGpuIssued(RenderProfileKey key) {
+        long frame = key.getStamp().getFrameId();
+        advanceFrameBuckets(frame);
+        if (isExpired(frame)) return false;
+        FrameBucket bucket = bucket(frame);
+        int index = key.getPass().ordinal() * RenderBackendId.values().length
+            + key.getBackend().ordinal();
+        if (bucket.gpuIssued[index]) return false;
+        bucket.gpuIssued[index] = true;
+        return true;
+    }
+
+    /**
+     * Ring buckets make ordinary one-frame advancement O(entries expired)
+     * instead of scanning every retained profile. A large frame jump clears
+     * the fixed bucket array once, then returns to the constant-time path.
+     */
+    private void advanceFrameBuckets(long frame) {
+        if (frame <= newestFrame) return;
+        if (newestFrame <= 0L || frame - newestFrame <= 0L
+            || frame - newestFrame >= maximumFrames) {
+            clearFrameBuckets();
+            newestFrame = frame;
+            prepareBucket(frame);
+            return;
+        }
+        for (long value = newestFrame + 1L; value <= frame; value++) {
+            prepareBucket(value);
+        }
+        newestFrame = frame;
+    }
+
+    private void clearFrameBuckets() {
+        for (FrameBucket bucket : frameBuckets) evict(bucket);
+    }
+
+    private FrameBucket prepareBucket(long frame) {
+        FrameBucket bucket = frameBuckets[bucketIndex(frame)];
+        if (bucket.frameId != frame) {
+            evict(bucket);
+            bucket.frameId = frame;
+        }
+        return bucket;
+    }
+
+    private FrameBucket bucket(long frame) {
+        return prepareBucket(frame);
+    }
+
+    private void evict(FrameBucket bucket) {
+        for (int index = 0; index < bucket.profileKeys.size(); index++) {
+            if (profiles.remove(bucket.profileKeys.get(index)) != null) {
                 droppedFrames++;
             }
         }
+        bucket.reset();
+    }
+
+    private boolean isExpired(long frame) {
+        return newestFrame > maximumFrames
+            && frame < newestFrame - maximumFrames + 1L;
+    }
+
+    private int bucketIndex(long frame) {
+        long value = frame % maximumFrames;
+        return (int) (value < 0L ? value + maximumFrames : value);
     }
 
     private static long safeAdd(long left, long right) {
@@ -220,8 +290,13 @@ public final class CorrelatedRenderProfiler {
         private final CacheBudget budget;
         private final Slot[] slots;
         private final Thread ownerThread;
-        private int cursor;
-        private int pollCursor;
+        private final int[] freeSlots;
+        private final int[] activeQueue;
+        private int freeCount;
+        private int activeHead;
+        private int activeTail;
+        private int activeCount;
+        private long backoffFrame = Long.MIN_VALUE;
         private long nextSerial = 1L;
         private long dropped;
 
@@ -231,6 +306,8 @@ public final class CorrelatedRenderProfiler {
             this.budget = budget;
             ownerThread = Thread.currentThread();
             slots = new Slot[count];
+            freeSlots = new int[count];
+            activeQueue = new int[count];
             int[] created = new int[Math.multiplyExact(count, 2)];
             CacheBudget.Reservation[] reservations =
                 new CacheBudget.Reservation[created.length];
@@ -244,7 +321,7 @@ public final class CorrelatedRenderProfiler {
                     CreatedQuery end = createCheckedQuery(unique);
                     created[createdCount] = end.nativeId;
                     reservations[createdCount++] = end.reservation;
-                    slots[i] = new Slot(start.nativeId, end.nativeId,
+                    slots[i] = new Slot(i, start.nativeId, end.nativeId,
                         start.reservation, end.reservation);
                 }
             } catch (Throwable allocationFailure) {
@@ -267,6 +344,9 @@ public final class CorrelatedRenderProfiler {
                 }
                 rethrow(allocationFailure);
             }
+            for (int index = count - 1; index >= 0; index--) {
+                freeSlots[freeCount++] = index;
+            }
         }
 
         private GpuScope begin(RenderProfileKey key, GpuCompletion completion) {
@@ -274,33 +354,33 @@ public final class CorrelatedRenderProfiler {
                 scopeErrors++;
                 return null;
             }
-            for (int checked = 0; checked < slots.length; checked++) {
-                int index = (cursor + checked) % slots.length;
-                Slot slot = slots[index];
-                if (slot.state == Slot.IDLE) {
-                    slot.key = key;
-                    slot.completion = completion;
-                    long serial = nextSerial();
-                    if (serial == 0L) {
-                        slot.reset();
-                        dropped++;
-                        return null;
-                    }
-                    slot.serial = serial;
-                    slot.state = Slot.STARTED;
-                    cursor = (index + 1) % slots.length;
-                    try {
-                        driver.timestamp(slot.startQuery);
-                        return new GpuScope(this, slot, slot.serial);
-                    } catch (Throwable error) {
-                        poison(slot, true);
-                        FatalErrors.rethrowIfFatal(error);
-                        return null;
-                    }
-                }
+            long frame = key.getStamp().getFrameId();
+            if (backoffFrame == frame) return null;
+            if (freeCount == 0) {
+                backoffFrame = frame;
+                dropped++;
+                return null;
             }
-            dropped++;
-            return null;
+            Slot slot = slots[freeSlots[--freeCount]];
+            slot.key = key;
+            slot.completion = completion;
+            long serial = nextSerial();
+            if (serial == 0L) {
+                release(slot);
+                dropped++;
+                return null;
+            }
+            slot.serial = serial;
+            slot.state = Slot.STARTED;
+            try {
+                driver.timestamp(slot.startQuery);
+                enqueue(slot.index);
+                return new GpuScope(this, slot, slot.serial);
+            } catch (Throwable error) {
+                poison(slot, true);
+                FatalErrors.rethrowIfFatal(error);
+                return null;
+            }
         }
 
         private void end(Slot slot, long serial) {
@@ -327,17 +407,19 @@ public final class CorrelatedRenderProfiler {
             }
             int checks = 0;
             int completed = 0;
-            int scanned = 0;
-            while (checks < maximumChecks && scanned < slots.length) {
-                int index = pollCursor;
-                Slot slot = slots[index];
-                pollCursor = (pollCursor + 1) % slots.length;
-                scanned++;
-                if (slot.state == Slot.IDLE || slot.state == Slot.POISONED) continue;
+            int scheduled = activeCount;
+            while (checks < maximumChecks && scheduled-- > 0
+                && activeCount > 0) {
+                Slot slot = slots[dequeue()];
+                if (slot.state == Slot.IDLE || slot.state == Slot.POISONED) {
+                    continue;
+                }
                 checks++;
                 if (slot.state == Slot.STARTED) {
                     if (++slot.polls >= MAXIMUM_GPU_SLOT_POLLS) {
                         poison(slot, true);
+                    } else {
+                        enqueue(slot.index);
                     }
                     continue;
                 }
@@ -352,6 +434,8 @@ public final class CorrelatedRenderProfiler {
                 if (!available) {
                     if (++slot.polls >= MAXIMUM_GPU_SLOT_POLLS) {
                         poison(slot, true);
+                    } else {
+                        enqueue(slot.index);
                     }
                     continue;
                 }
@@ -370,7 +454,7 @@ public final class CorrelatedRenderProfiler {
                 profile.gpuNanos = safeAdd(profile.gpuNanos, elapsed);
                 GpuCompletion completion = slot.completion;
                 RenderProfileKey key = slot.key;
-                slot.reset();
+                release(slot);
                 if (completion != null) {
                     try { completion.completed(key, elapsed); }
                     catch (Throwable error) {
@@ -381,6 +465,26 @@ public final class CorrelatedRenderProfiler {
                 completed++;
             }
             return completed;
+        }
+
+        private boolean hasPending() { return activeCount > 0; }
+
+        private void enqueue(int index) {
+            activeQueue[activeTail] = index;
+            activeTail = (activeTail + 1) % activeQueue.length;
+            activeCount++;
+        }
+
+        private int dequeue() {
+            int index = activeQueue[activeHead];
+            activeHead = (activeHead + 1) % activeQueue.length;
+            activeCount--;
+            return index;
+        }
+
+        private void release(Slot slot) {
+            slot.reset();
+            freeSlots[freeCount++] = slot.index;
         }
 
         private void close(boolean contextValid) {
@@ -395,6 +499,10 @@ public final class CorrelatedRenderProfiler {
                     slot.endReservation, contextValid, firstFailure);
             }
             for (Slot slot : slots) slot.reset();
+            activeHead = 0;
+            activeTail = 0;
+            activeCount = 0;
+            freeCount = 0;
             if (firstFailure != null) rethrow(firstFailure);
         }
 
@@ -539,6 +647,7 @@ public final class CorrelatedRenderProfiler {
         private static final int ENDED = 2;
         private static final int POISONED = 3;
 
+        private final int index;
         private final int startQuery;
         private final int endQuery;
         private final CacheBudget.Reservation startReservation;
@@ -549,9 +658,10 @@ public final class CorrelatedRenderProfiler {
         private int polls;
         private int state;
 
-        private Slot(int startQuery, int endQuery,
+        private Slot(int index, int startQuery, int endQuery,
                      CacheBudget.Reservation startReservation,
                      CacheBudget.Reservation endReservation) {
+            this.index = index;
             this.startQuery = startQuery;
             this.endQuery = endQuery;
             this.startReservation = startReservation;
@@ -572,6 +682,21 @@ public final class CorrelatedRenderProfiler {
             serial = 0L;
             polls = 0;
             state = POISONED;
+        }
+    }
+
+    private static final class FrameBucket {
+        private static final int GPU_KEY_COUNT = RenderPass.values().length
+            * RenderBackendId.values().length;
+        private long frameId = Long.MIN_VALUE;
+        private final ArrayList<RenderProfileKey> profileKeys =
+            new ArrayList<RenderProfileKey>(8);
+        private final boolean[] gpuIssued = new boolean[GPU_KEY_COUNT];
+
+        private void reset() {
+            frameId = Long.MIN_VALUE;
+            profileKeys.clear();
+            java.util.Arrays.fill(gpuIssued, false);
         }
     }
 

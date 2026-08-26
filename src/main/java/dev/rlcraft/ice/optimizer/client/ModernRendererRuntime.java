@@ -202,6 +202,9 @@ public final class ModernRendererRuntime {
     private CapabilityReport capabilities;
     private FrameStamp currentStamp;
     private CorrelatedRenderProfiler.GpuScope frameGpuScope;
+    private boolean frameInfrastructureActive;
+    private boolean quiescent;
+    private long lastRuntimeFrame = Long.MIN_VALUE;
     private RenderBackendSample activeShaderSample;
     private ShaderProgramBinding activeShaderSampleBinding;
     private ShaderProgramBinding activeNativeShaderBinding;
@@ -309,19 +312,34 @@ public final class ModernRendererRuntime {
             return;
         }
         try {
+            frameInfrastructureActive = false;
+            currentStamp = null;
+            lastRuntimeFrame = frameId;
             // Context loss must dispose/abandon the old graph before any new
             // GL capability probe.  Resource/world changes are likewise
             // applied at the frame ownership boundary.
             applyPendingInvalidations();
             ensureInitialized();
             if (!initialized) return;
+            if (profiler.hasPendingGpuQueries()) profiler.pollGpu(8);
             drainPendingShaderCandidates(2);
             drainPendingShaderValidations(1);
             promoteCertifiedShaderBackend();
-            profiler.pollGpu(8);
             synchronizeTerrainSubBackends();
+            boolean lifecycleChanged = advanceBackendLifecycles(frameId);
+            if (!requiresFrameInfrastructure(frameId)) {
+                if (!quiescent || lifecycleChanged) {
+                    quiescent = true;
+                    detail = "所有现代后端均已休眠；帧协调与逐帧测量已停止";
+                    publishRendererDiagnostics(true);
+                }
+                discardPendingTelemetryCounters();
+                return;
+            }
+            quiescent = false;
             coordinator.beginFrame(frameId, token);
             currentStamp = coordinator.beginPrimaryView();
+            frameInfrastructureActive = true;
             if (ModelMeshCaptureBridge.hasPendingModelMeshes()
                 && prepareModelMeshAdmissions()) {
                 ModelMeshCaptureBridge.drainPendingModelMeshes(
@@ -363,13 +381,15 @@ public final class ModernRendererRuntime {
                         OptimizationModule.MODERN_VISIBILITY_HZB);
                     if (visibility != null) visibility.runtimeFailure(error);
                     depthHistory.reset(true);
-                    hzbGpuSamples.clear();
+                    clearHzbGpuSamples();
                     detail = "HZB 延迟回读异常；仅可见性后端已回退："
                         + error.getClass().getSimpleName();
                 }
             }
-            frameGpuScope = profiler.beginGpu(currentStamp, RenderPass.FINAL,
-                RenderBackendId.LEGACY);
+            if (requiresWholeFrameGpuSample(frameId)) {
+                frameGpuScope = profiler.beginGpu(currentStamp,
+                    RenderPass.FINAL, RenderBackendId.LEGACY);
+            }
         } catch (Throwable error) {
             failCoordinator(error);
         }
@@ -377,13 +397,18 @@ public final class ModernRendererRuntime {
 
     public void endFrame() {
         if (!initialized || threadGuard == null || !threadGuard.isRenderThread()) return;
+        if (!frameInfrastructureActive) {
+            currentStamp = null;
+            return;
+        }
         try {
+            discardOpenHzbGpuSamples(currentStamp.getFrameId());
             finishActiveShaderInterval(true, true);
             CorrelatedRenderProfiler.GpuScope closingFrameScope = frameGpuScope;
             frameGpuScope = null;
             if (closingFrameScope != null) closingFrameScope.close();
-            if (coordinator.snapshot().getViewDepth() == 1) coordinator.endPrimaryView();
-            if (coordinator.snapshot().isFrameActive()) coordinator.endFrame();
+            if (coordinator.viewDepth() == 1) coordinator.endPrimaryView();
+            if (coordinator.isFrameActive()) coordinator.endFrame();
             if (terrainArena != null) {
                 terrainArena.endFrame(true);
                 Throwable terrainFailure = terrainArena.consumePublicationFailure();
@@ -407,17 +432,18 @@ public final class ModernRendererRuntime {
         } catch (Throwable error) {
             failCoordinator(error);
         } finally {
+            frameInfrastructureActive = false;
             currentStamp = null;
         }
     }
 
     public void beginPass(RenderPass pass, RenderBackendId backend) {
-        if (!initialized) return;
+        if (!initialized || currentStamp == null) return;
         coordinator.beginPass(pass, backend);
     }
 
     public void endPass(RenderPass pass) {
-        if (!initialized) return;
+        if (!initialized || currentStamp == null) return;
         coordinator.endPass(pass);
     }
 
@@ -482,7 +508,7 @@ public final class ModernRendererRuntime {
     /** Runs one observing callback inside the production Legacy GL island. */
     public <T> T callLegacy(String reason, Callable<T> code) throws Exception {
         if (code == null) throw new IllegalArgumentException("legacy callback");
-        if (!initialized || legacyIsland == null) {
+        if (!initialized || legacyIsland == null || currentStamp == null) {
             try {
                 return code.call();
             } catch (Exception error) {
@@ -530,7 +556,7 @@ public final class ModernRendererRuntime {
         try {
             if (initialized && coordinator != null && threadGuard != null
                 && threadGuard.isRenderThread()
-                && coordinator.snapshot().getViewDepth() > 1) {
+                && coordinator.viewDepth() > 1) {
                 coordinator.endPortalView();
                 currentStamp = coordinator.currentStamp();
             }
@@ -575,7 +601,7 @@ public final class ModernRendererRuntime {
         if ((!known || active) && depthHistory != null && threadGuard != null
             && threadGuard.isRenderThread()) {
             depthHistory.invalidateScene();
-            hzbGpuSamples.clear();
+            clearHzbGpuSamples();
         }
     }
 
@@ -742,6 +768,8 @@ public final class ModernRendererRuntime {
         initialized = false;
         currentStamp = null;
         frameGpuScope = null;
+        frameInfrastructureActive = false;
+        quiescent = false;
         try { backendGpuSamples.clear(); }
         catch (Throwable error) {
             shutdownFailure = appendRuntimeFailure(shutdownFailure, error);
@@ -980,6 +1008,9 @@ public final class ModernRendererRuntime {
         if (!initialized || currentStamp == null || profiler == null
             || insideLegacyIsland()
             || threadGuard == null || !threadGuard.isRenderThread()) return null;
+        AdaptiveBackendController backend = backends.get(
+            OptimizationModule.OPTIFINE_REGION_BACKEND);
+        if (backend == null || !backend.shouldInspectCandidate()) return null;
         RenderPass pass = layer instanceof BlockRenderLayer
             ? terrainPass((BlockRenderLayer) layer) : RenderPass.MAIN_SOLID;
         boolean valid = indexPosition > 0 && indexPosition == countPosition
@@ -1098,6 +1129,45 @@ public final class ModernRendererRuntime {
         AdaptiveBackendController backend = backends.get(module);
         return backend == null ? BackendLifecycleState.LEGACY
             : backend.lifecycleState();
+    }
+
+    /**
+     * Allocation-free gate for lifecycle hooks which are useful only while
+     * this runtime owns an observed render frame.  In particular, OptiFine
+     * may continue invoking its transformed pass/program hooks after every
+     * adaptive backend has entered a dormant Legacy terminal state.
+     */
+    public boolean isFrameInfrastructureActive() {
+        return initialized && frameInfrastructureActive && currentStamp != null
+            && threadGuard != null && threadGuard.isRenderThread();
+    }
+
+    /** Allocation-free hot-path gate for transformed compatibility bridges. */
+    public boolean shouldObserveBackend(OptimizationModule module) {
+        if (!initialized || currentStamp == null || module == null
+            || threadGuard == null || !threadGuard.isRenderThread()) return false;
+        return mayUseBackendCandidate(module);
+    }
+
+    /** State-only form for build/capture hooks which may run outside a pass. */
+    public boolean mayUseBackendCandidate(OptimizationModule module) {
+        if (!initialized || module == null) return false;
+        AdaptiveBackendController backend = backends.get(module);
+        long frameId = lastRuntimeFrame > 0L ? lastRuntimeFrame
+            : epochs.currentFrameId();
+        return backend != null
+            && backend.mayInspectOrRetestCandidate(frameId);
+    }
+
+    /** Gate shared by the terrain draw/upload hooks and HZB observer. */
+    public boolean shouldObserveTerrain() {
+        if (!initialized || currentStamp == null || threadGuard == null
+            || !threadGuard.isRenderThread()) return false;
+        return backendMayInspect(OptimizationModule.MODERN_TERRAIN_BACKEND)
+            || backendMayInspect(OptimizationModule.MODERN_TERRAIN_MDI)
+            || backendMayInspect(
+                OptimizationModule.MODERN_TERRAIN_PERSISTENT_MAPPING)
+            || backendMayInspect(OptimizationModule.MODERN_VISIBILITY_HZB);
     }
 
     private RenderBackendId observedBackend(OptimizationModule module) {
@@ -2125,12 +2195,21 @@ public final class ModernRendererRuntime {
             }
         }
         return new RenderBackendSample(module, state, arm, scene, key, gpu,
-            System.nanoTime());
+            System.nanoTime(), currentStamp.getFrameId());
     }
 
     public void endRenderBackendSample(RenderBackendSample sample,
                                        boolean stable, boolean modernWork) {
         if (sample == null) return;
+        boolean emptyModernArm = sample.state
+            == BackendLifecycleState.PAIRED_MEASURE
+            && sample.arm == MeasurementArm.MODERN && !modernWork;
+        if (emptyModernArm) {
+            AdaptiveBackendController backend = backends.get(sample.module);
+            if (backend != null) {
+                backend.recordEmptyModernArm(sample.arm, sample.frameId);
+            }
+        }
         if (sample.gpuScope != null) sample.gpuScope.close();
         if (sample.key == null) return;
         BackendGpuSample pending = backendGpuSamples.get(sample.key);
@@ -2138,6 +2217,7 @@ public final class ModernRendererRuntime {
         pending.cpuNanos = Math.max(1L, System.nanoTime() - sample.startedNanos);
         pending.cpuReady = true;
         pending.stable = stable && (sample.arm == MeasurementArm.LEGACY || modernWork);
+        pending.emptyModernArm = emptyModernArm;
         finishBackendGpuSample(sample.key, pending);
     }
 
@@ -2511,7 +2591,6 @@ public final class ModernRendererRuntime {
         RenderPass pass = terrainPass(layer);
         SceneFingerprint scene = sceneFingerprint(originalVisible);
         RenderProfileKey hzbKey = null;
-        CorrelatedRenderProfiler.GpuScope hzbTerrainGpu = null;
         boolean hzbMeasurement = layer == BlockRenderLayer.SOLID
             && visibility != null && shaderSafe
             && (visibilityState == BackendLifecycleState.PAIRED_MEASURE
@@ -2521,10 +2600,12 @@ public final class ModernRendererRuntime {
                 || (useHzb && usableHistory));
         if (hzbMeasurement && scene != null) {
             hzbKey = beginHzbGpuSample(scene, visibilityArm);
-            hzbTerrainGpu = profiler.beginGpu(currentStamp, RenderPass.MAIN_SOLID,
+            CorrelatedRenderProfiler.GpuScope hzbTerrainGpu = profiler.beginGpu(
+                currentStamp, RenderPass.MAIN_SOLID,
                 visibilityArm == MeasurementArm.MODERN ? RenderBackendId.ICE_NATIVE
                     : RenderBackendId.LEGACY, hzbGpuCompletion);
             if (hzbTerrainGpu == null) invalidateHzbGpuSample(hzbKey);
+            else attachHzbGpuScope(hzbKey, hzbTerrainGpu);
         }
         long started = System.nanoTime();
         boolean mdiStable = true;
@@ -2647,7 +2728,15 @@ public final class ModernRendererRuntime {
             return true;
         } finally {
             Throwable instrumentationFailure = null;
-            try { if (hzbTerrainGpu != null) hzbTerrainGpu.close(); }
+            // One tuple owns one query.  The Legacy arm measures only the
+            // unfiltered terrain draw.  The Modern arm deliberately remains
+            // open through the subsequent depth capture so that its single
+            // query contains the complete HZB GPU cost.
+            try {
+                if (hzbKey != null && visibilityArm == MeasurementArm.LEGACY) {
+                    closeHzbGpuScope(hzbKey);
+                }
+            }
             catch (Throwable error) {
                 instrumentationFailure = appendRuntimeFailure(
                     instrumentationFailure, error);
@@ -2837,10 +2926,6 @@ public final class ModernRendererRuntime {
             return;
         }
         RenderProfileKey key = findCurrentHzbKey(arm);
-        CorrelatedRenderProfiler.GpuScope gpu = key == null ? null
-            : profiler.beginGpu(currentStamp, RenderPass.MAIN_SOLID,
-                RenderBackendId.ICE_NATIVE, hzbGpuCompletion);
-        if (key != null && gpu == null) invalidateHzbGpuSample(key);
         long started = System.nanoTime();
         LwjglDepthHistory.CaptureOutcome outcome;
         Throwable captureFailure = null;
@@ -2853,7 +2938,7 @@ public final class ModernRendererRuntime {
             outcome = null;
             captureFailure = error;
         }
-        try { if (gpu != null) gpu.close(); }
+        try { if (key != null) closeHzbGpuScope(key); }
         catch (Throwable closeFailure) {
             captureFailure = appendRuntimeFailure(captureFailure, closeFailure);
         }
@@ -4242,6 +4327,8 @@ public final class ModernRendererRuntime {
         optifineRegionObservedGeneration = 0L;
         currentStamp = null;
         frameGpuScope = null;
+        frameInfrastructureActive = false;
+        quiescent = false;
         componentContextGeneration = 0L;
         animatedAtlasTextureId = 0;
         openVisibilityFrame = 0L;
@@ -4728,7 +4815,9 @@ public final class ModernRendererRuntime {
             initialized = false;
             currentStamp = null;
             frameGpuScope = null;
-            hzbGpuSamples.clear();
+            frameInfrastructureActive = false;
+            quiescent = false;
+            clearHzbGpuSamples();
             backendGpuSamples.clear();
             lastValidationFrames.clear();
             genericModelVboValidated = false;
@@ -4768,7 +4857,7 @@ public final class ModernRendererRuntime {
         catch (Throwable error) {
             failure = appendRuntimeFailure(failure, error);
         }
-        hzbGpuSamples.clear();
+        clearHzbGpuSamples();
         backendGpuSamples.clear();
         lastValidationFrames.clear();
         if (modelMeshesInvalidated) genericModelVboValidated = false;
@@ -4989,8 +5078,7 @@ public final class ModernRendererRuntime {
             ? RenderBackendId.ICE_NATIVE : RenderBackendId.LEGACY;
         RenderProfileKey key = new RenderProfileKey(currentStamp,
             RenderPass.MAIN_SOLID, backend);
-        hzbGpuSamples.put(key, new HzbGpuSample(scene, arm,
-            arm == MeasurementArm.MODERN ? 2 : 1));
+        hzbGpuSamples.put(key, new HzbGpuSample(scene, arm));
         while (hzbGpuSamples.size() > 64) {
             Iterator<RenderProfileKey> iterator = hzbGpuSamples.keySet().iterator();
             iterator.next();
@@ -5012,7 +5100,47 @@ public final class ModernRendererRuntime {
     }
 
     private void invalidateHzbGpuSample(RenderProfileKey key) {
-        if (key != null) hzbGpuSamples.remove(key);
+        if (key == null) return;
+        HzbGpuSample sample = hzbGpuSamples.remove(key);
+        if (sample != null) sample.closeGpuScope();
+    }
+
+    private void attachHzbGpuScope(RenderProfileKey key,
+                                   CorrelatedRenderProfiler.GpuScope scope) {
+        HzbGpuSample sample = key == null ? null : hzbGpuSamples.get(key);
+        if (sample == null) {
+            if (scope != null) scope.close();
+            return;
+        }
+        sample.gpuScope = scope;
+    }
+
+    private void closeHzbGpuScope(RenderProfileKey key) {
+        HzbGpuSample sample = key == null ? null : hzbGpuSamples.get(key);
+        if (sample != null) sample.closeGpuScope();
+    }
+
+    /** Ends a modern HZB interval if its capture hook was absent this frame. */
+    private void discardOpenHzbGpuSamples(long frameId) {
+        if (hzbGpuSamples.isEmpty()) return;
+        Iterator<Map.Entry<RenderProfileKey, HzbGpuSample>> iterator =
+            hzbGpuSamples.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<RenderProfileKey, HzbGpuSample> entry = iterator.next();
+            if (entry.getKey().getStamp().getFrameId() != frameId
+                || entry.getValue().gpuScope == null) continue;
+            HzbGpuSample sample = entry.getValue();
+            iterator.remove();
+            sample.closeGpuScope();
+        }
+    }
+
+    private void clearHzbGpuSamples() {
+        if (hzbGpuSamples.isEmpty()) return;
+        for (HzbGpuSample sample : hzbGpuSamples.values()) {
+            sample.closeGpuScope();
+        }
+        hzbGpuSamples.clear();
     }
 
     private void addHzbCpuNanos(RenderProfileKey key, long nanos) {
@@ -5045,7 +5173,8 @@ public final class ModernRendererRuntime {
         AdaptiveBackendController backend = backends.get(sample.module);
         if (backend == null) return;
         long pipeline = Math.max(1L, Math.max(sample.cpuNanos, sample.gpuNanos));
-        if (backend.lifecycleState() == BackendLifecycleState.PAIRED_MEASURE) {
+        if (backend.lifecycleState() == BackendLifecycleState.PAIRED_MEASURE
+            && !sample.emptyModernArm) {
             backend.recordMeasurement(sample.scene, sample.arm, pipeline, sample.stable);
         } else if (backend.lifecycleState() == BackendLifecycleState.REGRESSION_MONITOR
             && sample.arm == MeasurementArm.MODERN) {
@@ -5054,7 +5183,7 @@ public final class ModernRendererRuntime {
     }
 
     private void finishHzbGpuSample(RenderProfileKey key, HzbGpuSample sample) {
-        if (!sample.cpuReady || sample.completedGpuScopes < sample.expectedGpuScopes) return;
+        if (!sample.cpuReady || sample.completedGpuScopes < 1) return;
         hzbGpuSamples.remove(key);
         long pipelineNanos = Math.max(1L, Math.max(sample.cpuNanos, sample.gpuNanos));
         AdaptiveBackendController visibility = backends.get(
@@ -5161,7 +5290,8 @@ public final class ModernRendererRuntime {
      * they never traverse controllers, GL resources, or arena ownership maps.
      */
     private void publishRendererDiagnostics(boolean force) {
-        long frame = currentStamp == null ? -1L : currentStamp.getFrameId();
+        long frame = currentStamp == null ? lastRuntimeFrame
+            : currentStamp.getFrameId();
         if (!force && frame < 0L) return;
         if (!force && lastDiagnosticsFrame != Long.MIN_VALUE
             && frame >= lastDiagnosticsFrame
@@ -5175,6 +5305,9 @@ public final class ModernRendererRuntime {
             report.append("renderer_generation=").append(combinedGeneration())
                 .append('\n');
             report.append("initialized=").append(initialized).append('\n');
+            report.append("quiescent=").append(quiescent).append('\n');
+            report.append("frame_infrastructure_active=")
+                .append(frameInfrastructureActive).append('\n');
             report.append("detail=").append(diagnosticText(detail, 1024))
                 .append('\n');
             report.append("shader_pack_state_known=")
@@ -5622,6 +5755,10 @@ public final class ModernRendererRuntime {
                     .append(status.getWorkloadRetests()).append('\n');
                 report.append(prefix).append("workload_next_retest_frame=")
                     .append(status.getNextRetestFrame()).append('\n');
+                report.append(prefix).append("workload_retests_disabled=")
+                    .append(status.isWorkloadRetestsDisabled()).append('\n');
+                report.append(prefix).append("timed_out_transitions=")
+                    .append(status.getTimedOutTransitions()).append('\n');
             }
 
             StringBuilder summary = new StringBuilder(256);
@@ -5722,6 +5859,54 @@ public final class ModernRendererRuntime {
                 backend.warmupFrame(true);
             }
         }
+    }
+
+    private boolean advanceBackendLifecycles(long frameId) {
+        boolean changed = false;
+        for (AdaptiveBackendController backend : backends.values()) {
+            if (backend.advanceFrame(frameId)) changed = true;
+        }
+        return changed;
+    }
+
+    private boolean requiresFrameInfrastructure(long frameId) {
+        for (AdaptiveBackendController backend : backends.values()) {
+            if (!backend.isDormant(frameId)) return true;
+        }
+        return depthHistory != null && depthHistory.hasPendingReadback()
+            || !pendingShaderCandidates.isEmpty()
+            || !pendingShaderValidations.isEmpty();
+    }
+
+    private boolean backendMayInspect(OptimizationModule module) {
+        AdaptiveBackendController backend = backends.get(module);
+        return backend != null
+            && backend.mayInspectOrRetestCandidate(lastRuntimeFrame);
+    }
+
+    private boolean requiresWholeFrameGpuSample(long frameId) {
+        if (frameId <= 0L || frameId % DIAGNOSTICS_FRAME_INTERVAL != 0L) {
+            return false;
+        }
+        for (AdaptiveBackendController backend : backends.values()) {
+            BackendLifecycleState state = backend.lifecycleState();
+            if (state == BackendLifecycleState.PAIRED_MEASURE
+                || state == BackendLifecycleState.REGRESSION_MONITOR) return true;
+        }
+        return false;
+    }
+
+    private void discardPendingTelemetryCounters() {
+        pendingTextureCommands.set(0L);
+        pendingTextureBytes.set(0L);
+        pendingTextureBusy.set(0L);
+        pendingTextureFallbacks.set(0L);
+        pendingVisibilityDeferred.set(0L);
+        pendingVisibilityDeferredBytes.set(0L);
+        pendingVisibilityCaughtUp.set(0L);
+        pendingVisibilityCaughtUpBytes.set(0L);
+        pendingVisibilityCatchUpNanos.set(0L);
+        pendingVisibilityUnknownFrames.set(0L);
     }
 
     private void activateReadyBackends() {
@@ -5867,6 +6052,7 @@ public final class ModernRendererRuntime {
             failure = appendRuntimeFailure(failure, breakerFailure);
         }
         currentStamp = null;
+        frameInfrastructureActive = false;
         EarlyMatrixStateTracker.invalidate();
         detail = "帧协调异常，当前帧已回退 Legacy："
             + failure.getClass().getSimpleName();
@@ -6148,17 +6334,21 @@ public final class ModernRendererRuntime {
     private static final class HzbGpuSample {
         private final SceneFingerprint scene;
         private final MeasurementArm arm;
-        private final int expectedGpuScopes;
         private int completedGpuScopes;
         private long cpuNanos;
         private long gpuNanos;
         private boolean cpuReady;
+        private CorrelatedRenderProfiler.GpuScope gpuScope;
 
-        private HzbGpuSample(SceneFingerprint scene, MeasurementArm arm,
-                             int expectedGpuScopes) {
+        private HzbGpuSample(SceneFingerprint scene, MeasurementArm arm) {
             this.scene = scene;
             this.arm = arm;
-            this.expectedGpuScopes = expectedGpuScopes;
+        }
+
+        private void closeGpuScope() {
+            CorrelatedRenderProfiler.GpuScope closing = gpuScope;
+            gpuScope = null;
+            if (closing != null) closing.close();
         }
     }
 
@@ -6170,13 +6360,14 @@ public final class ModernRendererRuntime {
         private final RenderProfileKey key;
         private final CorrelatedRenderProfiler.GpuScope gpuScope;
         private final long startedNanos;
+        private final long frameId;
 
         private RenderBackendSample(OptimizationModule module,
                                     BackendLifecycleState state,
                                     MeasurementArm arm, SceneFingerprint scene,
                                     RenderProfileKey key,
                                     CorrelatedRenderProfiler.GpuScope gpuScope,
-                                    long startedNanos) {
+                                    long startedNanos, long frameId) {
             this.module = module;
             this.state = state;
             this.arm = arm;
@@ -6184,6 +6375,7 @@ public final class ModernRendererRuntime {
             this.key = key;
             this.gpuScope = gpuScope;
             this.startedNanos = startedNanos;
+            this.frameId = frameId;
         }
 
         public boolean usesModernArm() {
@@ -6232,6 +6424,7 @@ public final class ModernRendererRuntime {
         private boolean cpuReady;
         private boolean gpuReady;
         private boolean stable;
+        private boolean emptyModernArm;
 
         private BackendGpuSample(OptimizationModule module,
                                  SceneFingerprint scene, MeasurementArm arm) {

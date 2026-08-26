@@ -40,6 +40,17 @@ public final class OptifineShaderLifecycleBridgeTest {
     }
 
     @Test
+    public void normalProgramScopesReuseTheirPreallocatedThreadState() {
+        long first = OptifineShaderLifecycleBridge.begin(null);
+        Object state = OptifineShaderLifecycleBridge.stateIdentityForTest();
+        OptifineShaderLifecycleBridge.end(first, null);
+        long second = OptifineShaderLifecycleBridge.begin(null);
+        assertSame(state,
+            OptifineShaderLifecycleBridge.stateIdentityForTest());
+        OptifineShaderLifecycleBridge.end(second, null);
+    }
+
+    @Test
     public void wrappedFatalUnwindsTheBeginScopeBeforeEscaping() {
         OutOfMemoryError fatal = new OutOfMemoryError(
             "injected wrapped shader fatal");

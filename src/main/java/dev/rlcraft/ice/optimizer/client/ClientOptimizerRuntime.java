@@ -66,7 +66,8 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         workers = new ClientWorkerRuntime(epochs, renderQueue, config.getWorkerThreads(), config.getWorkerQueueCapacity());
         cacheBudget = new CacheBudget(config.getHeapCacheBudgetBytes(), config.getDirectCacheBudgetBytes(), config.getGpuCacheBudgetBytes());
         modernRenderer = new ModernRendererRuntime(epochs, cacheBudget);
-        SkullProfileBridge.configure(config.getSkullProfileCacheEntries(),
+        SkullProfileBridge.configure(config.isIncompletePlayerSkullProfileLookupAllowed(),
+            config.enabled(OptimizationModule.SKULL_PROFILE_ASYNC), config.getSkullProfileCacheEntries(),
             config.getSkullProfilePositiveTtlMinutes(), config.getSkullProfileNegativeTtlSeconds(),
             config.getSkullProfileQueueCapacity());
         OptimizerBridge.attachClientRuntime(this);

@@ -1,7 +1,16 @@
 # Changelog
 
+## 1.0.6 player-skull lookup isolation and renderer idle-path recovery - 2026-08-26
+
+- 新增默认关闭的玩家头颅资料查询门 `allowIncompletePlayerSkullProfileLookup`，并把策略下沉到所有方块、物品栏/JEI、快捷栏、手持/掉落及佩戴头颅共用的 `TileEntitySkullRenderer` 皮肤缓存入口：已有 `textures` 的资料继续正常渲染，不完整资料在进入 `SkinManager`/CustomSkinLoader 前直接使用默认皮肤，且不调用 `TileEntitySkull.updateGameProfile`、不创建 resolver worker、不提交后台任务。显式允许查询后，现有 `skullProfileAsync` 仍可选择有界异步或原版同步行为。Optimizer/Profiler Main/Core 版本提升为 `1.0.6`，拒绝与正式 1.0.5 混装。
+- 修复 1.0.5 稳定阶段的现代渲染负优化：OptiFine Region、pass 与 program 桥在后端休眠后直接零 token 旁路，正常路径保留并复用预分配的 ThreadLocal 状态；Particle、FBP、RenderLib、HUD、模型捕获、动画纹理及 Terrain 热钩子同样在终态停止候选工作。全部后端休眠时不再建立 FrameCoordinator、FrameStamp、逐帧 Query 或 Legacy GL island。
+- GPU Query 环改为 O(1) 空闲槽栈与活动队列；环满后整帧退避，不再为每次失败扫描 64 槽。每个 `frame + pass + backend` 最多发出一个 Query，profile 淘汰改为固定帧桶；HZB 的地形提交与深度捕获合并为一个跨区间 Query，避免 tuple 去重后第二个 Query 被必然拒绝而使认证永久停滞。
+- `WARMUP`、`OUTPUT_VALIDATE` 与 `PAIRED_MEASURE` 增加 600 帧无进展超时，现代测量臂连续 8 个不同帧没有候选工作时立即回到休眠 Legacy；严重中位数/P95 回归永久禁用更重负载重测，普通拒绝负载只在 600 帧冷却到期探测一帧，避免稳定 Legacy 仍永久进入热钩子。移除 ICE 对区块编译线程的硬编码双 Worker 和 `workers * 4` builder 限制，并让队列诊断同时统计 Dispatcher 与 `RenderGlobal.chunksToUpdate` 上游积压。
+- 修正根级运行配置忽略规则误伤 Java `config` 包的问题，将此前只存在于本地构建树的 `IceConfig` 及其测试正式纳入版本控制，保证干净克隆可直接编译。隔离发布树的 20 个任务全部执行，195 个测试类、758 项测试为 0 failure、0 error；48 skipped 仅对应未提供的可选真实模组 JAR 或运行期样本。五个发布归档与前一轮构建逐字节一致。
+
 ## 1.0.5 ChunkAnimator-safe HZB visibility - 2026-08-22
 
+- **兼容范围变更：** 从 1.0.5 起仅支持 RLCraft Dregora，不再支持原版 RLCraft。原版 RLCraft 用户请继续使用 1.0.4 或更早版本；由原版 RLCraft 模组组合引起的启动或注入冲突不属于 1.0.5 的支持范围。
 - 修复 Dregora `ChunkAnimator-1.12.2-1.2.1` 与 HZB 静态区块边界的坐标冲突：`timeStamps` 中仍在动画的区块强制保持可见，Arena 将其从 multi-draw/MDI run 拆出并调用真实 `ChunkRenderContainer.preRenderChunk`，再补偿 region-local 原点；稳定区块继续批处理。模组不存在时零影响，实际 ABI 或运行探针异常时 fail-open。
 - 普通 HZB 遮挡必须在连续两个独立深度发布中获得同一区块身份见证，同一发布的 SOLID/CUTOUT 多层不会重复累计；场景/几何换代会清空证据。确认表使用固定预算、无逐区块分配的身份表，预算不足时逐级缩容或只停止剔除，不再使整个现代渲染器初始化失败。
 - HZB 对真实 `VboRenderList` 的压缩现在具有提交事务：只有 Arena 已接管或 GPU 提交已经开始才 commit；所有提交前拒绝和异常均恢复原对象身份、顺序与长度。新增回滚快照预算、异常契约与 `hzb_filter_rollbacks`、`hzb_filter_transaction_deferrals/failures` 等诊断。
