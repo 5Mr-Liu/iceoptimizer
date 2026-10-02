@@ -18,6 +18,10 @@ public final class IceOptimizerTransformer implements IClassTransformer {
     private static final Logger LOGGER = LogManager.getLogger("ICE Optimizer");
     private static final Set<String> REPORTED = Collections.synchronizedSet(new HashSet<String>());
 
+    public IceOptimizerTransformer() {
+        OptimizerPatchJournal.transformerInitialized();
+    }
+
     @Override
     public byte[] transform(String name, String transformedName, byte[] basicClass) {
         if (basicClass == null || transformedName == null) return basicClass;

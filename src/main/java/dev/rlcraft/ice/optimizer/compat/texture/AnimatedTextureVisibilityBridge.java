@@ -252,7 +252,7 @@ public final class AnimatedTextureVisibilityBridge {
     }
 
     private static SpriteVisibilityTracker tracker(ModernRendererRuntime runtime) {
-        return runtime == null ? null : runtime.spriteVisibility();
+        return runtime == null ? null : runtime.observedSpriteVisibility();
     }
 
     private static void reportFailure(ModernRendererRuntime runtime,

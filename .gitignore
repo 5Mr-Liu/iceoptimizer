@@ -4,6 +4,7 @@
 build/
 out/
 .forge-mdk/
+.refactor-backups/
 
 # IDE files
 .idea/
@@ -50,3 +51,12 @@ local.properties
 *.tmp
 *.bak
 *~
+
+# Local publishing checkouts and task/runtime state
+/.publish-iceoptimizer/
+/.release-iceoptimizer-*/
+/.codex-session-bridge/
+/.server-repro-staging/
+/rollback/
+/codex-session-bridge.toml
+/installer.log

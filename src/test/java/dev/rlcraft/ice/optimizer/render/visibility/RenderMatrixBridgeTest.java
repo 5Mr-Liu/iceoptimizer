@@ -3,6 +3,7 @@ package dev.rlcraft.ice.optimizer.render.visibility;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
@@ -11,6 +12,26 @@ import java.nio.IntBuffer;
 import org.junit.Test;
 
 public final class RenderMatrixBridgeTest {
+    @Test
+    public void capturedSnapshotIsReusedAndCannotBeMutatedByCallers() {
+        FloatBuffer model = FloatBuffer.allocate(16);
+        FloatBuffer projection = FloatBuffer.allocate(16);
+        IntBuffer viewport = IntBuffer.wrap(new int[] {0, 0, 800, 600});
+        model.put(0, 3.0F);
+        RenderMatrixBridge.capture(model, projection, viewport);
+        RenderMatrixBridge.Snapshot first = RenderMatrixBridge.snapshot();
+        model.put(0, 7.0F);
+        first.copyModelView()[0] = -1.0F;
+        first.copyProjection()[0] = -2.0F;
+        assertSame(first, RenderMatrixBridge.snapshot());
+        assertEquals(3.0F, first.copyModelView()[0], 0.0F);
+        assertEquals(0.0F, first.copyProjection()[0], 0.0F);
+        RenderMatrixBridge.capture(model, projection, viewport);
+        assertEquals(7.0F, RenderMatrixBridge.snapshot().copyModelView()[0], 0.0F);
+        assertEquals(3.0F, first.copyModelView()[0], 0.0F);
+        assertEquals(first.getVersion() + 1L, RenderMatrixBridge.snapshot().getVersion());
+    }
+
     @Test
     public void copiesWithoutChangingCallerBufferPositions() {
         FloatBuffer model = FloatBuffer.allocate(16);

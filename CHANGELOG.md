@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.0.13 exploration performance fixes - 2026-10-02
+
+- 地形后端区分模型捕获和区块上传，等待数据时由真实冷上传恢复原验证/测量状态；沿用有界重试，父后端恢复时同步恢复确因父暂停的上传子后端。
+- 动画可见性观察资格按帧缓存，休眠且无待上传数据时停止区块反射/扫描；本帧新产生待上传像素时直接恢复观察并在绘制前追帧。
+- OTG 配置改为流式解析，去掉整文件 byte-array 复制；普通文件变化只失效该文件，目录替换、别名变化、watch 丢失仍重新认证。结构保存只为非空单元创建坐标、只为新分组创建列表；压缩复用输出 scratch 并释放原生 Deflater，保持原压缩设置及日志/写盘顺序。
+- 原版区块 NBT 按每次保存的局部调色板解析直接注册 ID，打包同样的 Blocks/Data/Add 数组；自定义容器/调色板/注册映射或 Forge 需元数据转换的状态保留原方法。NBT gzip 输出缓冲扩大，保留压缩字节、关闭和异常语义。
+- Profiler 合并事件不再复制无用预窗口；已确认的主线程卡顿样本在固定预算内优先保留。混合 CLIENT/SERVER/GC 分开诊断，严格匹配真实触发区间，缺样标记未识别，聚类展示证据跟随最大峰值；原生 IO/压缩由实际调用方归因，不因 ICE 桥接祖先误判优化器自身。
+- 版本及精确联机握手更新为 1.0.13。Optimizer 与 Profiler 继续各一个安装 JAR；验证记录见 `docs/ICE-1.0.13-LIVE-PERFORMANCE-FIXES.md`。
+
+
+## 1.0.12 single Profiler JAR - 2026-10-02
+
+- Profiler Main/Core 合并为 `ice-rlcraft-profiler-1.0.12.jar`，普通记录器入口和启动探针使用同一安装文件。Profiler 运行时独立重混淆，原始 hooks 字节码随后合并；中间 JAR 归入 `build/intermediates/profiler`，不再输出可安装 Core 包。采样、命令、报告、配置格式和探针协议保留，游戏热路径未增加检查。
+- 优化器和 Profiler 仍可分别独立使用。最终产物测试扩展为 CLIENT/SERVER 的优化器独装、Profiler 独装和两者同装，检查真实 Forge 插件发现、普通模组候选与探针注册。Profiler 迁移脚本及夹具覆盖旧双包升级、幂等和精确回滚。
+- 统一版本和优化器精确握手更新为 `1.0.12`；构建与安装说明见 `docs/ICE-1.0.12-PROFILER-SINGLE-JAR-BUILD.md`。
+
+## 1.0.11 particle submission and mip parameter reuse - 2026-10-02
+
+- 接入 FBP 实际 `FBPRenderUtil` 两种立方体 helper，删除第二组重复空 flush/图集绑定/begin。无光影、已知固定管线且使用标准 FBP 31 字节单纹理布局时直接设置客户端数组，省去 OptiFine Reflector/Forge 格式遍历；真实 draw、几何、灯光和混合粒子顺序保留。独立 `fbpCubeSubmission` 开关不依赖现代粒子后端的测量或休眠，未知状态、公开格式突变和 OptiFine MultiTexture 使用原上传器。
+- 通过已有 TextureMap sprite 边界和新的 TextureUtil 目标处理实际 FoamFix 慢上传路径。已审查的 FastTextureAtlasSprite 类定义只在冷端核对一次，连续 mip 复用相同 filter/wrap 参数；每个新区间首层完整设置，像素、动画和可变插值数组继续上传。异常、换 sprite、绑定边界、嵌套和模块关闭使复用失效。保留 FoamFix 自己的加载排除和原 PBO 大批门槛。
+- 保持优化器单 JAR，版本与精确握手更新为 `1.0.11`。干净构建及真实 Forge 启动检查通过，897 项测试中 874 通过、23 跳过、零失败；真实 FBP 与 FoamFix/OptiFine 离屏对照通过。验证范围、参数/边界调用数和安装方式见 `docs/ICE-1.0.11-FPS-RENDER-BUILD.md`，不将局部调用数减少换算为游戏 FPS 增幅。
+
+## 1.0.10 live hitch fixes and model qualification recovery - 2026-10-02
+
+- 根据 DregoraRL2 的 1.0.9 实际记录修复一次编译的模型在初始化/暖机期间漏捕获。实体/TESR 无候选测量进入休眠后，新的模型缓存发布可恢复未完成的验证/ABBA 测量，待发布队列能够唤醒帧基础设施；成功发布时清理旧 GPU 测量关联。已经实测无收益或正确性失败的后端不被重新开启，收益门槛保留。
+- OTG 冷加载复用目录监听已有的父真实路径；文件链接单独解析，目录变更和文件创建继续使缓存失效。删除未使用的内容 SHA、重复文件属性读取、缓存命中的第二次目录轮询和元数据解析后多余的临时对象树。
+- Profiler 正常帧只记录历史窗口，长帧再计算自适应阈值并复用工作数组；HUD 与诊断摘要按内容更新，网络计数器按 Channel 安装一次并保留失败重试和移除后重装。
+- 修正栈字典溢出后的误归因：相同前三帧只导出已确认的顶部方法和截断标记，不再借用历史栈的完整调用者。精确栈与 v4 报告格式保留；同一栈的分类缓存改为复用纯栈分析，按各样本角色/状态判断隐式 sleep，避免分类依赖采样顺序。
+- 优化器继续单 JAR，版本与精确握手提升到 `1.0.10`。现场证据、验证和局部对照见 `docs/ICE-1.0.10-LIVE-HITCH-BUILD.md`；局部基准不代表游戏 FPS 提升或瞬卡全部解决。
+
+## 1.0.9 model batch coverage and shared VBO pages - 2026-10-02
+
+- 双足/四足模型的类加载证明限定为动画之后的完整部件绘制区间，批次在 LLibrary 尾部回调之前恢复客户端数组。保留外部回调的原位置；区间内部新增回调、状态改写或跨区间控制流仍沿用原绘制路径。适配证明只在类转换时执行。
+- 将已审查的 LLibrary `AdvancedModelRenderer` 和 Mo’ Bends 普通 `ModelPart` 接入模型树状态批次。Mo’ Bends 复用预扫描的父链；包含未知 render 覆盖或 extension 回调的子树继续使用原有即时路径。
+- 模型部件的独立 VBO 改为有界共享页，各部件保留独立顶点范围、身份和生命周期。连续绘制同一页时只绑定一次并设置一组数组指针，矩阵、绘制顺序和 draw 数保持原语义；已提交范围等待零超时 Fence 确认后复用，查询仅在冷路径执行。
+- 诊断新增共享页数、批次缓冲绑定数和指针设置组数。优化器保持单 JAR，版本与精确握手提升到 `1.0.9`。构建、真实模组契约、原生 GL 等价和局部性能对照见 `docs/ICE-1.0.9-MODEL-SUBMISSION-BUILD.md`。
+
+## 1.0.8 single optimizer JAR and renderer structure - 2026-10-02
+
+- 优化器 Main/Core 合并为 `ice-rlcraft-optimizer-1.0.8.jar`；原始启动/早期字节码与已重混淆、重定位的运行时组成一个正式安装包。Profiler 保持可选，仍使用其 Main/Core 两包；优化器精确握手同步为 `[1.0.8]`。
+- 将 24 个早期 ABI/状态源文件和 Profiler 源码分别归入 early、profiler 源集，保留 Java 包名、ASM owner 与公开入口。hooks 独立编译且不依赖 main。根构建脚本拆成五个职责脚本，打包从源集读取 early 清单，中间 JAR 归入 `build/intermediates`。
+- 抽出渲染诊断、组件图/工厂、OptiFine Shader 协调和 CPU/GPU 测量。组件状态只由 `RendererComponents` 持有；移除旧 Runtime 的组件镜像和私有转发空壳，保留公开桥接 API、原始算法、状态失效与资源释放次序。
+- 启动注册由 Plugin/Transformer 的真实生命周期共同记录，替代类存在判断；只在初始化时读取。新增最终单 JAR 的早期加载隔离、版本/元数据检查以及双包升级、幂等和回滚夹具。验证结果见 `docs/ICE-1.0.8-REFACTOR-BUILD.md`。
+
+## 1.0.7 renderer overhead reduction - 2026-10-01
+
+- 2026-10-02 冗余审查：删除模型批次预检后逐部件重复的线程、资源存活/代次、网格认证和固定管线状态检查；绘制统计按成功部件数每批一次汇总，动态矩阵与异常恢复保留。HZB 视图匹配合并、不可变金字塔首次验证后复用；Mo’ Bends 姿态命中省去 GL 缓冲区读取/重置和重复类型转换，模块开关省去字符串查表。新增 8 项回归，完整构建 202 类、810 项，780 通过、30 跳过、零失败；离屏 GL 等价及矩阵失效拒绝通过。姿态局部基准差异处于噪声范围，无实际游戏 FPS 增幅结论。
+- 后续渲染器测试包：Forge/OptiFine G5 标准模型子树和 Biped/Quadruped 多根部件接入即时状态批次，N 部件原生提交由 10N 次降为 5N+5 次；动画/回调和矩阵顺序保留，GPU 部件 draw 数不变。Mo’ Bends CPU/GL 共用四元数旋转转换，重复旋转分配 432→144 B。HZB 未确认候选取得独立新证据后复用，修复复用样本丢弃、两臂 GPU 区间不对称及重复 oracle 晋级。扩展真实 JAR 检查后完整构建通过：201 类、802 项，772 通过、30 跳过、零失败；离屏 GL 对比通过。详见 `docs/ICE-1.0.7-RENDERER-TEST-BUILD.md`。
+- 后续实体场景精简：原 Mesh 已上传的 Lycanites VBO 命中省去完整索引检查和签名对象；删除或替换立即失效。模型部件成功恢复客户端数组状态后省去重复原生绑定。单位轴旋转减少归一化计算并保持浮点原始位一致。完整构建与真实 Lycanites 契约通过：197 个测试类、778 项测试，718 通过、60 跳过、零失败；离屏 GL 像素及状态恢复一致。详见 `docs/ICE-ENTITY-RENDER-CLEANUP.md`。
+- 汇总两轮渲染热路径精简：绘制统计复用帧内对象并使用原始类型累计；稳定后端每 16 帧进行一次收益监测，首次配对测量保持逐帧；分位数计算只排序一次，减少不参与训练的地形层扫描和重复 GL 状态读取。
+- 矩阵捕获后复用不可变快照；地形转换消除逐顶点缓冲区视图分配，并让测试直接覆盖生产转换函数；字体入缓存只复制有效前缀一次，缓存回放复用构造时的内容校验；删除矩阵读取和帧缓存中的冗余操作。
+- Optimizer/Profiler Main/Core 统一更新为 `1.0.7`，Optimizer 客户端/服务端握手要求 `[1.0.7]`。局部 CPU 微基准与回归覆盖见两份精简报告；实际游戏 FPS 尚未测量。
+- 本地重新构建的 19 个任务全部执行，196 个测试类、770 项测试中 708 项通过、62 项跳过，0 failure、0 error；重混淆、Main/Core 分包检查、四包版本元数据与 bundle 内嵌 JAR 哈希核对通过。
+
 ## 1.0.6 player-skull lookup isolation and renderer idle-path recovery - 2026-08-26
 
 - 新增默认关闭的玩家头颅资料查询门 `allowIncompletePlayerSkullProfileLookup`，并把策略下沉到所有方块、物品栏/JEI、快捷栏、手持/掉落及佩戴头颅共用的 `TileEntitySkullRenderer` 皮肤缓存入口：已有 `textures` 的资料继续正常渲染，不完整资料在进入 `SkinManager`/CustomSkinLoader 前直接使用默认皮肤，且不调用 `TileEntitySkull.updateGameProfile`、不创建 resolver worker、不提交后台任务。显式允许查询后，现有 `skullProfileAsync` 仍可选择有界异步或原版同步行为。Optimizer/Profiler Main/Core 版本提升为 `1.0.6`，拒绝与正式 1.0.5 混装。

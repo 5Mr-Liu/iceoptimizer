@@ -1,0 +1,96 @@
+// ForgeGradle rewrites every entry timestamp while reobfuscating, even when
+// the input Jar task is reproducible.  Normalize the completed release JAR in
+// the same task so direct reobf invocations, bundles and pinned deployment
+// hashes all observe identical bytes for identical inputs.
+def normalizeReobfuscatedJar = { File archive ->
+    if (!archive.isFile()) {
+        throw new GradleException("Missing reobfuscated archive: ${archive}")
+    }
+
+    File temporary = new File(
+        archive.parentFile,
+        ".${archive.name}.${UUID.randomUUID()}.normalizing"
+    )
+    def input = new java.util.zip.ZipFile(archive)
+    try {
+        def entries = []
+        def enumeration = input.entries()
+        def names = new HashSet<String>()
+        while (enumeration.hasMoreElements()) {
+            def entry = enumeration.nextElement()
+            if (!names.add(entry.name)) {
+                throw new GradleException("Duplicate entry in ${archive.name}: ${entry.name}")
+            }
+            entries.add(entry)
+        }
+        entries.sort { left, right -> left.name <=> right.name }
+
+        def output = new java.util.jar.JarOutputStream(
+            new BufferedOutputStream(new FileOutputStream(temporary))
+        )
+        try {
+            output.setLevel(java.util.zip.Deflater.DEFAULT_COMPRESSION)
+            byte[] buffer = new byte[32 * 1024]
+            entries.each { sourceEntry ->
+                def targetEntry = new java.util.jar.JarEntry(sourceEntry.name)
+                targetEntry.setTime(0L)
+                targetEntry.setMethod(java.util.zip.ZipEntry.DEFLATED)
+                output.putNextEntry(targetEntry)
+                if (!sourceEntry.isDirectory()) {
+                    def stream = input.getInputStream(sourceEntry)
+                    try {
+                        int count
+                        while ((count = stream.read(buffer)) >= 0) {
+                            output.write(buffer, 0, count)
+                        }
+                    } finally {
+                        stream.close()
+                    }
+                }
+                output.closeEntry()
+            }
+        } finally {
+            output.close()
+        }
+    } catch (Throwable failure) {
+        temporary.delete()
+        throw failure
+    } finally {
+        input.close()
+    }
+
+    try {
+        java.nio.file.Files.move(
+            temporary.toPath(),
+            archive.toPath(),
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
+    } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+        java.nio.file.Files.move(
+            temporary.toPath(),
+            archive.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
+    } finally {
+        temporary.delete()
+    }
+}
+
+tasks.matching { it.name == 'reobfShadowJar' }.all {
+    doLast {
+        normalizeReobfuscatedJar(shadowJar.archivePath)
+    }
+}
+
+tasks.matching { it.name == 'reobfProfilerRuntimeJar' }.all {
+    doLast {
+        normalizeReobfuscatedJar(profilerRuntimeJar.archivePath)
+    }
+}
+
+tasks.matching { it.name == 'reobfJar' }.all {
+    doLast {
+        normalizeReobfuscatedJar(jar.archivePath)
+    }
+}

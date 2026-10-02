@@ -65,7 +65,7 @@ public final class IceProfilerTransformer implements IClassTransformer {
             LOGGER.info("ICE hooks 已为 {} 安装 {} 个只读计时点，原始指纹 {}", transformedName, patched[0], fingerprint(basicClass));
             return result;
         } catch (Throwable error) {
-            HookFatalErrors.rethrowIfFatal(error);
+            rethrowIfFatal(error);
             LOGGER.error("ICE hooks 无法安全转换 " + transformedName + "，已保留原字节码（fail-open）", error);
             return basicClass;
         }
@@ -267,6 +267,18 @@ public final class IceProfilerTransformer implements IClassTransformer {
         @Override protected String getCommonSuperClass(String type1, String type2) { return "java/lang/Object"; }
     }
 
+    /** Profiler Core is independently installable and cannot link optimizer-only hook helpers. */
+    private static void rethrowIfFatal(Throwable error) {
+        Throwable current = error;
+        for (int depth = 0; current != null && depth < 64; depth++) {
+            if (current instanceof ThreadDeath) throw (ThreadDeath) current;
+            if (current instanceof VirtualMachineError) throw (VirtualMachineError) current;
+            Throwable next = current.getCause();
+            if (next == current) return;
+            current = next;
+        }
+    }
+
     private static String fingerprint(byte[] bytes) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
@@ -274,7 +286,7 @@ public final class IceProfilerTransformer implements IClassTransformer {
             for (int i = 0; i < 8; i++) value.append(String.format("%02x", digest[i] & 0xff));
             return value.toString();
         } catch (Exception ignored) {
-            HookFatalErrors.rethrowIfFatal(ignored);
+            rethrowIfFatal(ignored);
             return "unavailable";
         }
     }

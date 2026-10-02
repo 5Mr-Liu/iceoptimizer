@@ -54,10 +54,15 @@ public final class FoamFixUploadBridge {
     private FoamFixUploadBridge() {
     }
 
+    /** Independent of whether the experimental atlas/PBO backend is awake. */
+    public static boolean allowParameterDeduplication() {
+        return OptimizerBridge.isEnabled(MODULE_ORDINAL);
+    }
+
     /**
      * Connects the regular optimizer runtime to the early CoreMod trampoline.
      * The lookup is intentionally reflective so the main JAR still starts
-     * safely when the optional Core JAR is missing or incompatible.
+     * safely when the startup patches are inactive or incompatible.
      */
     public static synchronized boolean installCoreBridge() {
         if (coreBridgeInstalled) return true;

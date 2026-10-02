@@ -30,6 +30,9 @@ public final class ChunkSaveCompressionAdapterTest {
             verify(jar, "net.minecraft.world.chunk.storage.RegionFile",
                 new ChunkSaveCompressionAdapter(ChunkSaveCompressionAdapter.Part.REGION_RAW_WRITE),
                 "createDeflaterStream", ChunkSaveCompressionAdapter.RAW_ACCESS_METHOD);
+            verify(jar, "net.minecraft.nbt.CompressedStreamTools",
+                new ChunkSaveCompressionAdapter(ChunkSaveCompressionAdapter.Part.GZIP_BUFFER),
+                "create", "func_74800_a");
         } finally {
             jar.close();
         }

@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.render.hud;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -13,10 +14,47 @@ import dev.rlcraft.ice.optimizer.render.resource.ResourceLedger;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import org.junit.Test;
 import org.lwjgl.opengl.GL11;
 
 public final class LwjglHudRendererDataTest {
+    @Test
+    public void immutableLayoutProducesExactlyTheSameVerticesAsCheckedGlyphs() throws Exception {
+        Fixture fixture = new Fixture();
+        try {
+            LwjglHudRenderer renderer = fixture.renderer;
+            renderer.prepare(1L, 1L);
+            float[] glyphs = new float[40];
+            for (int i = 0; i < glyphs.length; i++) glyphs[i] = i * 0.25F;
+            FontLayoutCache.GlyphLayout layout = new FontLayoutCache.GlyphLayout(
+                glyphs, new int[] {1, 1});
+            assertTrue(renderer.recordGlyphRun(glyphs, 2, 10.0F, 20.0F));
+            byte[] expected = vertexBytes(renderer);
+            renderer.discard();
+            glyphs[0] = Float.NaN;
+            layout.getGlyphGeometry()[0] = Float.NaN;
+            assertTrue(layout.record(renderer, 10.0F, 20.0F));
+            assertEquals(2, renderer.getCommandCount());
+            assertArrayEquals(expected, vertexBytes(renderer));
+            assertFalse(layout.record(renderer, Float.NaN, 0.0F));
+            assertEquals(2, renderer.getCommandCount());
+            assertArrayEquals(expected, vertexBytes(renderer));
+        } finally {
+            fixture.close();
+        }
+    }
+
+    private static byte[] vertexBytes(LwjglHudRenderer renderer) throws Exception {
+        Field field = LwjglHudRenderer.class.getDeclaredField("vertices");
+        field.setAccessible(true);
+        ByteBuffer buffer = ((ByteBuffer) field.get(renderer)).duplicate();
+        buffer.flip();
+        byte[] result = new byte[buffer.remaining()];
+        buffer.get(result);
+        return result;
+    }
+
     @Test
     public void restoreFailureInvalidatesTrackedGlState() {
         EarlyGlStateTracker.beginProbe();

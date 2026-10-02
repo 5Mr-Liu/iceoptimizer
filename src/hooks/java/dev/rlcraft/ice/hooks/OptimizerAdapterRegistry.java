@@ -11,6 +11,7 @@ final class OptimizerAdapterRegistry {
     static {
         Map<String, OptimizerBytecodeAdapter> adapters = new HashMap<String, OptimizerBytecodeAdapter>();
         adapters.put("foamfix-pbo-upload", new FoamFixTextureUploadAdapter());
+        adapters.put("vanilla-texture-parameters", new VanillaTextureUploadAdapter());
         adapters.put("optifine-dynamic-lights", new OptifineDynamicLightsAdapter(
             OptifineDynamicLightsAdapter.Part.LIGHTS));
         adapters.put("optifine-dynamic-light-access", new OptifineDynamicLightsAdapter(
@@ -36,6 +37,12 @@ final class OptimizerAdapterRegistry {
             ChunkSaveCompressionAdapter.Part.ANVIL_PIPELINE));
         adapters.put("minecraft-region-compressed-write", new ChunkSaveCompressionAdapter(
             ChunkSaveCompressionAdapter.Part.REGION_RAW_WRITE));
+        adapters.put("minecraft-section-nbt-palette", new ChunkSectionNbtAdapter(
+            ChunkSectionNbtAdapter.Part.SECTION));
+        adapters.put("minecraft-state-id-map-access", new ChunkSectionNbtAdapter(
+            ChunkSectionNbtAdapter.Part.ID_MAP));
+        adapters.put("minecraft-nbt-gzip-buffer", new ChunkSaveCompressionAdapter(
+            ChunkSaveCompressionAdapter.Part.GZIP_BUFFER));
         adapters.put("optifine-reflector-forge-direct-calls", new ForgeBlockStateDirectAdapter(
             ForgeBlockStateDirectAdapter.Part.REFLECTOR_FORGE));
         adapters.put("optifine-blockstate-direct-calls", new ForgeBlockStateDirectAdapter(
@@ -47,6 +54,7 @@ final class OptimizerAdapterRegistry {
         adapters.put("lycanites-lowercase-cache", new LycanitesLowercaseAdapter());
         adapters.put("lycanites-effect-slots", new LycanitesPotionEffectsAdapter());
         adapters.put("mobends-model-part", new MoBendsModelPartAdapter());
+        adapters.put("mobends-transform-state-batch", new MoBendsTransformStateBatchAdapter());
         adapters.put("mobends-quaternion-cache", new MoBendsQuaternionAdapter());
         adapters.put("mobends-climbing-shortcut", new MoBendsLivingEntityDataAdapter());
         adapters.put("iceandfire-pose-local", new IceAndFirePoseAdapter());
@@ -62,6 +70,8 @@ final class OptimizerAdapterRegistry {
         adapters.put("otg-bo3-metadata-cache", new OtgBo3MetadataAdapter());
         adapters.put("otg-settings-file-cache", new OtgFileSettingsReaderAdapter());
         adapters.put("otg-configuration-generation", new OtgConfigurationGenerationAdapter());
+        adapters.put("otg-structure-compression", new OtgStructureCompressionAdapter());
+        adapters.put("otg-structure-save-allocations", new OtgStructureSaveAllocationAdapter());
         adapters.put("player-skull-async", new PlayerSkullLayerAdapter());
         adapters.put("player-skull-renderer", new PlayerSkullRendererAdapter());
         adapters.put("bettercaves-noise-tuple", new BetterCavesNoiseTupleAdapter());
@@ -105,6 +115,7 @@ final class OptimizerAdapterRegistry {
         adapters.put("modern-renderlib-tesr-emitter", new RenderLibRendererAdapter(
             RenderLibRendererAdapter.Part.TESR));
         adapters.put("modern-modelrenderer-vbo", new ModelRendererVboAdapter());
+        adapters.put("modern-common-model-state-batch", new CommonModelStateBatchAdapter());
         adapters.put("modern-texturedquad-capture", new TexturedQuadCaptureAdapter());
         adapters.put("modern-advancedmodelrenderer-vbo",
             new AdvancedModelRendererVboAdapter());
@@ -113,6 +124,7 @@ final class OptimizerAdapterRegistry {
         adapters.put("modern-particle-access", new ParticleRenderAdapter(
             ParticleRenderAdapter.Part.PARTICLE_ACCESS));
         adapters.put("fbp-particle-boundaries", new FbpParticleAdapter());
+        adapters.put("fbp-cube-render-util", new FbpRenderUtilAdapter());
         adapters.put("modern-animation-texture-map", new AnimatedTextureAdapter(
             AnimatedTextureAdapter.Part.MAP));
         adapters.put("modern-animation-texture-sprite", new AnimatedTextureAdapter(

@@ -124,7 +124,7 @@ public final class ModernRendererRuntimeShaderBindingTest {
         Method clear = method("clearShaderBindings");
         clear.setAccessible(true);
         try {
-            clear.invoke(runtime);
+            clear.invoke(runtime.shaderRuntime);
             throw new AssertionError("expected active shader ownership guard");
         } catch (InvocationTargetException expected) {
             assertTrue(expected.getCause() instanceof IllegalStateException);
@@ -132,7 +132,7 @@ public final class ModernRendererRuntimeShaderBindingTest {
         assertEquals(1, runtime.shaderBindingCountForTest());
 
         setField(runtime, "activeNativeShaderBinding", null);
-        clear.invoke(runtime);
+        clear.invoke(runtime.shaderRuntime);
         assertEquals(0, runtime.shaderBindingCountForTest());
         assertEquals(0L, runtime.cacheBudget().snapshot().getHeapUsed());
     }
@@ -180,7 +180,7 @@ public final class ModernRendererRuntimeShaderBindingTest {
 
         Method clear = method("clearShaderBindings");
         clear.setAccessible(true);
-        clear.invoke(runtime);
+        clear.invoke(runtime.shaderRuntime);
         assertEquals(0, runtime.shaderBindingCountForTest());
     }
 
@@ -283,11 +283,11 @@ public final class ModernRendererRuntimeShaderBindingTest {
                                    Object program, int legacy, int candidate,
                                    PreparedShaderPermutation prepared)
         throws Exception {
-        Method method = ModernRendererRuntime.class.getDeclaredMethod(
+        Method method = OptifineShaderRuntime.class.getDeclaredMethod(
             "registerShaderBinding", Object.class, Integer.TYPE, Integer.TYPE,
             PreparedShaderPermutation.class);
         method.setAccessible(true);
-        return method.invoke(runtime, program, Integer.valueOf(legacy),
+        return method.invoke(runtime.shaderRuntime, program, Integer.valueOf(legacy),
             Integer.valueOf(candidate), prepared);
     }
 
@@ -295,7 +295,7 @@ public final class ModernRendererRuntimeShaderBindingTest {
                                    Object program, int observed) throws Exception {
         Method method = method("bindingCurrent");
         method.setAccessible(true);
-        return ((Boolean) method.invoke(runtime, binding, program,
+        return ((Boolean) method.invoke(runtime.shaderRuntime, binding, program,
             Integer.valueOf(observed))).booleanValue();
     }
 
@@ -303,11 +303,11 @@ public final class ModernRendererRuntimeShaderBindingTest {
                               OptifineProgramState state) throws Exception {
         Method method = method("queueShaderValidation");
         method.setAccessible(true);
-        method.invoke(runtime, binding, state);
+        method.invoke(runtime.shaderRuntime, binding, state);
     }
 
     private static Method method(String name) {
-        for (Method method : ModernRendererRuntime.class.getDeclaredMethods()) {
+        for (Method method : OptifineShaderRuntime.class.getDeclaredMethods()) {
             if (name.equals(method.getName())) return method;
         }
         throw new IllegalStateException("missing " + name);
@@ -315,6 +315,11 @@ public final class ModernRendererRuntimeShaderBindingTest {
 
     private static void setField(Object target, String name, Object value)
         throws Exception {
+        if (target instanceof ModernRendererRuntime) {
+            ModernRendererRuntime runtime = (ModernRendererRuntime) target;
+            if ("shaders".equals(name)) target = runtime.components;
+            else if ("activeNativeShaderBinding".equals(name)) target = runtime.shaderRuntime;
+        }
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         field.set(target, value);
@@ -323,10 +328,10 @@ public final class ModernRendererRuntimeShaderBindingTest {
     @SuppressWarnings("unchecked")
     private static ArrayDeque<Object> validationQueue(ModernRendererRuntime runtime)
         throws Exception {
-        Field field = ModernRendererRuntime.class.getDeclaredField(
+        Field field = OptifineShaderRuntime.class.getDeclaredField(
             "pendingShaderValidations");
         field.setAccessible(true);
-        return (ArrayDeque<Object>) field.get(runtime);
+        return (ArrayDeque<Object>) field.get(runtime.shaderRuntime);
     }
 
     public static final class FakeProgram {

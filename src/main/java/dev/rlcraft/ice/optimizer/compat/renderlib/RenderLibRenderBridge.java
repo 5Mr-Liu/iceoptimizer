@@ -162,12 +162,21 @@ public final class RenderLibRenderBridge {
 
     public static void markEligibleDraw() {
         Traversal traversal = current();
-        if (traversal != null) traversal.eligibleDraws++;
+        if (traversal != null && traversal.objectCandidateAllowed) traversal.eligibleDraws++;
     }
 
     public static void markModernDraw() {
         Traversal traversal = current();
         if (traversal != null) traversal.modernDraws++;
+    }
+
+    /** One traversal lookup for the successfully emitted parts of a model batch. */
+    public static void markEligibleModernDraws(int count) {
+        Traversal traversal = current();
+        if (traversal != null) {
+            traversal.eligibleDraws += count;
+            traversal.modernDraws += count;
+        }
     }
 
     private static long begin(Object owner, OptimizationModule module, RenderPass pass) {

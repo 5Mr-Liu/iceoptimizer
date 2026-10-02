@@ -15,7 +15,6 @@ import dev.rlcraft.ice.optimizer.render.resource.ResourceLedger;
 import dev.rlcraft.ice.optimizer.render.telemetry.CorrelatedRenderProfiler;
 import dev.rlcraft.ice.optimizer.render.telemetry.CpuWorkKind;
 import dev.rlcraft.ice.optimizer.runtime.ClientEpochs;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import net.minecraft.util.BlockRenderLayer;
 import org.junit.After;
@@ -78,9 +77,7 @@ public final class ModernRendererTerrainDiagnosticsTest {
                 IllegalStateException.class.getName(), "context unavailable",
                 "not_captured", "not_queried"))
             .build();
-        Field field = ModernRendererRuntime.class.getDeclaredField("capabilities");
-        field.setAccessible(true);
-        field.set(runtime, capabilities);
+        runtime.components.capabilities = capabilities;
 
         publish(runtime);
 
@@ -138,8 +135,8 @@ public final class ModernRendererTerrainDiagnosticsTest {
                 RenderPass.MAIN_SOLID, backend, CpuWorkKind.WORK);
             scope.close();
         }
-        setField(runtime, "resources", ledger);
-        setField(runtime, "profiler", profiler);
+        runtime.components.resources = ledger;
+        runtime.components.profiler = profiler;
 
         try {
             publish(runtime);
@@ -181,10 +178,4 @@ public final class ModernRendererTerrainDiagnosticsTest {
         publish.invoke(runtime, true);
     }
 
-    private static void setField(ModernRendererRuntime runtime, String name,
-                                 Object value) throws Exception {
-        Field field = ModernRendererRuntime.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(runtime, value);
-    }
 }

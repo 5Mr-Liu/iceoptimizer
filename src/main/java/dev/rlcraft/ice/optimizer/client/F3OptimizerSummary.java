@@ -37,7 +37,7 @@ public final class F3OptimizerSummary {
             errors += module.getFailures();
             errors += module.getRejected();
         }
-        String core = status.isCoreModPresent() ? "OK" : "MISSING";
+        String core = status.isCoreModPresent() ? "OK" : "INACTIVE";
         List<String> lines = new ArrayList<String>(5);
         lines.add(String.format(Locale.ROOT,
             "ICE Opt: CORE %s | HIT %d | PATCH %d | MISS %d | ERR %d",

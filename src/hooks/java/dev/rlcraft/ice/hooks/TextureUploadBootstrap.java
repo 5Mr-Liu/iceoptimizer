@@ -34,13 +34,33 @@ public final class TextureUploadBootstrap {
             MethodHandles.Lookup lookup = MethodHandles.publicLookup();
             MethodHandle level = lookup.findStatic(bridgeType, "tryUploadLevel", LEVEL_TYPE);
             MethodHandle batch = lookup.findStatic(bridgeType, "tryUpload", BATCH_TYPE);
-            delegate = new Delegate(level, batch);
+            MethodHandle parameters = null;
+            try {
+                parameters = lookup.findStatic(bridgeType, "allowParameterDeduplication",
+                    MethodType.methodType(boolean.class));
+            } catch (NoSuchMethodException olderBridge) { }
+            delegate = new Delegate(level, batch, parameters);
             return true;
         } catch (Throwable incompatibleBridge) {
             HookFatalErrors.rethrowIfFatal(incompatibleBridge);
             delegate = null;
             return false;
         }
+    }
+
+    static boolean allowParameterDeduplication() {
+        Delegate current = delegate;
+        if (current == null || current.parameters == null) return false;
+        try { return (boolean) current.parameters.invokeExact(); }
+        catch (Throwable unavailable) {
+            HookFatalErrors.rethrowIfFatal(unavailable);
+            return false;
+        }
+    }
+
+    public static boolean skipParameters(int mip, boolean blur, boolean clamp,
+                                          boolean mipFilter) {
+        return TextureParameterScope.skipParameters(mip, blur, clamp, mipFilter);
     }
 
     public static boolean tryUploadLevel(int mipLevel, int[] data, int width, int height,
@@ -99,15 +119,18 @@ public final class TextureUploadBootstrap {
 
     static void resetForTest() {
         delegate = null;
+        TextureParameterScope.endAtlas();
     }
 
     private static final class Delegate {
         private final MethodHandle level;
         private final MethodHandle batch;
+        private final MethodHandle parameters;
 
-        private Delegate(MethodHandle level, MethodHandle batch) {
+        private Delegate(MethodHandle level, MethodHandle batch, MethodHandle parameters) {
             this.level = level;
             this.batch = batch;
+            this.parameters = parameters;
         }
     }
 }

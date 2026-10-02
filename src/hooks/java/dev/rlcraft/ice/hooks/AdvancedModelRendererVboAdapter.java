@@ -1,10 +1,7 @@
 package dev.rlcraft.ice.hooks;
 
-import java.util.List;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.Label;
-import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
@@ -33,6 +30,10 @@ final class AdvancedModelRendererVboAdapter implements OptimizerBytecodeAdapter 
             throw new IllegalStateException("AdvancedModelRenderer target changed: "
                 + node.name);
         }
+        MethodNode render = ModelStateBatchMethodProof.method(node, "func_78785_a", "(F)V");
+        boolean reviewedRender = ModelSubclassStateBatchAdapter.reviewed(node,
+            "func_78785_a", "(F)V",
+            "177288483db449649934df4041be6d6a2f2f0e62297016d0ef795a148c7c6c7f");
         MethodNode compile = null;
         int compilers = 0;
         int emitters = 0;
@@ -63,52 +64,15 @@ final class AdvancedModelRendererVboAdapter implements OptimizerBytecodeAdapter 
             throw new IllegalStateException("AdvancedModelRenderer graph changed: compile="
                 + compilers + ", emitters=" + emitters);
         }
-        int access = compile.access;
-        String signature = compile.signature;
-        List<String> exceptions = compile.exceptions;
-        compile.name = ORIGINAL;
-        compile.access |= Opcodes.ACC_SYNTHETIC;
-        node.methods.add(wrapper(node.name, access, signature, exceptions));
+        ModelSubclassStateBatchAdapter.wrapCompiler(node, compile, ORIGINAL);
+        if (reviewedRender) {
+            ModelSubclassStateBatchAdapter.addDisplayListAccess(node, "displayList", "compiled");
+            ModelSubclassStateBatchAdapter.wrapRender(node, render);
+        }
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
-    }
-
-    private static MethodNode wrapper(String owner, int access, String signature,
-                                      List<String> exceptions) {
-        MethodNode method = new MethodNode(Opcodes.ASM5, access, COMPILE,
-            DESCRIPTOR, signature, exceptions == null ? null
-                : exceptions.toArray(new String[exceptions.size()]));
-        MethodVisitor code = method;
-        code.visitCode();
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitMethodInsn(Opcodes.INVOKESTATIC, BRIDGE, "begin",
-            "(Ljava/lang/Object;)V", false);
-        Label start = new Label();
-        Label end = new Label();
-        Label handler = new Label();
-        code.visitLabel(start);
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitVarInsn(Opcodes.FLOAD, 1);
-        code.visitMethodInsn(Opcodes.INVOKESPECIAL, owner, ORIGINAL,
-            DESCRIPTOR, false);
-        code.visitLabel(end);
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitMethodInsn(Opcodes.INVOKESTATIC, BRIDGE, "finish",
-            "(Ljava/lang/Object;)V", false);
-        code.visitInsn(Opcodes.RETURN);
-        code.visitLabel(handler);
-        code.visitVarInsn(Opcodes.ASTORE, 2);
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitMethodInsn(Opcodes.INVOKESTATIC, BRIDGE, "cancel",
-            "(Ljava/lang/Object;)V", false);
-        code.visitVarInsn(Opcodes.ALOAD, 2);
-        code.visitInsn(Opcodes.ATHROW);
-        code.visitTryCatchBlock(start, end, handler, "java/lang/Throwable");
-        code.visitMaxs(0, 0);
-        code.visitEnd();
-        return method;
     }
 
     private static final class SafeClassWriter extends ClassWriter {

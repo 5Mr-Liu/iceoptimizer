@@ -13,6 +13,9 @@ public final class IceOptimizerLoadingPlugin implements IFMLLoadingPlugin {
     }
     @Override public String getModContainerClass() { return null; }
     @Override public String getSetupClass() { return null; }
-    @Override public void injectData(Map<String, Object> data) { OptimizerDiscovery.initialize(data); }
+    @Override public void injectData(Map<String, Object> data) {
+        OptimizerDiscovery.initialize(data);
+        OptimizerPatchJournal.pluginInitialized();
+    }
     @Override public String getAccessTransformerClass() { return null; }
 }

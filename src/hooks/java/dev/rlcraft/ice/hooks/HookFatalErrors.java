@@ -1,6 +1,6 @@
 package dev.rlcraft.ice.hooks;
 
-/** Fatal boundary kept inside the early Core JAR with no main-JAR linkage. */
+/** Fatal boundary compiled in hooks without linking late optimizer runtime classes. */
 final class HookFatalErrors {
     private HookFatalErrors() {
     }

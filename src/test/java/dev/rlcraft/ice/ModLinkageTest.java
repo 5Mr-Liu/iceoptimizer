@@ -19,10 +19,10 @@ public class ModLinkageTest {
     public void linksCommonAndClientEntrypointsAgainstForge() {
         assertEquals("iceoptimizer", IceMod.MOD_ID);
         assertEquals("ICE RLCraft Optimizer", IceMod.NAME);
-        assertEquals("1.0.6", IceMod.VERSION);
+        assertEquals("1.0.13", IceMod.VERSION);
         assertEquals("iceprofiler", IceProfilerMod.MOD_ID);
         assertEquals("ICE Performance Recorder", IceProfilerMod.NAME);
-        assertEquals("1.0.6", IceProfilerMod.VERSION);
+        assertEquals("1.0.13", IceProfilerMod.VERSION);
         assertNotNull(new CommandIce());
         assertNotNull(new CommandIceClient());
         assertNotNull(IceConfig.capture);
@@ -37,7 +37,7 @@ public class ModLinkageTest {
     public void optimizerRequiresTheSameVersionOnBothPhysicalSides() {
         Mod metadata = IceMod.class.getAnnotation(Mod.class);
         assertNotNull(metadata);
-        assertEquals("[1.0.6]", metadata.acceptableRemoteVersions());
+        assertEquals("[1.0.13]", metadata.acceptableRemoteVersions());
         assertTrue(!metadata.clientSideOnly());
         assertTrue(!metadata.serverSideOnly());
     }

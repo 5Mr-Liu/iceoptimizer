@@ -1,0 +1,121 @@
+def readEntries = { File archive ->
+    if (!archive.isFile()) throw new GradleException("Missing release artifact: ${archive}")
+    def names = new LinkedHashSet<String>()
+    def zip = new java.util.zip.ZipFile(archive)
+    try {
+        def entries = zip.entries()
+        while (entries.hasMoreElements()) {
+            String name = entries.nextElement().name
+            if (!names.add(name)) throw new GradleException("Duplicate entry in ${archive.name}: ${name}")
+        }
+    } finally { zip.close() }
+    names
+}
+def manifestValue = { File archive, String name ->
+    def jarFile = new java.util.jar.JarFile(archive)
+    try { jarFile.manifest.mainAttributes.getValue(name) } finally { jarFile.close() }
+}
+def entryText = { File archive, String name ->
+    def zip = new java.util.zip.ZipFile(archive)
+    try {
+        def entry = zip.getEntry(name)
+        if (entry == null) throw new GradleException("${archive.name} is missing ${name}")
+        zip.getInputStream(entry).withCloseable { new String(it.bytes, 'UTF-8') }
+    } finally { zip.close() }
+}
+def requireEntry = { Set<String> entries, String name ->
+    if (!entries.contains(name)) throw new GradleException("Release artifact is missing ${name}")
+}
+def classEntries = { Set<String> entries -> entries.findAll { it.endsWith('.class') } as Set<String> }
+def requireNoOverlap = { Set<String> first, Set<String> second ->
+    def overlap = new LinkedHashSet<String>(classEntries(first))
+    overlap.retainAll(classEntries(second))
+    if (!overlap.empty) throw new GradleException("Release artifacts duplicate classes: ${overlap}")
+}
+task verifyArtifacts(dependsOn: [optimizerJar, profilerJar]) {
+    doLast {
+        def optimizer = readEntries(optimizerJar.archivePath)
+        def profiler = readEntries(profilerJar.archivePath)
+        def profilerRuntime = readEntries(profilerRuntimeJar.archivePath)
+        def profilerHooks = readEntries(profilerHooksJar.archivePath)
+        def runtime = readEntries(shadowJar.archivePath)
+        def hooks = readEntries(optimizerHooksJar.archivePath)
+        requireNoOverlap(runtime, hooks)
+        requireNoOverlap(profilerRuntime, profilerHooks)
+        requireNoOverlap(optimizer, profiler)
+
+        ['dev/rlcraft/ice/IceMod.class',
+            'dev/rlcraft/ice/optimizer/OptimizerConfig.class',
+            'dev/rlcraft/ice/optimizer/common/CommonOptimizerBootstrap.class',
+            'dev/rlcraft/ice/optimizer/server/ServerOptimizerRuntime.class',
+            'dev/rlcraft/ice/hooks/IceOptimizerLoadingPlugin.class',
+            'dev/rlcraft/ice/hooks/IceOptimizerTransformer.class',
+            'dev/rlcraft/ice/hooks/OptimizerPatchJournal.class',
+            'optimizer-targets.properties', 'mcmod.info'].each { requireEntry(optimizer, it) }
+        // The source-set output is the single early ABI inventory, including inner classes.
+        sourceSets.early.output.classesDirs.each { directory ->
+            fileTree(directory).matching { include '**/*.class' }.files.each { compiled ->
+                requireEntry(optimizer, directory.toPath().relativize(compiled.toPath()).toString().replace('\\', '/'))
+            }
+        }
+        ['dev/rlcraft/ice/IceProfilerMod.class',
+            'dev/rlcraft/ice/profiler/core/ProfilerRuntime.class',
+            'dev/rlcraft/ice/profiler/FatalErrors.class', 'mcmod.info'].each { requireEntry(profiler, it) }
+        ['dev/rlcraft/ice/hooks/IceProfilerLoadingPlugin.class',
+            'dev/rlcraft/ice/hooks/IceProfilerTransformer.class',
+            'dev/rlcraft/ice/hooks/ProbeProtocol.class'].each { requireEntry(profiler, it) }
+        classEntries(profilerHooks).each { requireEntry(profiler, it) }
+        if (manifestValue(optimizerJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin'
+            || manifestValue(optimizerJar.archivePath, 'FMLCorePluginContainsFMLMod') != 'true') {
+            throw new GradleException('The optimizer must declare both its startup plugin and ordinary Forge mod')
+        }
+        if (manifestValue(profilerJar.archivePath, 'FMLCorePlugin') != 'dev.rlcraft.ice.hooks.IceProfilerLoadingPlugin'
+            || manifestValue(profilerJar.archivePath, 'FMLCorePluginContainsFMLMod') != 'true') {
+            throw new GradleException('The profiler must declare both its startup plugin and ordinary Forge mod')
+        }
+        [optimizerJar.archivePath, profilerJar.archivePath].each { archive ->
+            if (manifestValue(archive, 'Implementation-Version') != project.version.toString()) {
+                throw new GradleException("${archive.name} declares the wrong version")
+            }
+        }
+        [(optimizerJar.archivePath): 'iceoptimizer', (profilerJar.archivePath): 'iceprofiler'].each { archive, modId ->
+            def metadata = new groovy.json.JsonSlurper().parseText(entryText(archive, 'mcmod.info'))
+            if (metadata.size() != 1 || metadata[0].modid != modId || metadata[0].version != project.version.toString()) {
+                throw new GradleException("${archive.name} contains wrong mod metadata")
+            }
+        }
+        if (optimizer.any { it.startsWith('dev/rlcraft/ice/profiler/') || it.startsWith('dev/rlcraft/ice/client/') ||
+            it.startsWith('dev/rlcraft/ice/command/') || it.startsWith('dev/rlcraft/ice/config/') ||
+            it.startsWith('dev/rlcraft/ice/proxy/') || it.startsWith('dev/rlcraft/ice/server/') ||
+            it == 'dev/rlcraft/ice/IceProfilerMod.class' || it.startsWith('dev/rlcraft/ice/hooks/IceProfiler') ||
+            it.startsWith('dev/rlcraft/ice/hooks/ProbeProtocol') }) {
+            throw new GradleException('Optimizer contains Profiler code')
+        }
+        if (profiler.any { it.startsWith('dev/rlcraft/ice/optimizer/') || it.startsWith('dev/rlcraft/ice/shadow/') ||
+            (it.startsWith('dev/rlcraft/ice/hooks/') && it.endsWith('.class') && !profilerHooks.contains(it)) ||
+            it == 'dev/rlcraft/ice/IceMod.class' || it == 'optimizer-targets.properties' }) {
+            throw new GradleException('Profiler contains optimizer code')
+        }
+        [optimizer, profiler].each { entries ->
+            if (entries.contains('mcmod-optimizer.info') || entries.contains('mcmod-profiler.info')) {
+                throw new GradleException('Source metadata names leaked into a release artifact')
+            }
+        }
+        ['org/agrona/', 'com/github/benmanes/caffeine/', 'net/jpountz/'].each { prefix ->
+            if (optimizer.any { it.startsWith(prefix) }) throw new GradleException("Unrelocated dependency: ${prefix}")
+        }
+        ['dev/rlcraft/ice/shadow/agrona/', 'dev/rlcraft/ice/shadow/caffeine/', 'dev/rlcraft/ice/shadow/lz4/'].each { prefix ->
+            if (!optimizer.any { it.startsWith(prefix) }) throw new GradleException("Missing relocated dependency: ${prefix}")
+        }
+    }
+}
+task verifyArtifactStartup(type: Test, dependsOn: [optimizerJar, profilerJar, testClasses]) {
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/FinalOptimizerJarIsolationTest.class', '**/FinalProfilerJarIsolationTest.class', '**/ForgeSingleJarDiscoveryTest.class'
+    systemProperty 'ice.optimizer.finalJar', optimizerJar.archivePath.absolutePath
+    systemProperty 'ice.optimizer.version', project.version.toString()
+    systemProperty 'ice.profiler.finalJar', profilerJar.archivePath.absolutePath
+    systemProperty 'ice.profiler.version', project.version.toString()
+}
+build.dependsOn verifyArtifacts, verifyArtifactStartup

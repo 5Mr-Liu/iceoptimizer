@@ -27,25 +27,25 @@ public final class ModernRendererRuntimeShaderGateTest {
 
     @Test
     public void terrainShaderExceptionRequiresEveryIdentityAndCertificationGate() {
-        assertTrue(ModernRendererRuntime.shaderTerrainGate(true, false,
+        assertTrue(OptifineShaderRuntime.shaderTerrainGate(true, false,
             false, false, false, false, false, false, false));
-        assertTrue(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertTrue(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, true, true, true, true, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(false, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(false, true,
             true, true, true, true, true, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             false, true, true, true, true, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, false, true, true, true, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, true, false, true, true, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, true, true, false, true, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, true, true, true, false, true, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, true, true, true, true, false, true));
-        assertFalse(ModernRendererRuntime.shaderTerrainGate(true, true,
+        assertFalse(OptifineShaderRuntime.shaderTerrainGate(true, true,
             true, true, true, true, true, true, false));
     }
 
@@ -55,19 +55,19 @@ public final class ModernRendererRuntimeShaderGateTest {
             new int[] { 36064, 36065 });
         OptifineProgramState candidate = state(117, 41, "GBUFFERS",
             new int[] { 36064, 36065 });
-        assertTrue(ModernRendererRuntime.shaderTerrainActivationStateMatches(
+        assertTrue(OptifineShaderRuntime.shaderTerrainActivationStateMatches(
             certified, candidate, 41));
         assertTrue("an exact recreated FBO layout remains the same logical pass",
-            ModernRendererRuntime.shaderTerrainActivationStateMatches(
+            OptifineShaderRuntime.shaderTerrainActivationStateMatches(
             certified, state(117, 42, "GBUFFERS",
                 new int[] { 36064, 36065 }), 42));
-        assertFalse(ModernRendererRuntime.shaderTerrainActivationStateMatches(
+        assertFalse(OptifineShaderRuntime.shaderTerrainActivationStateMatches(
             certified, state(117, 41, "SHADOW",
                 new int[] { 36064, 36065 }), 41));
-        assertFalse(ModernRendererRuntime.shaderTerrainActivationStateMatches(
+        assertFalse(OptifineShaderRuntime.shaderTerrainActivationStateMatches(
             certified, state(117, 41, "GBUFFERS",
                 new int[] { 36064 }), 41));
-        assertFalse(ModernRendererRuntime.shaderTerrainActivationStateMatches(
+        assertFalse(OptifineShaderRuntime.shaderTerrainActivationStateMatches(
             certified, candidate, 99));
     }
 

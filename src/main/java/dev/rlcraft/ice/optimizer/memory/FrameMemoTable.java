@@ -20,7 +20,7 @@ public final class FrameMemoTable<V> {
             generation = currentGeneration;
         }
         V existing = values.get(exactKey);
-        if (existing != null || values.containsKey(exactKey)) return existing;
+        if (existing != null) return existing;
         V loaded = loader.apply(exactKey);
         if (loaded == null) return null;
         if (values.size() >= maximumEntries) values.clear();

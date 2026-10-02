@@ -44,6 +44,7 @@ final class OptimizerModuleSelection {
             case ICEANDFIRE_PARTICLE_SCRATCH: return source.iceAndFireParticleScratch;
             case ICEANDFIRE_PATH_NODE_CACHE: return source.iceAndFirePathNodeCache;
             case FOAMFIX_TEXTURE_UPLOAD: return source.foamFixTextureUpload;
+            case FBP_CUBE_SUBMISSION: return source.fbpCubeSubmission;
             case XAERO_TEXTURE_UPLOAD: return source.xaeroTextureUpload;
             case XAERO_GPU_FENCE: return source.xaeroGpuFence;
             case RENDERLIB_VISIBILITY: return source.renderLibVisibility;

@@ -25,6 +25,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.client.renderer.vertex.VertexFormat;
+import net.minecraft.util.math.BlockPos;
 import org.junit.Test;
 
 public final class LwjglTerrainArenaDataTest {
@@ -125,7 +126,10 @@ public final class LwjglTerrainArenaDataTest {
         data.putFloat(36, 8.0F);
         for (int i = 40; i < source.length; i++) data.put(i, (byte) (i * 5));
 
-        byte[] normalized = LwjglTerrainArena.normalizeForTest(source, -17, 32, 511);
+        byte[] normalized = new byte[source.length];
+        LwjglTerrainArena.normalizeIntoStaging(ByteBuffer.wrap(source), source.length,
+            28, normalized.length, new BlockPos(-17, 32, 511), -256, 0, 256,
+            ByteBuffer.wrap(normalized));
         ByteBuffer value = ByteBuffer.wrap(normalized).order(ByteOrder.nativeOrder());
         float scale = 1.000001F;
         float translation = 8.0F * scale - 8.0F;
@@ -163,25 +167,52 @@ public final class LwjglTerrainArenaDataTest {
     }
 
     @Test
-    public void extendedStrideCompressionCopiesOnlyEachImmutablePrefix() {
-        int stride = 36;
-        byte[] source = new byte[stride * 2];
-        for (int i = 0; i < source.length; i++) source[i] = (byte) (i * 11 + 3);
-
-        byte[] packed = LwjglTerrainArena.packVanillaBlockPrefixForTest(
-            source, stride);
-
-        assertEquals(56, packed.length);
-        byte[] first = new byte[28];
-        byte[] second = new byte[28];
-        System.arraycopy(source, 0, first, 0, 28);
-        System.arraycopy(source, stride, second, 0, 28);
-        byte[] actualFirst = new byte[28];
-        byte[] actualSecond = new byte[28];
-        System.arraycopy(packed, 0, actualFirst, 0, 28);
-        System.arraycopy(packed, 28, actualSecond, 0, 28);
-        assertArrayEquals(first, actualFirst);
-        assertArrayEquals(second, actualSecond);
+    public void productionNormalizationPreservesSourceAndExtendedVertexAttributes() {
+        for (int stride : new int[] {28, 32, 36, 56}) {
+            for (boolean direct : new boolean[] {false, true}) {
+                int sourceBytes = stride * 17;
+                ByteBuffer storage = (direct ? ByteBuffer.allocateDirect(sourceBytes + 8)
+                    : ByteBuffer.allocate(sourceBytes + 8)).order(ByteOrder.nativeOrder());
+                for (int i = 0; i < sourceBytes; i++) storage.put(i, (byte) (i * 11 + 3));
+                for (int vertex = 0; vertex < 17; vertex++) {
+                    storage.putFloat(vertex * stride, vertex + 0.25F);
+                    storage.putFloat(vertex * stride + 4, -vertex - 0.5F);
+                    storage.putFloat(vertex * stride + 8, vertex * 2.0F);
+                }
+                byte[] original = new byte[storage.capacity()];
+                storage.duplicate().get(original);
+                ByteBuffer source = storage.asReadOnlyBuffer();
+                source.position(5);
+                source.mark();
+                ByteBuffer target = (direct ? ByteBuffer.allocateDirect(17 * 28 + 32)
+                    : ByteBuffer.allocate(17 * 28 + 32)).order(ByteOrder.nativeOrder());
+                ByteBuffer actual = LwjglTerrainArena.normalizeIntoStaging(source,
+                    sourceBytes, stride, 17 * 28, new BlockPos(-17, 32, 511),
+                    -256, 0, 256, target);
+                assertEquals(0, actual.position());
+                assertEquals(17 * 28, actual.limit());
+                for (int vertex = 0; vertex < 17; vertex++) {
+                    float scale = 1.000001F;
+                    float translation = 8.0F * scale - 8.0F;
+                    assertEquals((vertex + 0.25F) * scale + translation + 239.0F,
+                        actual.getFloat(vertex * 28), 0.0F);
+                    assertEquals((-vertex - 0.5F) * scale + translation + 32.0F,
+                        actual.getFloat(vertex * 28 + 4), 0.0F);
+                    assertEquals((vertex * 2.0F) * scale + translation + 255.0F,
+                        actual.getFloat(vertex * 28 + 8), 0.0F);
+                    for (int offset = 12; offset < 28; offset++) {
+                        assertEquals(original[vertex * stride + offset],
+                            actual.get(vertex * 28 + offset));
+                    }
+                }
+                assertEquals(5, source.position());
+                assertEquals(storage.capacity(), source.limit());
+                source.reset();
+                byte[] unchanged = new byte[storage.capacity()];
+                storage.duplicate().get(unchanged);
+                assertArrayEquals(original, unchanged);
+            }
+        }
     }
 
     @Test

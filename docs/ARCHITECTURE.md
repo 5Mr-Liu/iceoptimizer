@@ -1,10 +1,14 @@
 # ICE RLCraft Optimizer / Performance Recorder 完整实现架构
 
+当前源码为 1.0.13：优化器和 Profiler 各使用一个独立安装 JAR，early/hooks/main/profiler 分别编译；渲染器的诊断、组件所有权、Shader 和测量已拆出。最新产物和验证见 [单 JAR 构建说明](ICE-SINGLE-JAR-BUILD.md) 与 [1.0.12 Profiler 合并记录](ICE-1.0.12-PROFILER-SINGLE-JAR-BUILD.md)。本文件末尾的历史构建和实机部署记录保留当时的版本与双包命名。
+
+1.0.13 将 OTG 文件事件认证和流式 settings 快照拆到独立类，原版区块 NBT 的局部调色板解析只在本次保存内复用。Profiler 的角色区间、固定预算保留和诊断视图也分别封装；具体行为及验证见 [1.0.13 修复记录](ICE-1.0.13-LIVE-PERFORMANCE-FIXES.md)。
+
 ## 1. 设计边界
 
 Profiler 与双端优化器保持包级、模组入口、发布 JAR 和转换器级分离。Profiler 只收集证据；优化器只处理已经由报告确认、并通过物理 side 与目标类结构检查的热点。标准采集路径不取消事件、不改返回值、不重排任务、不写世界数据，也不调整原版或模组线程优先级。
 
-`1.0` 构建输出四个互不重叠的正式产物：optimizer main/core 与 profiler main/core。优化器 main 不包含采样、报告、命令、快捷键或 Dashboard；profiler main 不链接优化器状态。两个 core JAR 分别只声明一个 `FMLCorePlugin` 和一个 transformer，构建期会比较全部 class entry 并拒绝重复或越界内容。
+`1.0.13` 构建输出 optimizer 单 JAR 与可选 profiler 单 JAR。优化器不包含采样、报告、命令、快捷键或 Dashboard；Profiler 不硬链接优化器状态。两个安装 JAR 各声明自己的 `FMLCorePlugin` 和普通模组入口，分别注册一个 transformer。Profiler 运行时先独立重混淆，再与原始启动字节码合并；构建期比较全部 class entry 并拒绝重复或越界内容。
 
 客户端优化数据流为：
 
@@ -158,13 +162,13 @@ ASM transformer 的安全策略：
 - 任何异常返回原始 `byte[]`。
 - `ProbeBridge` 自身吞掉采集异常，永不把异常带回原游戏调用。
 
-Forge 会在普通模组 JAR 可见之前实例化 CoreMod 转换器，因此 hooks 源集在构建期禁止依赖 main 输出。`IceProfilerLoadingPlugin` 只返回 `IceProfilerTransformer`；`IceOptimizerLoadingPlugin` 只返回双端 `IceOptimizerTransformer` 并初始化目标发现策略。Profiler transformer 只保存 `ProbeBridge` 的内部类名和稳定数字 ABI，不在启动期解析该类；optimizer transformer 使用 Core JAR 本地 SHA-256 实现。optimizer CoreMod 的 transformer exclusion 只包含 `dev.rlcraft.ice.hooks.*`；主运行时 `dev.rlcraft.ice.optimizer.*` 必须继续由 LaunchClassLoader 正常解析，否则 FermiumASM 环境会在 preInit 产生 `NoClassDefFoundError`。任何由 Core transformer 注入到目标类声明中的接口 ABI 都只打包进 Core JAR，包括字体、粒子、OptiFine VboRegion、Lycanites、Mo' Bends、地形、动态光源、存档和 SRP 接口；Main JAR 显式排除这些类。字体隔离回归使用无父 ClassLoader，要求缺少 Core ABI 时重现 `NoClassDefFoundError`、ABI 可见时完成改写类链接。早期观察到的优化目标和已安装补丁先写入 `OptimizerPatchJournal`，客户端或专服主运行时初始化后通过反射回放到 `OptimizerRegistry`。隔离类加载测试会隐藏全部 main 运行时类，并要求转换器仍能初始化和执行，同时校验 optimizer exclusion 只剩 hooks 包。
+Forge 在普通模组初始化前实例化启动转换器，因此 hooks 源集禁止依赖 main 输出，只依赖 early。`IceProfilerLoadingPlugin` 返回 `IceProfilerTransformer`；`IceOptimizerLoadingPlugin` 返回双端 `IceOptimizerTransformer` 并初始化目标发现策略。Profiler transformer 通过稳定类名和数字 ABI 延迟调用 `ProbeBridge`；optimizer 的启动辅助逻辑也不解析运行时。优化器 transformer exclusion 只包含 `dev.rlcraft.ice.hooks.*`，运行时 `dev.rlcraft.ice.optimizer.*` 仍由 LaunchClassLoader 正常解析，以兼容 FermiumASM。字体、粒子、OptiFine VboRegion、Lycanites、Mo' Bends、地形、动态光源、存档和 SRP 注入接口在 early 源集编译，并与 hooks/main 一同打包到优化器单 JAR。早期目标和补丁写入 `OptimizerPatchJournal`，客户端或专服初始化后回放到 `OptimizerRegistry`；实际 Plugin/Transformer 生命周期共同记录注册状态。最终 JAR 隔离测试隐藏全部运行时，要求早期转换器与 ABI 仍能加载；真实 Forge 加载烟测覆盖 CLIENT/SERVER 和 Profiler 共存。
 
 ## 9. 隐私与兼容
 
 默认报告不需要世界种子、玩家名或精确坐标。绝对游戏/世界路径不进入报告；命令也只显示 Session 名。Netty handler 始终先计数、再调用 `super`，即使计数失败也继续原网络管线。
 
-优化器从 `0.7.0` 起声明为双端必需模组；`1.0` 使用 `acceptableRemoteVersions=[1.0]` 强制客户端与专用服务端使用同一 ICE 主 JAR 版本。该握手不检查 RLCraft、Dregora 或目标组件版本。两端也都必须安装 optimizer Core JAR 才会真正注入优化。Profiler 没有自定义网络握手协议，仍可按需要单独安装在客户端、单人集成服务器或独立服务端，另一端不要求安装 Profiler。
+优化器从 `0.7.0` 起声明为双端必需模组；`1.0.8` 使用 `acceptableRemoteVersions=[1.0.8]` 要求客户端和专服使用同一版本的单 JAR，其中已包含启动补丁。握手不检查 RLCraft、Dregora 或目标组件版本。Profiler 没有自定义网络握手协议，可单独安装在客户端、集成服务器或专服，另一端不要求安装 Profiler。
 
 ## 10. 后续优化器准入条件
 
@@ -177,7 +181,7 @@ Forge 会在普通模组 JAR 可见之前实例化 CoreMod 转换器，因此 ho
 
 ## 11. 双端优化运行时
 
-公共启动层先按物理 side 捕获不可变配置、初始化 `OptimizerRegistry`、回放早期 `OptimizerPatchJournal`，再建立只读的结构兼容状态。组件观察失败也不会拒绝适配；Core JAR 缺失时记录一次错误并保持所有字节码优化不生效。
+公共启动层按物理 side 捕获不可变配置、初始化 `OptimizerRegistry`、回放早期 `OptimizerPatchJournal`，再建立只读结构兼容状态。组件观察失败不会拒绝适配；Plugin/Transformer 未实际注册时记录一次错误并报告启动补丁未生效，单包类可见性不作为注册证据。
 
 专用服务端由 `OptimizerServerProxy` 启动 `ServerOptimizerRuntime`：不注册 F3、按键、渲染事件、客户端资源监听器或后台记录线程，只放行标记为 dedicated-server-safe 的同步算法优化。`FMLServerStoppedEvent` 会显式关闭共享模块注册表。
 

@@ -76,21 +76,15 @@ public final class ModelMeshCaptureBridge {
         captureBegins = safeAdd(captureBegins, 1L);
         ModernRendererRuntime runtime =
             ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (runtime != null && !runtime.mayUseBackendCandidate(
-            dev.rlcraft.ice.optimizer.OptimizationModule.MODERN_ENTITY_BACKEND)
-            && !runtime.mayUseBackendCandidate(
-                dev.rlcraft.ice.optimizer.OptimizationModule.MODERN_TESR_BACKEND)) {
-            disabledCaptures = safeAdd(disabledCaptures, 1L);
-            return;
-        }
+        boolean candidateCapture = runtime == null || runtime.mayCaptureModelMeshes();
         CaptureState state = CAPTURES.get();
         if (state.overflow != 0 || state.stack.size() >= MAX_CAPTURE_DEPTH) {
             state.overflow++;
             return;
         }
-        boolean configured = OptimizerBridge.isEnabled(ENTITY_MODULE)
-            || OptimizerBridge.isEnabled(TESR_MODULE);
-        boolean early = !configured && earlyCaptureAvailable();
+        boolean configured = candidateCapture && (OptimizerBridge.isEnabled(ENTITY_MODULE)
+            || OptimizerBridge.isEnabled(TESR_MODULE));
+        boolean early = candidateCapture && !configured && earlyCaptureAvailable();
         boolean enabled = owner != null && (configured || early);
         if (enabled && early) earlyCaptures = safeAdd(earlyCaptures, 1L);
         if (enabled) enabledCaptures = safeAdd(enabledCaptures, 1L);
@@ -173,6 +167,7 @@ public final class ModelMeshCaptureBridge {
 
     /** Replacement for ModelRenderer's exact GlStateManager.callList sites. */
     public static void callList(int displayList) {
+        if (ModelStateBatchBridge.draw(displayList)) return;
         if (displayList <= 0) {
             GlStateManager.callList(displayList);
             return;
@@ -204,6 +199,10 @@ public final class ModelMeshCaptureBridge {
         return hasPendingMeshes;
     }
 
+    static boolean isPending(int displayList) {
+        return pending(displayList) != null;
+    }
+
     /**
      * Bounded frame-boundary admission.  Returns the number of VBOs published
      * and performs no work when the renderer/frame is unavailable.
@@ -215,7 +214,9 @@ public final class ModelMeshCaptureBridge {
         }
         ModernRendererRuntime runtime =
             ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (runtime == null || runtime.modelMeshAdmissionEpoch() < 0L) return 0;
+        if (runtime == null) return 0;
+        long epoch = runtime.modelMeshAdmissionEpoch();
+        if (epoch < 0L) return 0;
         purgeStalePending();
         publicationDrainCycles = safeAdd(publicationDrainCycles, 1L);
         if (runtime.shouldDropDeferredModelMeshes()) {
@@ -230,7 +231,6 @@ public final class ModelMeshCaptureBridge {
         int attempted = 0;
         int published = 0;
         long attemptedBytes = 0L;
-        long epoch = runtime.modelMeshAdmissionEpoch();
         Iterator<Map.Entry<Integer, PendingModelMesh>> iterator =
             PENDING.entrySet().iterator();
         while (iterator.hasNext() && attempted < maximumMeshes) {
@@ -254,7 +254,7 @@ public final class ModelMeshCaptureBridge {
             if (attempted > 0 && bytes > maximumBytes - attemptedBytes) break;
             attempted++;
             attemptedBytes = safeAdd(attemptedBytes, bytes);
-            if (!attemptPublication(pending, payload, runtime)) continue;
+            if (!attemptPublication(pending, payload, runtime, epoch)) continue;
             if (pending.consumeQualifiedLate()) {
                 lateQualifications = safeAdd(lateQualifications, 1L);
             }
@@ -269,20 +269,8 @@ public final class ModelMeshCaptureBridge {
 
     private static boolean attemptPublication(PendingModelMesh pending,
                                               ModelMeshPayload payload,
-                                              ModernRendererRuntime runtime) {
-        if (pending == null || payload == null || runtime == null) return false;
-        long epoch;
-        try { epoch = runtime.modelMeshAdmissionEpoch(); }
-        catch (Throwable unavailable) {
-            FatalErrors.rethrowIfFatal(unavailable);
-            return false;
-        }
-        if (epoch < 0L) return false;
-        if (!pending.shouldAttemptPublication(epoch)) {
-            publicationRetrySuppressions = safeAdd(
-                publicationRetrySuppressions, 1L);
-            return false;
-        }
+                                              ModernRendererRuntime runtime,
+                                              long epoch) {
         publicationAttempts = safeAdd(publicationAttempts, 1L);
         boolean accepted = publish(payload, runtime);
         if (!accepted) {
@@ -295,8 +283,7 @@ public final class ModelMeshCaptureBridge {
     private static boolean publish(ModelMeshPayload payload,
                                    ModernRendererRuntime runtime) {
         try {
-            return runtime != null && runtime.isModelMeshBackendOperational()
-                && runtime.acceptModelMesh(payload);
+            return runtime.acceptModelMesh(payload);
         } catch (Throwable ignored) {
             FatalErrors.rethrowIfFatal(ignored);
             return false;

@@ -47,7 +47,7 @@ public final class ServerOptimizerRuntime {
         IceMod.LOGGER.info("ICE RLCraft 专用服务端优化运行时启动：已允许 {} 个服务端模块，兼容策略 {}",
             enabledModules, packLock.getState());
         if (!coreModPresent) {
-            IceMod.LOGGER.error("ICE Optimizer Core JAR 未加载；服务端将安全运行，但字节码优化不会生效");
+            IceMod.LOGGER.error("ICE Optimizer 启动插件或转换器未注册；服务端将继续运行，但字节码优化不会生效");
         }
         if (!packLock.permitsPatches()) {
             IceMod.LOGGER.warn("ICE 服务端外部优化补丁保持关闭：{}", packLock.getDetail());

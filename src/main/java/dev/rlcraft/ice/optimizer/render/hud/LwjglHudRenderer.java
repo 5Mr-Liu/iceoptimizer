@@ -138,6 +138,17 @@ public final class LwjglHudRenderer {
     /** Atomically appends a translation-normalized cached glyph run. */
     boolean recordGlyphRun(float[] xyzuv, int glyphs, float translateX,
                            float translateY) {
+        return recordGlyphRun(xyzuv, glyphs, translateX, translateY, false);
+    }
+
+    /** GlyphLayout owns immutable arrays validated once at construction. */
+    boolean recordValidatedGlyphRun(float[] xyzuv, int glyphs, float translateX,
+                                    float translateY) {
+        return recordGlyphRun(xyzuv, glyphs, translateX, translateY, true);
+    }
+
+    private boolean recordGlyphRun(float[] xyzuv, int glyphs, float translateX,
+                                   float translateY, boolean validated) {
         threadGuard.check();
         if (closed || immediate || !topologyCompatible(GL11.GL_TRIANGLE_STRIP)
             || xyzuv == null || glyphs < 0 || !finite(translateX)
@@ -151,10 +162,8 @@ public final class LwjglHudRenderer {
             return false;
         }
         if (xyzuv.length != floats || !room(verticesNeeded, glyphs)) return false;
-        for (int offset = 0; offset < floats; offset += FLOATS_PER_VERTEX) {
-            if (!finite(xyzuv[offset]) || !finite(xyzuv[offset + 1])
-                || !finite(xyzuv[offset + 2]) || !finite(xyzuv[offset + 3])
-                || !finite(xyzuv[offset + 4])) return false;
+        if (!validated) {
+            for (float value : xyzuv) if (!finite(value)) return false;
         }
         int firstVertex = vertexCount;
         int firstCommand = commandCount;

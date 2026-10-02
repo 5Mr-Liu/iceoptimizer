@@ -58,6 +58,7 @@ public final class AnimatedTextureBootstrap {
     }
 
     public static long begin(Object atlas) {
+        TextureParameterScope.barrier();
         Delegate current = delegate;
         if (current == null) return 0L;
         try { return (long) current.begin.invokeExact(atlas); }
@@ -73,9 +74,18 @@ public final class AnimatedTextureBootstrap {
 
     public static void beforeSprite(Object sprite) {
         Delegate current = delegate;
-        if (current == null) return;
-        try { current.beforeSprite.invokeExact(sprite); }
+        if (current == null) {
+            TextureParameterScope.beforeSprite(sprite);
+            return;
+        }
+        try {
+            current.beforeSprite.invokeExact(sprite);
+            // A preceding queued upload may flush in the delegate. Start
+            // reuse only after that work has finished changing GL state.
+            TextureParameterScope.beforeSprite(sprite);
+        }
         catch (Throwable ignored) {
+            TextureParameterScope.barrier();
             HookFatalErrors.rethrowIfFatal(ignored);
             if (isUnsafeReplayFailure(ignored)) {
                 AnimatedTextureBootstrap.<RuntimeException, Void>raise(ignored);
@@ -84,6 +94,7 @@ public final class AnimatedTextureBootstrap {
     }
 
     public static void afterSprite() {
+        TextureParameterScope.afterSprite();
         Delegate current = delegate;
         if (current == null) return;
         try { current.afterSprite.invokeExact(); }
@@ -91,6 +102,7 @@ public final class AnimatedTextureBootstrap {
     }
 
     public static void textureBarrier() {
+        TextureParameterScope.barrier();
         Delegate current = delegate;
         if (current == null) return;
         try { current.textureBarrier.invokeExact(); }
@@ -122,6 +134,7 @@ public final class AnimatedTextureBootstrap {
     }
 
     public static void end(long token) {
+        TextureParameterScope.endAtlas();
         Delegate current = delegate;
         if (current == null || token == 0L) return;
         try { current.end.invokeExact(token); }
@@ -134,6 +147,7 @@ public final class AnimatedTextureBootstrap {
     }
 
     public static void abort(long token, Throwable error) {
+        TextureParameterScope.endAtlas();
         Delegate current = delegate;
         if (current == null || token == 0L) return;
         try { current.abort.invokeExact(token, error); }
@@ -142,6 +156,7 @@ public final class AnimatedTextureBootstrap {
 
     static void resetForTest() {
         delegate = null;
+        TextureParameterScope.endAtlas();
     }
 
     private static boolean isUnsafeReplayFailure(Throwable error) {

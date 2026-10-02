@@ -3,6 +3,7 @@ package dev.rlcraft.ice.optimizer.render.hud;
 import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -34,23 +35,39 @@ public final class FontLayoutCache {
 
         public GlyphLayout(float[] glyphGeometry, int[] texturePages,
                            float advance) {
+            this(glyphGeometry, texturePages,
+                exactGlyphCount(glyphGeometry, texturePages), advance);
+        }
+
+        /** Copies only the used prefix of reusable font-capture arrays. */
+        public GlyphLayout(float[] glyphGeometry, int[] texturePages,
+                           int glyphCount, float advance) {
             if (glyphGeometry == null || texturePages == null
-                || glyphGeometry.length % 20 != 0
-                || texturePages.length != glyphGeometry.length / 20
+                || glyphCount < 0 || glyphCount > glyphGeometry.length / 20
+                || glyphCount > texturePages.length
                 || !finite(advance) || advance < 0.0F) {
                 throw new IllegalArgumentException("glyph layout");
             }
-            for (float value : glyphGeometry) {
-                if (!finite(value)) throw new IllegalArgumentException(
+            int floats = glyphCount * 20;
+            for (int index = 0; index < floats; index++) {
+                if (!finite(glyphGeometry[index])) throw new IllegalArgumentException(
                     "non-finite glyph layout");
             }
-            for (int page : texturePages) {
-                if (page <= 0) throw new IllegalArgumentException(
+            for (int index = 0; index < glyphCount; index++) {
+                if (texturePages[index] <= 0) throw new IllegalArgumentException(
                     "invalid font texture page");
             }
-            this.glyphGeometry = glyphGeometry.clone();
-            this.texturePages = texturePages.clone();
+            this.glyphGeometry = Arrays.copyOf(glyphGeometry, floats);
+            this.texturePages = Arrays.copyOf(texturePages, glyphCount);
             this.advance = advance;
+        }
+
+        private static int exactGlyphCount(float[] geometry, int[] pages) {
+            if (geometry == null || pages == null || geometry.length % 20 != 0
+                || pages.length != geometry.length / 20) {
+                throw new IllegalArgumentException("glyph layout");
+            }
+            return pages.length;
         }
 
         public float[] getGlyphGeometry() { return glyphGeometry.clone(); }
@@ -71,7 +88,7 @@ public final class FontLayoutCache {
 
         /** Writes the complete cached string atomically into the native stream. */
         public boolean record(LwjglHudRenderer renderer, float x, float y) {
-            return renderer != null && renderer.recordGlyphRun(
+            return renderer != null && renderer.recordValidatedGlyphRun(
                 glyphGeometry, texturePages.length, x, y);
         }
 

@@ -21,6 +21,11 @@ final class ModelRendererVboAdapter implements OptimizerBytecodeAdapter {
         "net/minecraft/client/renderer/GlStateManager";
     static final String BRIDGE =
         "dev/rlcraft/ice/optimizer/compat/model/ModelMeshCaptureBridge";
+    static final String STATE_BATCH_BRIDGE =
+        "dev/rlcraft/ice/optimizer/compat/model/ModelStateBatchBridge";
+    static final String STATE_BATCH_ACCESS =
+        "dev/rlcraft/ice/optimizer/compat/model/ModelStateBatchAccess";
+    static final String RENDER_ORIGINAL = "rlcraftIce$renderStateBatchOriginal";
 
     @Override
     public byte[] transform(String transformedName, byte[] originalClass, TargetSpec target) {
@@ -30,6 +35,9 @@ final class ModelRendererVboAdapter implements OptimizerBytecodeAdapter {
         if (!TARGET.equals(node.name)) {
             throw new IllegalStateException("ModelRenderer target changed: " + node.name);
         }
+        // This proof precedes emitter replacement. Exact Java class identity
+        // alone cannot authenticate OptiFine/model-update extensions.
+        int stateBatchShape = ModelStateBatchMethodProof.reviewedShape(node);
         MethodNode compile = null;
         int matches = 0;
         int callLists = 0;
@@ -65,10 +73,119 @@ final class ModelRendererVboAdapter implements OptimizerBytecodeAdapter {
         compile.name = ORIGINAL;
         compile.access |= Opcodes.ACC_SYNTHETIC;
         node.methods.add(wrapper(node.name, access, signature, exceptions));
+        if (stateBatchShape != 0) addStateBatch(node, stateBatchShape);
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static void addStateBatch(ClassNode node, int shape) {
+        MethodNode render = ModelStateBatchMethodProof.method(node, "func_78785_a", "(F)V");
+        int access = render.access;
+        String signature = render.signature;
+        List<String> exceptions = render.exceptions;
+        render.name = RENDER_ORIGINAL;
+        render.access |= Opcodes.ACC_SYNTHETIC;
+        node.interfaces.add(STATE_BATCH_ACCESS);
+        node.methods.add(stateBatchRenderWrapper(access, signature, exceptions));
+
+        MethodNode displayList = new MethodNode(Opcodes.ASM5,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_SYNTHETIC, "ice$stateBatchDisplayList",
+            "()I", null, null);
+        displayList.visitCode();
+        displayList.visitVarInsn(Opcodes.ALOAD, 0);
+        displayList.visitFieldInsn(Opcodes.GETFIELD, TARGET, "field_78811_r", "I");
+        displayList.visitInsn(Opcodes.IRETURN);
+        displayList.visitMaxs(0, 0);
+        displayList.visitEnd();
+        node.methods.add(displayList);
+
+        MethodNode ready = new MethodNode(Opcodes.ASM5,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_SYNTHETIC, "ice$stateBatchNodeReady",
+            "()Z", null, null);
+        ready.visitCode();
+        Label rejected = new Label();
+        ready.visitVarInsn(Opcodes.ALOAD, 0);
+        ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, "field_78812_q", "Z");
+        ready.visitJumpInsn(Opcodes.IFEQ, rejected);
+        if (shape == 2) {
+            ready.visitVarInsn(Opcodes.ALOAD, 0);
+            ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, "textureLocation",
+                "Lnet/minecraft/util/ResourceLocation;");
+            ready.visitJumpInsn(Opcodes.IFNONNULL, rejected);
+            ready.visitVarInsn(Opcodes.ALOAD, 0);
+            ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, "modelUpdater",
+                "Lnet/optifine/entity/model/anim/ModelUpdater;");
+            ready.visitJumpInsn(Opcodes.IFNONNULL, rejected);
+            ready.visitVarInsn(Opcodes.ALOAD, 0);
+            ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, "spriteList", "Ljava/util/List;");
+            ready.visitMethodInsn(Opcodes.INVOKESTATIC, STATE_BATCH_BRIDGE,
+                "isEmptyCanonicalList", "(Ljava/lang/Object;)Z", false);
+            ready.visitJumpInsn(Opcodes.IFEQ, rejected);
+            ready.visitVarInsn(Opcodes.ALOAD, 0);
+            ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, "countResetDisplayList", "I");
+            ready.visitFieldInsn(Opcodes.GETSTATIC, "net/optifine/shaders/Shaders",
+                "countResetDisplayLists", "I");
+            ready.visitJumpInsn(Opcodes.IF_ICMPNE, rejected);
+        }
+        ready.visitInsn(Opcodes.ICONST_1);
+        ready.visitInsn(Opcodes.IRETURN);
+        ready.visitLabel(rejected);
+        ready.visitInsn(Opcodes.ICONST_0);
+        ready.visitInsn(Opcodes.IRETURN);
+        ready.visitMaxs(0, 0);
+        ready.visitEnd();
+        node.methods.add(ready);
+    }
+
+    private static MethodNode stateBatchRenderWrapper(int access, String signature,
+                                                      List<String> exceptions) {
+        MethodNode method = new MethodNode(Opcodes.ASM5, access, "func_78785_a", "(F)V",
+            signature, exceptions == null ? null : exceptions.toArray(new String[exceptions.size()]));
+        method.visitCode();
+        Label scoped = new Label();
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitFieldInsn(Opcodes.GETFIELD, TARGET, "field_78805_m", "Ljava/util/List;");
+        method.visitJumpInsn(Opcodes.IFNONNULL, scoped);
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitVarInsn(Opcodes.FLOAD, 1);
+        method.visitMethodInsn(Opcodes.INVOKESPECIAL, TARGET, RENDER_ORIGINAL, "(F)V", false);
+        method.visitInsn(Opcodes.RETURN);
+        method.visitLabel(scoped);
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitMethodInsn(Opcodes.INVOKESTATIC, STATE_BATCH_BRIDGE, "begin",
+            "(Lnet/minecraft/client/model/ModelRenderer;)Z", false);
+        method.visitVarInsn(Opcodes.ISTORE, 2);
+        Label start = new Label();
+        Label end = new Label();
+        Label handler = new Label();
+        Label returned = new Label();
+        Label rethrow = new Label();
+        method.visitLabel(start);
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitVarInsn(Opcodes.FLOAD, 1);
+        method.visitMethodInsn(Opcodes.INVOKESPECIAL, TARGET, RENDER_ORIGINAL, "(F)V", false);
+        method.visitLabel(end);
+        method.visitVarInsn(Opcodes.ILOAD, 2);
+        method.visitJumpInsn(Opcodes.IFEQ, returned);
+        method.visitMethodInsn(Opcodes.INVOKESTATIC, STATE_BATCH_BRIDGE, "end", "()V", false);
+        method.visitLabel(returned);
+        method.visitInsn(Opcodes.RETURN);
+        method.visitLabel(handler);
+        method.visitVarInsn(Opcodes.ASTORE, 3);
+        method.visitVarInsn(Opcodes.ILOAD, 2);
+        method.visitJumpInsn(Opcodes.IFEQ, rethrow);
+        method.visitVarInsn(Opcodes.ALOAD, 3);
+        method.visitMethodInsn(Opcodes.INVOKESTATIC, STATE_BATCH_BRIDGE,
+            "endAfterFailure", "(Ljava/lang/Throwable;)V", false);
+        method.visitLabel(rethrow);
+        method.visitVarInsn(Opcodes.ALOAD, 3);
+        method.visitInsn(Opcodes.ATHROW);
+        method.visitTryCatchBlock(start, end, handler, "java/lang/Throwable");
+        method.visitMaxs(0, 0);
+        method.visitEnd();
+        return method;
     }
 
     private static MethodNode wrapper(String owner, int access, String signature,

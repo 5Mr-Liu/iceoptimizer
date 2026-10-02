@@ -8,6 +8,7 @@ import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import com.github.benmanes.caffeine.cache.Cache;
 import dev.rlcraft.ice.optimizer.ClientOptimizerConfig;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerConfig;
@@ -40,6 +41,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPOutputStream;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -114,8 +116,11 @@ public final class OtgSynchronousIoRealJarTest {
         File jar = realJar();
         URLClassLoader loader = new URLClassLoader(new URL[] { jar.toURI().toURL() },
             getClass().getClassLoader());
-        Path directory = Files.createTempDirectory("ice-otg-nbt-");
+        Path directory = workspaceDirectory("ice-otg-nbt-");
         try {
+            // Keep creation independent of the later edit's asynchronously
+            // delivered events in the metadata file's parent directory.
+            Path missingDirectory = Files.createDirectory(directory.resolve("missing"));
             Class<?> tagClass = loader.loadClass("com.pg85.otg.util.bo3.NamedBinaryTag");
             Path file = directory.resolve("tile.nbt");
             Files.write(file, gzip(sampleNbt()));
@@ -123,7 +128,6 @@ public final class OtgSynchronousIoRealJarTest {
                 OtgSynchronousIoBridge.createMetadataMap(tagClass);
 
             String path = file.toFile().getCanonicalPath();
-            OtgSynchronousIoBridge.resetFileDigestReadsForTest();
             OtgSynchronousIoBridge.resetFileAuthenticationProbesForTest();
             assertFalse(cache.containsKey(path));
             Object loaded;
@@ -134,12 +138,8 @@ public final class OtgSynchronousIoRealJarTest {
                 input.close();
             }
             cache.put(path, loaded);
-            long publicationDigestReads =
-                OtgSynchronousIoBridge.fileDigestReadsForTest();
             long publicationAuthenticationProbes =
                 OtgSynchronousIoBridge.fileAuthenticationProbesForTest();
-            assertEquals("metadata publication fingerprints the file once",
-                1L, publicationDigestReads);
             assertTrue(cache.containsKey(path));
             Object first = cache.get(path);
             assertTrue(cache.containsKey(path));
@@ -148,9 +148,6 @@ public final class OtgSynchronousIoRealJarTest {
                 assertTrue(cache.containsKey(path));
                 assertNotNull(cache.get(path));
             }
-            assertEquals("hot metadata hits must reuse the authenticated digest",
-                publicationDigestReads,
-                OtgSynchronousIoBridge.fileDigestReadsForTest());
             assertEquals("hot metadata hits must perform zero filesystem authentication",
                 publicationAuthenticationProbes,
                 OtgSynchronousIoBridge.fileAuthenticationProbesForTest());
@@ -158,6 +155,9 @@ public final class OtgSynchronousIoRealJarTest {
             String normalizedAlias = directory.resolve(".").resolve("tile.nbt").toString();
             assertTrue(cache.containsKey(normalizedAlias));
             assertNotNull(cache.get(normalizedAlias));
+            Object directAliasHit = cache.get(normalizedAlias);
+            assertTagTreeEquals(loaded, directAliasHit, tagClass);
+            assertTagTreeDistinct(second, directAliasHit, tagClass);
             assertEquals("a normalized alias must share the CPU-only hot lookup",
                 publicationAuthenticationProbes,
                 OtgSynchronousIoBridge.fileAuthenticationProbesForTest());
@@ -177,19 +177,21 @@ public final class OtgSynchronousIoRealJarTest {
                 (int[]) getValue.invoke(getTag.invoke(second, "ints")));
 
             // Preserve path, file key, size and mtime while changing bytes: the
-            // SHA-256 component must still reject the old blueprint.
+            // directory watch must still reject the old blueprint.
             FileTime originalModified = Files.getLastModifiedTime(file);
             byte[] sameSizedMutation = Files.readAllBytes(file);
             sameSizedMutation[sameSizedMutation.length / 2] ^= 0x55;
+            WatchCertificate edited = metadataWatchCertificate(cache, file);
             assertTrue(cache.containsKey(path));
             Files.write(file, sameSizedMutation);
             Files.setLastModifiedTime(file, originalModified);
             assertEquals(originalModified, Files.getLastModifiedTime(file));
+            edited.awaitInvalidation();
             Object coherentPair = cache.get(path);
             assertTagTreeEquals(loaded, coherentPair, tagClass);
             assertFalse(cache.containsKey(path));
 
-            Path missing = directory.resolve("missing.nbt");
+            Path missing = missingDirectory.resolve("missing.nbt");
             assertFalse(cache.containsKey(missing.toString()));
             cache.put(missing.toString(), null);
             long negativeAuthenticationProbes =
@@ -200,7 +202,9 @@ public final class OtgSynchronousIoRealJarTest {
             assertEquals("a stable negative entry must not probe the missing path again",
                 negativeAuthenticationProbes,
                 OtgSynchronousIoBridge.fileAuthenticationProbesForTest());
+            WatchCertificate created = metadataWatchCertificate(cache, missing);
             Files.write(missing, gzip(sampleNbt()));
+            created.awaitInvalidation();
             assertFalse(cache.containsKey(missing.toString()));
 
             Files.write(file, gzip(sampleNbt()));
@@ -248,7 +252,7 @@ public final class OtgSynchronousIoRealJarTest {
         File jar = realJar();
         URLClassLoader loader = new URLClassLoader(new URL[] { jar.toURI().toURL() },
             getClass().getClassLoader());
-        Path directory = Files.createTempDirectory("ice-otg-publication-");
+        Path directory = workspaceDirectory("ice-otg-publication-");
         try {
             Class<?> tagClass = loader.loadClass("com.pg85.otg.util.bo3.NamedBinaryTag");
             Path file = directory.resolve("tile.nbt");
@@ -268,7 +272,7 @@ public final class OtgSynchronousIoRealJarTest {
             cache.put(path, loaded);
             assertFalse(cache.containsKey(path));
 
-            // A source that becomes un-fingerprintable after containsKey must
+            // A source that becomes unreadable after containsKey must
             // retain the target HashMap's behavior rather than lose the value.
             assertFalse(cache.containsKey(path));
             Object fallbackValue = invokeReferenceRead(tagClass, sampleNbt(), false);
@@ -288,7 +292,7 @@ public final class OtgSynchronousIoRealJarTest {
         File jar = realJar();
         URLClassLoader dependencies = new URLClassLoader(
             new URL[] { jar.toURI().toURL() }, getClass().getClassLoader());
-        Path directory = Files.createTempDirectory("ice-otg-loader-");
+        Path directory = workspaceDirectory("ice-otg-loader-");
         JarFile source = new JarFile(jar);
         try {
             String className = "com.pg85.otg.customobjects.bo3.BO3Loader";
@@ -334,7 +338,7 @@ public final class OtgSynchronousIoRealJarTest {
         File jar = realJar();
         URLClassLoader loader = new URLClassLoader(new URL[] { jar.toURI().toURL() },
             getClass().getClassLoader());
-        Path directory = Files.createTempDirectory("ice-otg-settings-");
+        Path directory = workspaceDirectory("ice-otg-settings-");
         try {
             Class<?> readerClass = loader.loadClass(
                 "com.pg85.otg.configuration.io.FileSettingsReaderOTGPlus");
@@ -356,16 +360,11 @@ public final class OtgSynchronousIoRealJarTest {
             Object reference = constructor.newInstance("object", file.toFile());
             ReaderSnapshot expected = snapshotReader(reference, readerClass);
 
-            OtgSynchronousIoBridge.resetFileDigestReadsForTest();
             OtgSynchronousIoBridge.resetFileAuthenticationProbesForTest();
             assertTrue(OtgSynchronousIoBridge.readSettings(first, file.toFile(), readerClass));
             long initialAuthenticationProbes =
                 OtgSynchronousIoBridge.fileAuthenticationProbesForTest();
-            assertEquals("settings parse hashes its in-memory source, not the path",
-                0L, OtgSynchronousIoBridge.fileDigestReadsForTest());
             assertTrue(OtgSynchronousIoBridge.readSettings(second, file.toFile(), readerClass));
-            assertEquals("settings cache hits must not fingerprint the path",
-                0L, OtgSynchronousIoBridge.fileDigestReadsForTest());
             assertEquals("hot settings hits must perform zero filesystem authentication",
                 initialAuthenticationProbes,
                 OtgSynchronousIoBridge.fileAuthenticationProbesForTest());
@@ -408,8 +407,10 @@ public final class OtgSynchronousIoRealJarTest {
             assertEquals(expected, snapshotReader(second, readerClass));
 
             String changed = sampleSettings() + "\nChangedSetting: new-value\n";
+            WatchCertificate edited = settingsWatchCertificate(file);
             Files.write(file, changed.getBytes(Charset.defaultCharset()));
             Object changedReference = constructor.newInstance("object", file.toFile());
+            edited.awaitInvalidation();
             assertTrue(OtgSynchronousIoBridge.readSettings(
                 afterMutation, file.toFile(), readerClass));
             assertTrue("a watched mutation must force fresh authentication",
@@ -424,13 +425,180 @@ public final class OtgSynchronousIoRealJarTest {
     }
 
     @Test
+    public void sameDirectorySettingsKeepFileIdentityAndDetectSameSizeEdits() throws Exception {
+        URLClassLoader loader = new URLClassLoader(new URL[] { realJar().toURI().toURL() },
+            getClass().getClassLoader());
+        Path directory = workspaceDirectory("ice-otg-directory-");
+        try {
+            Class<?> readerClass = loader.loadClass(
+                "com.pg85.otg.configuration.io.FileSettingsReaderOTGPlus");
+            Constructor<?> constructor = readerClass.getConstructor(String.class, File.class);
+            // Deletion has its own watched parent so delayed MODIFY events
+            // from the same-size edit cannot satisfy its event barrier.
+            Path deletionDirectory = Files.createDirectory(directory.resolve("delete-only"));
+            Path deletionFile = deletionDirectory.resolve("deleted.bo3");
+            Object deletionTarget = constructor.newInstance("object", deletionFile.toFile());
+            Files.write(deletionFile, "Value: deleted\n".getBytes(Charset.defaultCharset()));
+            List<Path> paths = new ArrayList<Path>();
+            List<Object> targets = new ArrayList<Object>();
+            for (int index = 0; index < 24; index++) {
+                Path path = directory.resolve("object-" + index + ".bo3");
+                paths.add(path);
+                targets.add(constructor.newInstance("object", path.toFile()));
+            }
+            for (int index = 0; index < paths.size(); index++) {
+                Files.write(paths.get(index), ("# header\nValue: first-" + index
+                    + "\nBlock(0,1,2,minecraft:stone)\n").getBytes(Charset.defaultCharset()));
+            }
+            for (int index = 0; index < paths.size(); index++) {
+                Path path = paths.get(index);
+                Object reference = constructor.newInstance("object", path.toFile());
+                assertTrue(OtgSynchronousIoBridge.readSettings(
+                    targets.get(index), path.toFile(), readerClass));
+                assertEquals(snapshotReader(reference, readerClass),
+                    snapshotReader(targets.get(index), readerClass));
+            }
+            Path changed = paths.get(0);
+            FileTime modified = Files.getLastModifiedTime(changed);
+            byte[] original = Files.readAllBytes(changed);
+            byte[] replacement = new String(original, Charset.defaultCharset())
+                .replace("first-0", "other-0").getBytes(Charset.defaultCharset());
+            assertEquals(original.length, replacement.length);
+            Object changedTarget = constructor.newInstance("object",
+                directory.resolve("absent-target.bo3").toFile());
+            WatchCertificate edited = settingsWatchCertificate(changed);
+            Files.write(changed, replacement);
+            Files.setLastModifiedTime(changed, modified);
+            Object reference = constructor.newInstance("object", changed.toFile());
+            edited.awaitInvalidation();
+            assertTrue(OtgSynchronousIoBridge.readSettings(
+                changedTarget, changed.toFile(), readerClass));
+            assertEquals(snapshotReader(reference, readerClass),
+                snapshotReader(changedTarget, readerClass));
+            long changedAuthentication = OtgSynchronousIoBridge.fileAuthenticationProbesForTest();
+            for (int index = 1; index < paths.size(); index++) {
+                Object unaffected = constructor.newInstance("object", directory.resolve("absent-target.bo3").toFile());
+                assertTrue(OtgSynchronousIoBridge.readSettings(
+                    unaffected, paths.get(index).toFile(), readerClass));
+            }
+            assertEquals("changing one file must retain every other same-directory hot entry",
+                changedAuthentication, OtgSynchronousIoBridge.fileAuthenticationProbesForTest());
+            assertTrue(OtgSynchronousIoBridge.readSettings(
+                deletionTarget, deletionFile.toFile(), readerClass));
+            WatchCertificate deleted = settingsWatchCertificate(deletionFile);
+            Files.delete(deletionFile);
+            deleted.awaitInvalidation();
+            assertFalse(OtgSynchronousIoBridge.readSettings(
+                deletionTarget, deletionFile.toFile(), readerClass));
+        } finally {
+            deleteTree(directory);
+            loader.close();
+        }
+    }
+
+    @Test
+    public void symbolicLinkSettingsWatchTheRealTargetDirectory() throws Exception {
+        URLClassLoader loader = new URLClassLoader(new URL[] { realJar().toURI().toURL() },
+            getClass().getClassLoader());
+        Path directory = workspaceDirectory("ice-otg-link-");
+        try {
+            Path sourceDirectory = Files.createDirectory(directory.resolve("source"));
+            Path targetDirectory = Files.createDirectory(directory.resolve("target"));
+            Path target = targetDirectory.resolve("actual.bo3");
+            Path link = sourceDirectory.resolve("linked.bo3");
+            Files.write(target, "Value: first\n".getBytes(Charset.defaultCharset()));
+            try {
+                Files.createSymbolicLink(link, target);
+            } catch (java.io.IOException | UnsupportedOperationException unavailable) {
+                Assume.assumeNoException("symbolic links unavailable on this filesystem", unavailable);
+            }
+            Class<?> readerClass = loader.loadClass(
+                "com.pg85.otg.configuration.io.FileSettingsReaderOTGPlus");
+            Constructor<?> constructor = readerClass.getConstructor(String.class, File.class);
+            File absent = sourceDirectory.resolve("absent-target.bo3").toFile();
+            Object first = constructor.newInstance("object", absent);
+            assertTrue(OtgSynchronousIoBridge.readSettings(first, link.toFile(), readerClass));
+            assertEquals(snapshotReader(constructor.newInstance("object", target.toFile()), readerClass),
+                snapshotReader(first, readerClass));
+            Object next = constructor.newInstance("object", absent);
+            WatchCertificate edited = settingsWatchCertificate(link);
+            Files.write(target, "Value: other\n".getBytes(Charset.defaultCharset()));
+            edited.awaitInvalidation();
+            assertTrue(OtgSynchronousIoBridge.readSettings(next, link.toFile(), readerClass));
+            assertEquals(snapshotReader(constructor.newInstance("object", target.toFile()), readerClass),
+                snapshotReader(next, readerClass));
+        } finally {
+            deleteTree(directory);
+            loader.close();
+        }
+    }
+
+    @Test
+    public void retargetedDirectoryAliasReadsColdFilesFromItsNewTarget() throws Exception {
+        URLClassLoader loader = new URLClassLoader(new URL[] { realJar().toURI().toURL() },
+            getClass().getClassLoader());
+        Path directory = workspaceDirectory("ice-otg-directory-alias-");
+        try {
+            Path firstDirectory = Files.createDirectory(directory.resolve("first"));
+            Path nextDirectory = Files.createDirectory(directory.resolve("next"));
+            Files.write(firstDirectory.resolve("first.bo3"),
+                "Value: first\n".getBytes(Charset.defaultCharset()));
+            Files.write(firstDirectory.resolve("cold.bo3"),
+                "Value: obsolete\n".getBytes(Charset.defaultCharset()));
+            Files.write(nextDirectory.resolve("first.bo3"),
+                "Value: hot-current\n".getBytes(Charset.defaultCharset()));
+            Files.write(nextDirectory.resolve("cold.bo3"),
+                "Value: current\n".getBytes(Charset.defaultCharset()));
+            Path link = directory.resolve("linked");
+            try {
+                OtgTestPaths.createDirectoryAlias(link, firstDirectory);
+            } catch (java.io.IOException | UnsupportedOperationException unavailable) {
+                Assume.assumeNoException("directory symbolic links unavailable on this filesystem", unavailable);
+            }
+            Class<?> readerClass = loader.loadClass(
+                "com.pg85.otg.configuration.io.FileSettingsReaderOTGPlus");
+            Constructor<?> constructor = readerClass.getConstructor(String.class, File.class);
+            File absent = directory.resolve("absent-target.bo3").toFile();
+            Object first = constructor.newInstance("object", absent);
+            assertTrue(OtgSynchronousIoBridge.readSettings(
+                first, link.resolve("first.bo3").toFile(), readerClass));
+
+            WatchCertificate hotAlias = settingsWatchCertificate(link.resolve("first.bo3"));
+
+            // The old directory remains alive. Its watchers need not report
+            // the link change in the alias's parent before this cold lookup.
+            Files.delete(link);
+            OtgTestPaths.createDirectoryAlias(link, nextDirectory);
+            hotAlias.awaitInvalidation();
+            Object hotNext = constructor.newInstance("object", absent);
+            assertTrue(OtgSynchronousIoBridge.readSettings(
+                hotNext, link.resolve("first.bo3").toFile(), readerClass));
+            assertEquals(snapshotReader(constructor.newInstance("object",
+                    nextDirectory.resolve("first.bo3").toFile()), readerClass),
+                snapshotReader(hotNext, readerClass));
+            Object next = constructor.newInstance("object", absent);
+            assertTrue(OtgSynchronousIoBridge.readSettings(
+                next, link.resolve("cold.bo3").toFile(), readerClass));
+            Object reference = constructor.newInstance("object",
+                nextDirectory.resolve("cold.bo3").toFile());
+            assertEquals(snapshotReader(reference, readerClass),
+                snapshotReader(next, readerClass));
+            assertTrue(Files.isDirectory(firstDirectory));
+        } finally {
+            Files.deleteIfExists(directory.resolve("linked"));
+            deleteTree(directory);
+            loader.close();
+        }
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     public void cachedInputsProduceIdenticalSynchronousWorldResultAndRngState()
         throws Exception {
         File jar = realJar();
         URLClassLoader loader = new URLClassLoader(new URL[] { jar.toURI().toURL() },
             getClass().getClassLoader());
-        Path directory = Files.createTempDirectory("ice-otg-world-result-");
+        Path directory = workspaceDirectory("ice-otg-world-result-");
         try {
             Class<?> readerClass = loader.loadClass(
                 "com.pg85.otg.configuration.io.FileSettingsReaderOTGPlus");
@@ -479,6 +647,76 @@ public final class OtgSynchronousIoRealJarTest {
         File jar = new File(configured);
         Assume.assumeTrue(jar.isFile());
         return jar;
+    }
+
+    private static Path workspaceDirectory(String prefix) throws Exception {
+        Path root = new File(".refactor-backups/1.0.13-otg-fixtures").toPath().toAbsolutePath();
+        Files.createDirectories(root);
+        return Files.createTempDirectory(root, prefix);
+    }
+
+    private static WatchCertificate settingsWatchCertificate(Path path)
+        throws Exception {
+        Field settings = OtgSynchronousIoBridge.class.getDeclaredField("SETTINGS");
+        settings.setAccessible(true);
+        Cache<?, ?> cache = (Cache<?, ?>) settings.get(null);
+        Path logical = path.toAbsolutePath().normalize();
+        for (Map.Entry<?, ?> entry : cache.asMap().entrySet()) {
+            if (logical.equals(privateField(entry.getKey(), "logicalPath"))) {
+                return WatchCertificate.fromEntry(entry.getValue());
+            }
+        }
+        throw new AssertionError("settings entry was not cached: " + logical);
+    }
+
+    private static WatchCertificate metadataWatchCertificate(Map<?, ?> metadata,
+                                                              Path path)
+        throws Exception {
+        Cache<?, ?> cache = (Cache<?, ?>) privateField(metadata, "safe");
+        Object entry = cache.getIfPresent(path.toAbsolutePath().normalize());
+        assertNotNull("metadata entry was not cached", entry);
+        return WatchCertificate.fromEntry(entry);
+    }
+
+    private static Object privateField(Object value, String name) throws Exception {
+        Field field = value.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(value);
+    }
+
+    /** Wait for real watcher delivery, without retrying the tested read path. */
+    private static final class WatchCertificate {
+        private final Object snapshot;
+        private final Method current;
+
+        private WatchCertificate(Object snapshot) throws Exception {
+            this.snapshot = snapshot;
+            current = snapshot.getClass().getDeclaredMethod("current");
+            current.setAccessible(true);
+            assertTrue("cached watch certificate must be current before mutation", isCurrent());
+        }
+
+        private static WatchCertificate fromEntry(Object entry) throws Exception {
+            Object stamp = privateField(entry, "stamp");
+            Object probe = privateField(stamp, "probe");
+            return new WatchCertificate(privateField(probe, "watches"));
+        }
+
+        private boolean isCurrent() throws Exception {
+            return ((Boolean) current.invoke(snapshot)).booleanValue();
+        }
+
+        private void awaitInvalidation() throws Exception {
+            // Windows WatchService reports changes asynchronously. Retain the
+            // original certificate and fail if its event never arrives; do
+            // not turn a stale read into a pass by retrying readSettings/get.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+            while (isCurrent() && System.nanoTime() < deadline) {
+                TimeUnit.MILLISECONDS.sleep(1L);
+            }
+            assertFalse("directory event did not invalidate the cached watch certificate within 5s",
+                isCurrent());
+        }
     }
 
     private static Object invokeReferenceRead(Class<?> tagClass, byte[] bytes,

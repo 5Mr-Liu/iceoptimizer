@@ -92,8 +92,15 @@ public class RenderLibTileEntityAdapterTest {
 
         byte[] transformed = new IceClientOptimizerTransformer().transform(REAL_CLASS, REAL_CLASS, original);
         assertFalse("the exact reviewed class hash must install the adapter", Arrays.equals(original, transformed));
+        boolean holderEntry = hasHolderEntry(original);
         assertEquals(1, countBridgeCalls(transformed, RenderLibTileEntityAdapter.TARGET_METHOD,
-            RenderLibTileEntityAdapter.BRIDGE_METHOD));
+            RenderLibTileEntityAdapter.BRIDGE_METHOD)
+            + countBridgeCalls(transformed, RenderLibTileEntityAdapter.DREGORA_TARGET_METHOD,
+                RenderLibTileEntityAdapter.DREGORA_BRIDGE_METHOD));
+        assertEquals(holderEntry ? 0 : 1, countBridgeCalls(transformed,
+            RenderLibTileEntityAdapter.TARGET_METHOD, RenderLibTileEntityAdapter.BRIDGE_METHOD));
+        assertEquals(holderEntry ? 1 : 0, countBridgeCalls(transformed,
+            RenderLibTileEntityAdapter.DREGORA_TARGET_METHOD, RenderLibTileEntityAdapter.DREGORA_BRIDGE_METHOD));
         URLClassLoader dependencies = new URLClassLoader(new URL[] { jarFile.toURI().toURL() }, getClass().getClassLoader());
         try {
             ByteLoader loader = new ByteLoader(dependencies);
@@ -101,6 +108,22 @@ public class RenderLibTileEntityAdapterTest {
         } finally {
             dependencies.close();
         }
+    }
+
+    private static boolean hasHolderEntry(byte[] original) {
+        final boolean[] found = new boolean[1];
+        new ClassReader(original).accept(new ClassVisitor(Opcodes.ASM5) {
+            @Override public MethodVisitor visitMethod(int access, String name,
+                                                       String descriptor, String signature,
+                                                       String[] exceptions) {
+                if (RenderLibTileEntityAdapter.DREGORA_TARGET_METHOD.equals(name)
+                    && RenderLibTileEntityAdapter.TARGET_DESCRIPTOR.equals(descriptor)) {
+                    found[0] = true;
+                }
+                return null;
+            }
+        }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        return found[0];
     }
 
     @Test

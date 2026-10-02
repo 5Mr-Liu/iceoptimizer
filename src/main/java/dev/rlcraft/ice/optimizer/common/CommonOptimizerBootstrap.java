@@ -26,11 +26,12 @@ public final class CommonOptimizerBootstrap {
     private static boolean replayCorePatchJournal() {
         try {
             Class<?> journal = Class.forName("dev.rlcraft.ice.hooks.OptimizerPatchJournal");
+            if (!Boolean.TRUE.equals(journal.getMethod("isStartupRegistered").invoke(null))) return false;
             journal.getMethod("replay").invoke(null);
             return true;
         } catch (Throwable ignored) {
             FatalErrors.rethrowIfFatal(ignored);
-            // The main mod remains safe without the CoreMod, but no bytecode optimization can activate.
+            // Inactive startup patches leave the ordinary mod available for diagnostics.
             return false;
         }
     }

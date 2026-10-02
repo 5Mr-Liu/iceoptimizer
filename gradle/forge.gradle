@@ -1,0 +1,77 @@
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'eclipse'
+apply plugin: 'idea'
+apply plugin: 'com.github.johnrengelman.shadow'
+
+version = project.mod_version
+group = project.mod_group
+archivesBaseName = 'ice-rlcraft-optimizer'
+sourceCompatibility = targetCompatibility = '1.8'
+
+tasks.withType(JavaCompile) {
+    sourceCompatibility = targetCompatibility = '1.8'
+    options.encoding = 'UTF-8'
+}
+tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask) {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+sourceSets {
+    early {
+        java.srcDir 'src/early/java'
+        compileClasspath += configurations.compileClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+    hooks {
+        java.srcDir 'src/hooks/java'
+        resources.srcDir 'src/hooks/resources'
+        compileClasspath += sourceSets.early.output + configurations.compileClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+    profiler {
+        java.srcDir 'src/profiler/java'
+        resources.srcDir 'src/profiler/resources'
+        compileClasspath += configurations.compileClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+}
+sourceSets.main.compileClasspath += sourceSets.early.output
+sourceSets.main.runtimeClasspath += sourceSets.early.output + sourceSets.hooks.output
+
+minecraft {
+    mappings channel: 'stable', version: '39-1.12'
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'info'
+            mods { ice { source sourceSets.main } }
+        }
+        server {
+            workingDirectory project.file('run-server')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'info'
+            mods { ice { source sourceSets.main } }
+        }
+    }
+}
+
+repositories { mavenCentral() }
+configurations { optimizerLibraries }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.12.2-14.23.5.2860'
+    // The partial Windows/Java 8 recomp JAR omits unchanged vanilla classes.
+    def mappedVersion = '1.12.2-14.23.5.2860_mapped_stable_39-1.12'
+    def mappedJar = new File(gradle.gradleUserHomeDir,
+        "caches/forge_gradle/minecraft_user_repo/net/minecraftforge/forge/${mappedVersion}/forge-${mappedVersion}.jar")
+    compileOnly files(mappedJar)
+    runtimeOnly files(mappedJar)
+    testCompileOnly files(mappedJar)
+    testRuntimeOnly files(mappedJar)
+    optimizerLibraries 'org.agrona:agrona:1.17.1'
+    optimizerLibraries 'com.github.ben-manes.caffeine:caffeine:2.9.3'
+    optimizerLibraries 'org.lz4:lz4-java:1.8.0'
+    implementation configurations.optimizerLibraries
+    testImplementation 'junit:junit:4.13.2'
+}

@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
+import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
 import dev.rlcraft.ice.optimizer.render.resource.RenderThreadGuard;
 import dev.rlcraft.ice.optimizer.render.resource.ResourceLedger;
 import java.util.LinkedHashMap;
@@ -14,6 +15,16 @@ import java.util.Map;
 import org.junit.Test;
 
 public final class LwjglModelMeshCacheTest {
+    @Test
+    public void successfulClientStatePopRestoresMirrorWithoutANativeBind() {
+        // No OpenGL context exists in this test: a redundant native bind would fail.
+        EarlyGlStateTracker.bindBuffer(34962, 91);
+        LwjglModelMeshCache.restoreArrayBufferBinding(17, true);
+        assertEquals(17, EarlyGlStateTracker.arrayBufferBinding());
+        LwjglModelMeshCache.restoreArrayBufferBinding(0, true);
+        assertEquals(0, EarlyGlStateTracker.arrayBufferBinding());
+    }
+
     @Test
     public void postPutFailureRemovesANewPublication() {
         Map<Integer, Object> entries = new LinkedHashMap<Integer, Object>();

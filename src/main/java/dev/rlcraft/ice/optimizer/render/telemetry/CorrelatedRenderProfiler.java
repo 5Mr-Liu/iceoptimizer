@@ -7,6 +7,8 @@ import dev.rlcraft.ice.optimizer.render.backend.RenderBackendId;
 import dev.rlcraft.ice.optimizer.render.frame.FrameStamp;
 import dev.rlcraft.ice.optimizer.render.frame.RenderPass;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -16,6 +18,10 @@ public final class CorrelatedRenderProfiler {
     private static final int MAXIMUM_CPU_SCOPE_DEPTH = 64;
     private static final int MAXIMUM_GPU_SLOT_POLLS = 256;
     private static final long QUERY_OBJECT_CHARGE = 4L * 1024L;
+    private static final int BACKEND_COUNT = RenderBackendId.values().length;
+    private static final int PROFILE_COUNT = RenderPass.values().length * BACKEND_COUNT;
+    private static final CpuWorkKind[] CPU_KINDS = CpuWorkKind.values();
+    private static final RenderCounter[] COUNTERS = RenderCounter.values();
 
     public interface GpuCompletion {
         void completed(RenderProfileKey key, long elapsedNanos);
@@ -25,6 +31,8 @@ public final class CorrelatedRenderProfiler {
     private final LinkedHashMap<RenderProfileKey, MutableProfile> profiles =
         new LinkedHashMap<RenderProfileKey, MutableProfile>();
     private final FrameBucket[] frameBuckets;
+    private FrameStamp counterStamp;
+    private final MutableProfile[] counterProfiles = new MutableProfile[PROFILE_COUNT];
     private final ThreadLocal<CpuScopeStack> cpuScopes =
         new ThreadLocal<CpuScopeStack>() {
             @Override protected CpuScopeStack initialValue() {
@@ -78,7 +86,7 @@ public final class CorrelatedRenderProfiler {
                                         RenderBackendId backend, RenderCounter counter,
                                         long delta) {
         if (counter == null || delta <= 0L) return;
-        mutable(new RenderProfileKey(stamp, pass, backend)).addCounter(counter, delta);
+        counterProfile(stamp, pass, backend).addCounter(counter, delta);
     }
 
     public synchronized GpuScope beginGpu(FrameStamp stamp, RenderPass pass,
@@ -138,6 +146,28 @@ public final class CorrelatedRenderProfiler {
         }
     }
 
+    /** Reuse the current view's profiles across individual model/particle draws. */
+    private MutableProfile counterProfile(FrameStamp stamp, RenderPass pass,
+                                           RenderBackendId backend) {
+        if (stamp == null || pass == null || backend == null) {
+            throw new IllegalArgumentException("profile key");
+        }
+        // Advance before publishing the cache: eviction also clears it, so a
+        // delayed GPU/CPU completion cannot leave an expired profile cached.
+        advanceFrameBuckets(stamp.getFrameId());
+        if (counterStamp != stamp) {
+            counterStamp = stamp;
+            Arrays.fill(counterProfiles, null);
+        }
+        int index = pass.ordinal() * BACKEND_COUNT + backend.ordinal();
+        MutableProfile profile = counterProfiles[index];
+        if (profile == null) {
+            profile = mutable(new RenderProfileKey(stamp, pass, backend));
+            if (!isExpired(stamp.getFrameId())) counterProfiles[index] = profile;
+        }
+        return profile;
+    }
+
     private MutableProfile mutable(RenderProfileKey key) {
         long frame = key.getStamp().getFrameId();
         advanceFrameBuckets(frame);
@@ -159,7 +189,7 @@ public final class CorrelatedRenderProfiler {
         advanceFrameBuckets(frame);
         if (isExpired(frame)) return false;
         FrameBucket bucket = bucket(frame);
-        int index = key.getPass().ordinal() * RenderBackendId.values().length
+        int index = key.getPass().ordinal() * BACKEND_COUNT
             + key.getBackend().ordinal();
         if (bucket.gpuIssued[index]) return false;
         bucket.gpuIssued[index] = true;
@@ -173,6 +203,8 @@ public final class CorrelatedRenderProfiler {
      */
     private void advanceFrameBuckets(long frame) {
         if (frame <= newestFrame) return;
+        counterStamp = null;
+        Arrays.fill(counterProfiles, null);
         if (newestFrame <= 0L || frame - newestFrame <= 0L
             || frame - newestFrame >= maximumFrames) {
             clearFrameBuckets();
@@ -686,12 +718,10 @@ public final class CorrelatedRenderProfiler {
     }
 
     private static final class FrameBucket {
-        private static final int GPU_KEY_COUNT = RenderPass.values().length
-            * RenderBackendId.values().length;
         private long frameId = Long.MIN_VALUE;
         private final ArrayList<RenderProfileKey> profileKeys =
             new ArrayList<RenderProfileKey>(8);
-        private final boolean[] gpuIssued = new boolean[GPU_KEY_COUNT];
+        private final boolean[] gpuIssued = new boolean[PROFILE_COUNT];
 
         private void reset() {
             frameId = Long.MIN_VALUE;
@@ -715,28 +745,39 @@ public final class CorrelatedRenderProfiler {
         private long cpuInclusive;
         private long cpuExclusive;
         private long gpuNanos;
-        private final java.util.EnumMap<CpuWorkKind, Long> cpuKinds =
-            new java.util.EnumMap<CpuWorkKind, Long>(CpuWorkKind.class);
-        private final java.util.EnumMap<RenderCounter, Long> counters =
-            new java.util.EnumMap<RenderCounter, Long>(RenderCounter.class);
+        private final long[] cpuKinds = new long[CPU_KINDS.length];
+        private final boolean[] cpuKindsSeen = new boolean[CPU_KINDS.length];
+        private final long[] counters = new long[COUNTERS.length];
 
         private void addCpu(CpuWorkKind kind, long inclusive, long exclusive) {
             cpuInclusive = safeAdd(cpuInclusive, inclusive);
             cpuExclusive = safeAdd(cpuExclusive, exclusive);
-            Long current = cpuKinds.get(kind);
-            cpuKinds.put(kind, Long.valueOf(safeAdd(current == null ? 0L
-                : current.longValue(), inclusive)));
+            int index = kind.ordinal();
+            cpuKinds[index] = safeAdd(cpuKinds[index], inclusive);
+            cpuKindsSeen[index] = true;
         }
 
         private void addCounter(RenderCounter counter, long delta) {
-            Long current = counters.get(counter);
-            counters.put(counter, Long.valueOf(safeAdd(current == null ? 0L
-                : current.longValue(), delta)));
+            int index = counter.ordinal();
+            counters[index] = safeAdd(counters[index], delta);
         }
 
         private PassProfile snapshot() {
+            EnumMap<CpuWorkKind, Long> cpuSnapshot =
+                new EnumMap<CpuWorkKind, Long>(CpuWorkKind.class);
+            EnumMap<RenderCounter, Long> counterSnapshot =
+                new EnumMap<RenderCounter, Long>(RenderCounter.class);
+            for (CpuWorkKind kind : CPU_KINDS) {
+                if (cpuKindsSeen[kind.ordinal()]) {
+                    cpuSnapshot.put(kind, Long.valueOf(cpuKinds[kind.ordinal()]));
+                }
+            }
+            for (RenderCounter counter : COUNTERS) {
+                long value = counters[counter.ordinal()];
+                if (value > 0L) counterSnapshot.put(counter, Long.valueOf(value));
+            }
             return new PassProfile(cpuInclusive, cpuExclusive, gpuNanos,
-                cpuKinds, counters);
+                cpuSnapshot, counterSnapshot);
         }
     }
 }

@@ -169,9 +169,12 @@ public final class OptimizerConfig {
 
         @Config.Comment({
             "Use fenced PBO uploads only for large animated-texture batches through FoamFix's batch helper.",
-            "Single mip levels, small sprites, busy slots and unsupported drivers keep the original upload path."
+            "Single mip levels, small sprites, busy slots and unsupported drivers keep the original upload path.",
+            "Reuse unchanged filter/wrap parameters only within a reviewed FoamFix sprite's contiguous mip upload."
         })
         public boolean foamFixTextureUpload = true;
+        @Config.Comment("Remove redundant FBP cube flushes and use the exact client-array layout without changing particle order or geometry.")
+        public boolean fbpCubeSubmission = true;
         public boolean xaeroTextureUpload = true;
         public boolean xaeroGpuFence = true;
         public boolean renderLibVisibility = true;

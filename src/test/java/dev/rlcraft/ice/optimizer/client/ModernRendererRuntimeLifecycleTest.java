@@ -2,6 +2,7 @@ package dev.rlcraft.ice.optimizer.client;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
@@ -9,12 +10,59 @@ import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker;
 import dev.rlcraft.ice.optimizer.runtime.ClientEpochs;
+import dev.rlcraft.ice.optimizer.render.telemetry.CorrelatedRenderProfiler;
+import java.lang.reflect.Method;
 import java.nio.FloatBuffer;
 import java.util.concurrent.Callable;
 import org.junit.Test;
 import org.lwjgl.BufferUtils;
 
 public final class ModernRendererRuntimeLifecycleTest {
+    @Test
+    public void publishedComponentsRemainTheSingleLiveOwner() throws Exception {
+        ModernRendererRuntime runtime = new ModernRendererRuntime(new ClientEpochs(),
+            new CacheBudget(1L, 1L, 1L));
+        RendererComponents candidate = new RendererComponents();
+        candidate.contextGeneration = 7L;
+        candidate.profiler = new CorrelatedRenderProfiler(4);
+        invoke(runtime, "publish", RendererComponents.class, candidate);
+        assertSame(candidate, runtime.components);
+        assertTrue(runtime.profilerSnapshot() != null);
+        candidate.profiler = null;
+        assertNull(runtime.profilerSnapshot());
+        candidate.profiler = new CorrelatedRenderProfiler(4);
+        assertTrue(runtime.profilerSnapshot() != null);
+        assertEquals(7L, runtime.components.contextGeneration);
+    }
+
+    @Test
+    public void clearingPublicationDetachesTheOwnedGraphWithoutClearingIt() throws Exception {
+        ModernRendererRuntime runtime = new ModernRendererRuntime(new ClientEpochs(),
+            new CacheBudget(1L, 1L, 1L));
+        RendererComponents dormant = runtime.components;
+        RendererComponents candidate = new RendererComponents();
+        candidate.contextGeneration = 7L;
+        candidate.profiler = new CorrelatedRenderProfiler(4);
+        invoke(runtime, "publish", RendererComponents.class, candidate);
+        invoke(runtime, "clearPublishedGraph", null, null);
+        assertSame(dormant, runtime.components);
+        assertNull(runtime.profilerSnapshot());
+        assertEquals(0L, runtime.components.contextGeneration);
+        assertTrue(runtime.components.backends.isEmpty());
+        assertEquals(7L, candidate.contextGeneration);
+        assertTrue(candidate.profiler != null);
+    }
+
+    private static void invoke(ModernRendererRuntime runtime, String name,
+                               Class<?> argumentType, Object argument) throws Exception {
+        Method method = argumentType == null
+            ? ModernRendererRuntime.class.getDeclaredMethod(name)
+            : ModernRendererRuntime.class.getDeclaredMethod(name, argumentType);
+        method.setAccessible(true);
+        if (argumentType == null) method.invoke(runtime);
+        else method.invoke(runtime, argument);
+    }
+
     @Test
     public void worldSwitchRetainsWarmModelMeshes() {
         assertFalse(ModernRendererRuntime.invalidatesModelMeshesForTest(

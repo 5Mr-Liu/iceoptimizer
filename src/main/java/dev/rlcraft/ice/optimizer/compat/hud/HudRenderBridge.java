@@ -948,16 +948,14 @@ public final class HudRenderBridge {
         }
         float advance = finalX - scope.originX;
         if (!finite(advance) || advance < 0.0F) return;
-        int floats = scope.glyphCount * 20;
-        float[] geometry = floats == 0 ? new float[0]
-            : Arrays.copyOf(scope.geometry, floats);
-        int[] pages = scope.glyphCount == 0 ? new int[0]
-            : Arrays.copyOf(scope.pages, scope.glyphCount);
         try {
             FontLayoutCache cache = hud.runtime.fonts();
             if (cache != null && cache.put(scope.font, scope.text,
                 scope.shadow ? 1 : 0, false, scope.fontGeneration,
-                new FontLayoutCache.GlyphLayout(geometry, pages, advance))) {
+                new FontLayoutCache.GlyphLayout(
+                    scope.geometry == null ? new float[0] : scope.geometry,
+                    scope.pages == null ? new int[0] : scope.pages,
+                    scope.glyphCount, advance))) {
                 hud.fontCacheMisses++;
             }
         } catch (Throwable failure) {

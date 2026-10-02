@@ -72,7 +72,7 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
             && !ClientOptimizerRuntime.INSTANCE.status().isCoreModPresent()) {
             missingCoreWarningSent = true;
             minecraft.player.sendMessage(new TextComponentString(
-                "§c[ICE] Optimizer Core JAR 未加载 / missing；字节码优化当前没有生效。"));
+                "§c[ICE] Optimizer 启动补丁未注册 / inactive；字节码优化当前没有生效。"));
         }
         Object world = minecraft.world;
         if (world != lastWorld) {

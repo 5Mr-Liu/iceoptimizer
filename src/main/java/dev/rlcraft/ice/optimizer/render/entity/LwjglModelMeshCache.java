@@ -6,9 +6,7 @@ import dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import dev.rlcraft.ice.optimizer.render.frame.FrameStamp;
-import dev.rlcraft.ice.optimizer.render.resource.LwjglRetirementFence;
 import dev.rlcraft.ice.optimizer.render.resource.RenderHandle;
-import dev.rlcraft.ice.optimizer.render.resource.RenderResourceKind;
 import dev.rlcraft.ice.optimizer.render.resource.RenderThreadGuard;
 import dev.rlcraft.ice.optimizer.render.resource.ResourceLedger;
 import java.nio.ByteBuffer;
@@ -50,10 +48,20 @@ public final class LwjglModelMeshCache {
     private final ResourceLedger resources;
     private final CacheBudget budget;
     private final PublicationHook publicationHook;
+    private final ModelMeshStorage storage;
     private final LinkedHashMap<Integer, Entry> entries =
         new LinkedHashMap<Integer, Entry>(128, 0.75F, true);
     private ByteBuffer staging;
     private CacheBudget.Reservation stagingReservation;
+    private boolean stateBatchActive;
+    private int stateBatchPreviousBuffer;
+    private int stateBatchBuffer;
+    private long stateBatchBegins;
+    private long stateBatchDraws;
+    private long stateBatchRestores;
+    private long stateBatchRejections;
+    private long stateBatchBufferBinds;
+    private long stateBatchPointerSets;
 
     public LwjglModelMeshCache(RenderThreadGuard threadGuard, ResourceLedger resources) {
         this(threadGuard, resources, null, NO_PUBLICATION_HOOK);
@@ -82,6 +90,7 @@ public final class LwjglModelMeshCache {
         this.resources = resources;
         this.budget = budget;
         this.publicationHook = publicationHook;
+        this.storage = new ModelMeshStorage(resources, budget, MODEL_ARRAY_LAYOUT.stride);
     }
 
     public boolean accept(ModelMeshPayload payload, FrameStamp stamp) {
@@ -100,47 +109,26 @@ public final class LwjglModelMeshCache {
 
         int previous = EarlyGlStateTracker.arrayBufferBinding();
         if (previous == Integer.MIN_VALUE) return false;
-        int buffer = 0;
-        RenderHandle handle = null;
         int vertexBytes = payload.getByteLength();
         if (!ensureStaging(vertexBytes)) return false;
         staging.clear();
         staging.limit(vertexBytes);
         payload.copyVerticesTo(staging);
         staging.flip();
-        CacheBudget.Reservation reservation = resources.reserveGpu(
-            vertexBytes);
-        if (reservation == null) return false;
+        ModelMeshStorage.Allocation allocation = null;
         boolean accepted = false;
-        boolean allocationReturned = false;
-        boolean nativeNameCreated = false;
         Throwable failure = null;
         Entry replacement = null;
         boolean publicationComplete = false;
         try {
-            buffer = GL15.glGenBuffers();
-            allocationReturned = true;
-            if (buffer > 0) {
-                nativeNameCreated = true;
-                bindArrayBuffer(buffer);
-                GL15.glBufferData(GL15.GL_ARRAY_BUFFER, staging.duplicate(),
-                    GL15.GL_STATIC_DRAW);
-                handle = resources.registerReserved(RenderResourceKind.BUFFER,
-                    buffer, vertexBytes, stamp.getResourceGeneration(),
-                    stamp.getGlContextGeneration(), reservation);
-            }
-            if (handle != null) {
-                // From this point the ledger exclusively owns the GL name. If
-                // Entry construction or map publication fails, cleanup retires
-                // the handle and must not also delete the raw name.
-                buffer = 0;
-                nativeNameCreated = false;
-                reservation = null;
-                replacement = new Entry(payload, handle);
+            allocation = storage.allocate(vertexBytes, stamp);
+            if (allocation != null) {
+                storage.upload(allocation, staging);
+                replacement = new Entry(payload, allocation);
                 publishReplacement(entries, cacheKey, current, replacement,
                     publicationHook);
                 publicationComplete = true;
-                handle = null;
+                allocation = null;
                 if (current != null) retire(current);
                 evictOverflow();
                 accepted = true;
@@ -148,8 +136,8 @@ public final class LwjglModelMeshCache {
         } catch (Throwable error) {
             failure = error;
         } finally {
-            boolean mapMayOwnHandle = false;
-            if (!publicationComplete && replacement != null && handle != null) {
+            boolean mapMayOwnRange = false;
+            if (!publicationComplete && replacement != null && allocation != null) {
                 try {
                     Entry mapped = entries.get(cacheKey);
                     if (mapped == replacement) {
@@ -168,33 +156,18 @@ public final class LwjglModelMeshCache {
                         }
                     }
                 } catch (Throwable error) {
-                    mapMayOwnHandle = true;
+                    mapMayOwnRange = true;
                     failure = appendFailure(failure, error);
                 }
             }
-            if (mapMayOwnHandle) handle = null;
+            if (mapMayOwnRange) allocation = null;
             try { bindArrayBuffer(previous); }
             catch (Throwable error) {
                 EarlyGlStateTracker.invalidate();
                 failure = appendFailure(failure, error);
             }
-            if (handle != null) try { resources.retire(handle,
-                LwjglRetirementFence.afterCurrentCommands(resources)); }
+            if (allocation != null) try { storage.cancel(allocation); }
             catch (Throwable error) { failure = appendFailure(failure, error); }
-            boolean rawDeleteCompleted = false;
-            if (nativeNameCreated) try {
-                GL15.glDeleteBuffers(buffer);
-                rawDeleteCompleted = true;
-            } catch (Throwable error) {
-                failure = appendFailure(failure, error);
-            }
-            boolean noNameCreated = allocationReturned && !nativeNameCreated;
-            if (reservation != null
-                && (noNameCreated || rawDeleteCompleted)) try {
-                reservation.close();
-            } catch (Throwable error) {
-                failure = appendFailure(failure, error);
-            }
         }
         if (failure != null) rethrow(failure);
         return accepted;
@@ -212,7 +185,8 @@ public final class LwjglModelMeshCache {
     /** Synchronous only during the bounded OUTPUT_VALIDATE state. */
     public boolean validate(Entry entry) {
         threadGuard.check();
-        if (entry == null || !resources.isLive(entry.handle)) return false;
+        if (entry == null || !entry.allocation.isLive()
+            || !resources.isLive(entry.handle)) return false;
         int previous = EarlyGlStateTracker.arrayBufferBinding();
         if (previous == Integer.MIN_VALUE) return false;
         Throwable failure = null;
@@ -221,7 +195,8 @@ public final class LwjglModelMeshCache {
             if (!ensureStaging(entry.byteLength)) return false;
             staging.clear();
             staging.limit(entry.byteLength);
-            GL15.glGetBufferSubData(GL15.GL_ARRAY_BUFFER, 0L, staging);
+            GL15.glGetBufferSubData(GL15.GL_ARRAY_BUFFER,
+                entry.allocation.range.getOffset(), staging);
             staging.position(0);
             staging.limit(entry.byteLength);
             entry.validated = Arrays.equals(entry.digest,
@@ -255,7 +230,7 @@ public final class LwjglModelMeshCache {
         if (state == null || !state.hasArrayBufferBinding()
             || !state.hasDrawState() || state.getProgram() != 0
             || state.getClientActiveTexture() != 0
-            || packet == null || packet.getMeshHandle() != entry.handle.getLogicalId()
+            || packet == null || packet.getMeshHandle() != entry.getLogicalHandle()
             || !entry.handle.belongsTo(packet.getGeneration().getResourceGeneration(),
                 packet.getGeneration().getGlContextGeneration())
             || !matches(packet.getState(), state)
@@ -281,6 +256,87 @@ public final class LwjglModelMeshCache {
         return previous != Integer.MIN_VALUE && emitImmediate(entry, previous);
     }
 
+    /** Admission for a preflighted, callback-free ModelRenderer tree. */
+    public Entry findStateBatchEntry(int displayList, FrameStamp stamp) {
+        Entry entry = find(displayList, stamp);
+        return entry != null && entry.validated ? entry : null;
+    }
+
+    public boolean beginStateBatch() {
+        threadGuard.check();
+        if (stateBatchActive || !EarlyMatrixStateTracker.isKnown()) return false;
+        int previous = EarlyGlStateTracker.fixedFunctionModelArrayBufferBinding();
+        if (previous == Integer.MIN_VALUE) return false;
+        GL11.glPushClientAttrib(GL11.GL_CLIENT_VERTEX_ARRAY_BIT);
+        stateBatchPreviousBuffer = previous;
+        stateBatchBuffer = 0;
+        stateBatchActive = true;
+        try {
+            GL11.glEnableClientState(GL11.GL_VERTEX_ARRAY);
+            GL11.glEnableClientState(GL11.GL_TEXTURE_COORD_ARRAY);
+            GL11.glEnableClientState(GL11.GL_NORMAL_ARRAY);
+            stateBatchBegins++;
+            return true;
+        } catch (Throwable failure) {
+            try { endStateBatch(); }
+            catch (Throwable cleanupFailure) {
+                failure = appendFailure(failure, cleanupFailure);
+            }
+            rethrow(failure);
+            return false;
+        }
+    }
+
+    /**
+     * Requires an entry admitted by findStateBatchEntry in this synchronous,
+     * callback-free scope. Resource lifetime, thread and fixed-function state
+     * cannot change within it. Original matrix instructions can invalidate
+     * their tracker, so that dynamic check remains at each draw.
+     */
+    public boolean drawInStateBatch(Entry entry) {
+        if (!stateBatchActive || !EarlyMatrixStateTracker.isKnown()) return false;
+        int buffer = entry.handle.getNativeId();
+        if (stateBatchBuffer != buffer) {
+            bindArrayBuffer(buffer);
+            ModelArrayLayout layout = MODEL_ARRAY_LAYOUT;
+            GL11.glVertexPointer(layout.positionCount, layout.positionType,
+                layout.stride, layout.positionOffset);
+            GL11.glTexCoordPointer(layout.textureCount, layout.textureType,
+                layout.stride, layout.textureOffset);
+            GL11.glNormalPointer(layout.normalType, layout.stride, layout.normalOffset);
+            stateBatchBuffer = buffer;
+            stateBatchBufferBinds++;
+            stateBatchPointerSets++;
+        }
+        // An exception after this point must escape; legacy replay could draw twice.
+        GL11.glDrawArrays(entry.drawMode, entry.allocation.firstVertex, entry.vertexCount);
+        stateBatchDraws++;
+        return true;
+    }
+
+    public void endStateBatch() {
+        threadGuard.check();
+        if (!stateBatchActive) return;
+        stateBatchActive = false;
+        try {
+            GL11.glPopClientAttrib();
+            restoreArrayBufferBinding(stateBatchPreviousBuffer, true);
+            stateBatchRestores++;
+        } catch (Throwable failure) {
+            EarlyGlStateTracker.invalidate();
+            rethrow(failure);
+        }
+    }
+
+    public void rejectStateBatch() { stateBatchRejections++; }
+    public long getStateBatchBegins() { return stateBatchBegins; }
+    public long getStateBatchDraws() { return stateBatchDraws; }
+    public long getStateBatchRestores() { return stateBatchRestores; }
+    public long getStateBatchRejections() { return stateBatchRejections; }
+    public long getStateBatchBufferBinds() { return stateBatchBufferBinds; }
+    public long getStateBatchPointerSets() { return stateBatchPointerSets; }
+    public int getSharedPageCount() { return storage.pageCount(); }
+
     private boolean emitImmediate(Entry entry, int previous) {
         // ModelRenderer's uploader mutates client-array state while the list
         // is compiled; callList itself preserves the caller's client state.
@@ -289,6 +345,7 @@ public final class LwjglModelMeshCache {
         // is the sole normal-path restore and the extra calls are redundant.
         boolean issued = false;
         boolean clientStatePushed = false;
+        boolean clientStateRestored = false;
         Throwable failure = null;
         boolean cleanupFailed = false;
         try {
@@ -297,21 +354,23 @@ public final class LwjglModelMeshCache {
             bindArrayBuffer(entry.handle.getNativeId());
             prepareArrays();
             issued = true;
-            GL11.glDrawArrays(entry.drawMode, 0, entry.vertexCount);
-            entry.lastUsedFrame++;
+            GL11.glDrawArrays(entry.drawMode, entry.allocation.firstVertex, entry.vertexCount);
         } catch (Throwable error) {
             failure = error;
             cleanupFailed = error instanceof ClientArrayCleanupException;
         } finally {
             if (clientStatePushed) {
-                try { GL11.glPopClientAttrib(); }
+                try {
+                    GL11.glPopClientAttrib();
+                    clientStateRestored = true;
+                }
                 catch (Throwable error) {
                     EarlyGlStateTracker.invalidate();
                     cleanupFailed = true;
                     failure = appendFailure(failure, error);
                 }
             }
-            try { bindArrayBuffer(previous); }
+            try { restoreArrayBufferBinding(previous, clientStateRestored); }
             catch (Throwable error) {
                 EarlyGlStateTracker.invalidate();
                 cleanupFailed = true;
@@ -326,9 +385,19 @@ public final class LwjglModelMeshCache {
         return true;
     }
 
+    /** The client vertex-array stack also restores ARRAY_BUFFER_BINDING. */
+    static void restoreArrayBufferBinding(int previous, boolean clientStateRestored) {
+        if (clientStateRestored) {
+            EarlyGlStateTracker.bindBuffer(GL15.GL_ARRAY_BUFFER, previous);
+        } else {
+            bindArrayBuffer(previous);
+        }
+    }
+
     public void certifyCapturedEntry(Entry entry) {
         threadGuard.check();
-        if (entry != null && resources.isLive(entry.handle)) entry.validated = true;
+        if (entry != null && entry.allocation.isLive()
+            && resources.isLive(entry.handle)) entry.validated = true;
     }
 
     public void invalidate(int displayList) {
@@ -350,22 +419,15 @@ public final class LwjglModelMeshCache {
         threadGuard.check();
         Throwable failure = null;
         if (contextValid) {
-            Iterator<Map.Entry<Integer, Entry>> iterator =
-                entries.entrySet().iterator();
-            while (iterator.hasNext()) {
-                Entry entry = iterator.next().getValue();
-                try {
-                    retire(entry);
-                    iterator.remove();
-                }
-                catch (Throwable error) {
-                    failure = appendFailure(failure, error);
-                }
-            }
+            try { endStateBatch(); }
+            catch (Throwable error) { failure = error; }
         } else {
-            // The enclosing ledger abandons the whole invalid context.
-            entries.clear();
+            stateBatchActive = false;
         }
+        for (Entry entry : entries.values()) entry.validated = false;
+        entries.clear();
+        try { storage.reset(contextValid); }
+        catch (Throwable error) { failure = appendFailure(failure, error); }
         if (failure != null) rethrow(failure);
     }
 
@@ -420,8 +482,8 @@ public final class LwjglModelMeshCache {
     }
 
     private void retire(Entry entry) {
-        resources.retire(entry.handle,
-            LwjglRetirementFence.afterCurrentCommands(resources));
+        storage.retire(entry.allocation);
+        entry.validated = false;
     }
 
     /**
@@ -643,17 +705,18 @@ public final class LwjglModelMeshCache {
     public static final class Entry {
         private final int displayList;
         private final RenderHandle handle;
+        private final ModelMeshStorage.Allocation allocation;
         private final VertexFormat format;
         private final int drawMode;
         private final int vertexCount;
         private final int byteLength;
         private final byte[] digest;
         private boolean validated;
-        private long lastUsedFrame;
 
-        private Entry(ModelMeshPayload payload, RenderHandle handle) {
+        private Entry(ModelMeshPayload payload, ModelMeshStorage.Allocation allocation) {
             this.displayList = payload.getDisplayList();
-            this.handle = handle;
+            this.allocation = allocation;
+            this.handle = allocation.handle();
             this.format = payload.getFormat();
             this.drawMode = payload.getDrawMode();
             this.vertexCount = payload.getVertexCount();
@@ -672,7 +735,9 @@ public final class LwjglModelMeshCache {
                 && Arrays.equals(digest, payload.getDigest());
         }
 
-        public long getLogicalHandle() { return handle.getLogicalId(); }
+        public long getLogicalHandle() { return allocation.id; }
+        public int getNativeBuffer() { return handle.getNativeId(); }
+        public int getFirstVertex() { return allocation.firstVertex; }
         public boolean isValidated() { return validated; }
     }
 }

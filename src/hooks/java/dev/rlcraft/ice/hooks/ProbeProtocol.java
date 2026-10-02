@@ -1,6 +1,6 @@
 package dev.rlcraft.ice.hooks;
 
-/** Core-JAR-local copy of the stable bytecode probe ABI. */
+/** Startup-local copy of the stable bytecode probe ABI. */
 final class ProbeProtocol {
     static final String BRIDGE_INTERNAL_NAME = "dev/rlcraft/ice/profiler/probe/ProbeBridge";
     static final int ENTITY_TICK = 1;

@@ -11,6 +11,27 @@ import org.junit.Test;
 
 public final class EarlyGlStateTrackerTest {
     @Test
+    public void immediateClientArraysRequireOnlyKnownFixedFunctionAndZeroBuffer() {
+        EarlyGlStateTracker.beginProbe();
+        assertFalse(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+        EarlyGlStateTracker.useProgram(0);
+        assertFalse(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+        EarlyGlStateTracker.bindBuffer(34962, 0);
+        assertTrue(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+        assertFalse(EarlyGlStateTracker.hasModelDrawState());
+        EarlyGlStateTracker.useProgram(3);
+        assertFalse(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+        EarlyGlStateTracker.useProgram(0);
+        EarlyGlStateTracker.bindBuffer(34962, 9);
+        assertFalse(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+        EarlyGlStateTracker.bindBuffer(34962, 0);
+        EarlyGlStateTracker.clientActiveTexture(33987);
+        assertTrue(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+        EarlyGlStateTracker.invalidate();
+        assertFalse(EarlyGlStateTracker.isFixedFunctionClientArraySubmissionSafe());
+    }
+
+    @Test
     public void publishesOnlyCompleteSnapshotsAndInvalidatesAtomically() {
         EarlyGlStateTracker.beginProbe();
         EarlyGlStateTracker.useProgram(7);

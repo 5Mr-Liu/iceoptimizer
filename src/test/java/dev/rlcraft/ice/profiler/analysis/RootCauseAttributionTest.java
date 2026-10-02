@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.profiler.analysis;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.profiler.capture.HitchCapture;
@@ -113,10 +114,118 @@ public final class RootCauseAttributionTest {
                 frame("net.minecraft.world.WorldServer", "flush"))));
     }
 
+    @Test
+    public void sharedSleepStackClassifiesEachSampleStateRegardlessOfFirstState() {
+        StackTraceElement[] sleepingGpu = trace(
+            frame("java.lang.Thread", "sleep"),
+            frame("org.lwjgl.opengl.WindowsContextImplementation", "swapBuffers"));
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.CLIENT_MAIN,
+            RootCause.GPU_DRIVER, Thread.State.TIMED_WAITING, Thread.State.RUNNABLE);
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.CLIENT_MAIN,
+            RootCause.FRAME_LIMITER_WAIT, Thread.State.RUNNABLE, Thread.State.TIMED_WAITING);
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.SERVER_MAIN,
+            RootCause.GPU_DRIVER, Thread.State.TIMED_WAITING, Thread.State.RUNNABLE);
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.SERVER_MAIN,
+            RootCause.FRAME_LIMITER_WAIT, Thread.State.RUNNABLE, Thread.State.TIMED_WAITING);
+    }
+
+    @Test
+    public void sharedSleepStackPreservesIceAndExplicitLimiterPriority() {
+        assertSameStackOrderIndependent(trace(
+            frame("java.lang.Thread", "sleep"),
+            frame("dev.rlcraft.ice.optimizer.compat.foamfix.FoamFixUploadBridge", "fence"),
+            frame("org.lwjgl.opengl.GL32", "glFenceSync")),
+            ThreadRole.CLIENT_MAIN, RootCause.ICE_RUNTIME,
+            Thread.State.RUNNABLE, Thread.State.TIMED_WAITING);
+        assertSameStackOrderIndependent(trace(
+            frame("java.lang.Thread", "sleep"),
+            frame("org.lwjgl.opengl.Display", "sync"),
+            frame("org.lwjgl.opengl.WindowsContextImplementation", "swapBuffers")),
+            ThreadRole.CLIENT_MAIN, RootCause.FRAME_LIMITER_WAIT,
+            Thread.State.TIMED_WAITING, Thread.State.RUNNABLE);
+    }
+
+    @Test
+    public void sleepWithoutTimedWaitingDoesNotOverrideGpuAndWorkerWaitsStayIdle() {
+        StackTraceElement[] sleepingGpu = trace(
+            frame("java.lang.Thread", "sleep"),
+            frame("org.lwjgl.opengl.WindowsContextImplementation", "swapBuffers"));
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.CLIENT_MAIN,
+            RootCause.GPU_DRIVER, Thread.State.WAITING, Thread.State.RUNNABLE);
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.WORKER,
+            RootCause.GPU_DRIVER, Thread.State.TIMED_WAITING, Thread.State.RUNNABLE);
+        assertSameStackOrderIndependent(sleepingGpu, ThreadRole.WORKER,
+            RootCause.GPU_DRIVER, Thread.State.RUNNABLE, Thread.State.TIMED_WAITING);
+    }
+
+    @Test
+    public void socketPrefixDoesNotReuseHistoricalWorldLoadOrHeadCaller() {
+        StackTraceRepository stacks = new StackTraceRepository(1, 16);
+        int exact = stacks.intern(trace(
+            frame("java.net.SocketInputStream", "socketRead0"),
+            frame("java.net.SocketInputStream", "socketRead"),
+            frame("java.net.SocketInputStream", "read"),
+            frame("com.mojang.authlib.HttpAuthenticationService", "performGetRequest"),
+            frame("example.WorldSelection", "loadWorld")));
+        int prefix = stacks.intern(trace(
+            frame("java.net.SocketInputStream", "socketRead0"),
+            frame("java.net.SocketInputStream", "socketRead"),
+            frame("java.net.SocketInputStream", "read"),
+            frame("example.HeadRenderer", "renderHead")));
+        HitchCapture capture = new HitchCapture(3L, 0L, 2_000L, 3_000L);
+        capture.addTrigger(new HitchTrigger(TriggerType.CLIENT_FRAME, 2_000L, 0L,
+            400L, 100L, "render frame"));
+        for (int i = 0; i < 4; i++) {
+            capture.addSample(sample(1_650L + i * 80L, 1L,
+                ThreadRole.CLIENT_MAIN, prefix, Thread.State.RUNNABLE), 128);
+        }
+        capture.seal();
+        Diagnosis diagnosis = new RootCauseAnalyzer(stacks, new ModResolver())
+            .analyze(capture);
+        assertEquals(RootCause.NETWORK, diagnosis.getRootCause());
+        assertEquals("java.net.SocketInputStream.socketRead0",
+            diagnosis.getHotMethod());
+        assertTrue(diagnosis.getEvidence().toString().contains("顶部 3 个方法"));
+        assertFalse(diagnosis.getEvidence().toString().contains("loadWorld"));
+        assertFalse(diagnosis.getHotMethod().contains("authlib"));
+        assertEquals(5, stacks.get(exact).length);
+        assertEquals("example.WorldSelection", stacks.get(exact)[4].getClassName());
+    }
+
     private static StackSample sample(long timestamp, long threadId, ThreadRole role,
                                       int stack, Thread.State state) {
         return new StackSample(timestamp, threadId, role.name(), role, stack,
             1L, 0L, state);
+    }
+
+    private static void assertSameStackOrderIndependent(StackTraceElement[] trace,
+            ThreadRole role, RootCause expected, Thread.State minority,
+            Thread.State majority) {
+        StackTraceRepository stacks = new StackTraceRepository(16, 16);
+        int stackId = stacks.intern(trace);
+        RootCauseAnalyzer analyzer = new RootCauseAnalyzer(stacks, new ModResolver());
+        Diagnosis first = analyzeSameStack(analyzer, stackId, role,
+            minority, majority, majority, majority);
+        Diagnosis last = analyzeSameStack(analyzer, stackId, role,
+            majority, majority, majority, minority);
+        assertEquals(expected, first.getRootCause());
+        assertEquals(expected, last.getRootCause());
+        assertEquals(first.getConfidence(), last.getConfidence(), 0.0D);
+        assertEquals(first.getHotMethod(), last.getHotMethod());
+    }
+
+    private static Diagnosis analyzeSameStack(RootCauseAnalyzer analyzer, int stackId,
+            ThreadRole role, Thread.State... states) {
+        HitchCapture capture = new HitchCapture(4L, 0L, 2_000L, 3_000L);
+        // CLIENT_TICK contributes no render/GC score, leaving the retained samples decisive.
+        capture.addTrigger(new HitchTrigger(role == ThreadRole.SERVER_MAIN ? TriggerType.SERVER_TICK
+            : role == ThreadRole.CLIENT_MAIN ? TriggerType.CLIENT_TICK : TriggerType.MANUAL, 2_000L, 0L,
+            400L, 100L, "client tick"));
+        for (int i = 0; i < states.length; i++) {
+            capture.addSample(sample(1_650L + i * 80L, 1L, role, stackId, states[i]), 128);
+        }
+        capture.seal();
+        return analyzer.analyze(capture);
     }
 
     private static StackTraceElement[] trace(StackTraceElement... frames) {

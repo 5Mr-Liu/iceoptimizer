@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.render.hud;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
@@ -13,6 +14,51 @@ import java.util.List;
 import org.junit.Test;
 
 public final class HudStreamTest {
+    @Test
+    public void fontLayoutCopiesOnlyUsedGlyphsAndOwnsItsData() {
+        float[] geometry = new float[60];
+        int[] pages = {3, 4, -1};
+        geometry[0] = 1.5F;
+        geometry[40] = Float.NaN;
+        FontLayoutCache.GlyphLayout layout = new FontLayoutCache.GlyphLayout(
+            geometry, pages, 2, 8.0F);
+        geometry[0] = Float.NaN;
+        pages[0] = -1;
+        layout.getGlyphGeometry()[0] = -10.0F;
+        layout.getTexturePages()[0] = -1;
+        assertEquals(2, layout.glyphCount());
+        assertEquals(40, layout.getGlyphGeometry().length);
+        assertEquals(1.5F, layout.getGlyphGeometry()[0], 0.0F);
+        assertArrayEquals(new int[] {3, 4}, layout.getTexturePages());
+        assertEquals(168L, layout.retainedBytes());
+        assertEquals(8.0F, layout.getAdvance(), 0.0F);
+        FontLayoutCache.GlyphLayout empty = new FontLayoutCache.GlyphLayout(
+            new float[0], new int[0], 0, 0.0F);
+        assertEquals(0, empty.glyphCount());
+    }
+
+    @Test
+    public void fontLayoutStillRejectsInvalidUsedDataAndExactSizeMismatch() {
+        try {
+            new FontLayoutCache.GlyphLayout(new float[40], new int[] {1});
+            fail("exact constructor accepted a size mismatch");
+        } catch (IllegalArgumentException expected) { }
+        try {
+            new FontLayoutCache.GlyphLayout(new float[20], new int[] {1}, 2, 1.0F);
+            fail("accepted a prefix outside the input");
+        } catch (IllegalArgumentException expected) { }
+        try {
+            float[] invalid = new float[20];
+            invalid[19] = Float.NaN;
+            new FontLayoutCache.GlyphLayout(invalid, new int[] {1}, 1, 1.0F);
+            fail("accepted a non-finite cached vertex");
+        } catch (IllegalArgumentException expected) { }
+        try {
+            new FontLayoutCache.GlyphLayout(new float[20], new int[] {0}, 1, 1.0F);
+            fail("accepted an invalid texture page");
+        } catch (IllegalArgumentException expected) { }
+    }
+
     @Test
     public void shadowMainAndEventScopesRemainDistinctRuns() {
         HudVertexStream stream = new HudVertexStream(64);

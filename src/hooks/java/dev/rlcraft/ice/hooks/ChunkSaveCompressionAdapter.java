@@ -18,10 +18,11 @@ import org.objectweb.asm.tree.FieldInsnNode;
 
 /** Installs post-snapshot compression scheduling and the RegionFile raw ABI. */
 final class ChunkSaveCompressionAdapter implements OptimizerBytecodeAdapter {
-    enum Part { ANVIL_PIPELINE, REGION_RAW_WRITE }
+    enum Part { ANVIL_PIPELINE, REGION_RAW_WRITE, GZIP_BUFFER }
 
     static final String ANVIL = "net/minecraft/world/chunk/storage/AnvilChunkLoader";
     static final String REGION = "net/minecraft/world/chunk/storage/RegionFile";
+    static final String STREAM_TOOLS = "net/minecraft/nbt/CompressedStreamTools";
     static final String REGION_ACCESS =
         "dev/rlcraft/ice/optimizer/compat/save/RegionFileRawWriteAccessor";
     static final String BRIDGE =
@@ -53,14 +54,42 @@ final class ChunkSaveCompressionAdapter implements OptimizerBytecodeAdapter {
         if (part == Part.ANVIL_PIPELINE) {
             requireClass(node, transformedName, ANVIL);
             transformAnvil(node);
-        } else {
+        } else if (part == Part.REGION_RAW_WRITE) {
             requireClass(node, transformedName, REGION);
             transformRegion(node);
+        } else {
+            requireClass(node, transformedName, STREAM_TOOLS);
+            transformGzip(node);
         }
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static void transformGzip(ClassNode node) {
+        MethodNode write = requireMethod(node, "func_74799_a",
+            "(L" + NBT + ";Ljava/io/OutputStream;)V");
+        String gzip = "java/util/zip/GZIPOutputStream";
+        MethodInsnNode constructor = uniqueCall(write, Opcodes.INVOKESPECIAL,
+            gzip, "<init>", "(Ljava/io/OutputStream;)V");
+        TypeInsnNode allocation = null;
+        for (AbstractInsnNode instruction : write.instructions.toArray()) {
+            if (instruction instanceof TypeInsnNode && instruction.getOpcode() == Opcodes.NEW
+                && gzip.equals(((TypeInsnNode) instruction).desc)) {
+                if (allocation != null) throw new IllegalStateException("Duplicate NBT gzip allocation");
+                allocation = (TypeInsnNode) instruction;
+            }
+        }
+        AbstractInsnNode duplicate = nextOpcode(allocation);
+        if (allocation == null || duplicate == null || duplicate.getOpcode() != Opcodes.DUP) {
+            throw new IllegalStateException("NBT gzip construction graph changed");
+        }
+        write.instructions.remove(allocation);
+        write.instructions.remove(duplicate);
+        write.instructions.set(constructor, new MethodInsnNode(Opcodes.INVOKESTATIC,
+            "dev/rlcraft/ice/optimizer/compat/save/NbtGzipBufferBridge", "create",
+            "(Ljava/io/OutputStream;)Ljava/io/OutputStream;", false));
     }
 
     private static void transformAnvil(ClassNode node) {

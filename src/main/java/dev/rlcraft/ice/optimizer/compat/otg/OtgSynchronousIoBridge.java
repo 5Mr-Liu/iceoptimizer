@@ -7,15 +7,13 @@ import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.ModuleCircuitBreaker;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
+import dev.rlcraft.ice.optimizer.compat.otg.OtgSettingsSnapshot.LineRecord;
+import dev.rlcraft.ice.optimizer.compat.otg.OtgSettingsSnapshot.SettingRecord;
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
@@ -23,22 +21,15 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardWatchEventKinds;
-import java.nio.file.WatchKey;
-import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -65,19 +56,12 @@ public final class OtgSynchronousIoBridge {
     private static final long METADATA_CACHE_BYTES = 64L * 1024L * 1024L;
 
     private static final AtomicLong CONFIGURATION_GENERATION = new AtomicLong(1L);
-    private static final AtomicLong FILE_DIGEST_READS = new AtomicLong();
     private static final AtomicLong FILE_AUTHENTICATION_PROBES = new AtomicLong();
     private static final CopyOnWriteArrayList<WeakReference<MetadataMap>> METADATA_MAPS =
         new CopyOnWriteArrayList<WeakReference<MetadataMap>>();
     private static final ThreadLocal<ParsedTag> LAST_PARSED_TAG = new ThreadLocal<ParsedTag>();
-    private static final ThreadLocal<DigestWorkspace> DIGEST_WORKSPACE =
-        new ThreadLocal<DigestWorkspace>() {
-            @Override protected DigestWorkspace initialValue() {
-                return new DigestWorkspace();
-            }
-        };
-    private static final FileMutationTracker FILE_MUTATIONS =
-        new FileMutationTracker();
+    private static final OtgFileMutationTracker FILE_MUTATIONS =
+        new OtgFileMutationTracker();
 
     private static final Cache<SettingsLookupKey, SettingsEntry> SETTINGS =
         Caffeine.newBuilder()
@@ -135,26 +119,22 @@ public final class OtgSynchronousIoBridge {
             return false;
         }
 
-        SettingsEntry resolved = SETTINGS.getIfPresent(key);
-        if (resolved != null && !resolved.stamp.reusableNow()) {
-            SETTINGS.asMap().remove(key, resolved);
-            resolved = null;
-        }
-
-        boolean authenticatedOnThisThread = false;
         try {
-            if (resolved == null) {
-                final boolean[] loaded = new boolean[1];
-                resolved = SETTINGS.get(key, ignored -> {
-                    loaded[0] = true;
-                    return loadSettingsEntry(key, file);
-                });
-                authenticatedOnThisThread = loaded[0];
-                if (!authenticatedOnThisThread && !resolved.stamp.reusableNow()) {
-                    SETTINGS.asMap().remove(key, resolved);
-                    return false;
-                }
+            SettingsEntry cached = SETTINGS.getIfPresent(key);
+            if (cached != null) {
+                // One observation at the mutation boundary is sufficient for
+                // a hit. A stale entry still reloads within this same call.
+                if (populateSettings(reader, access, cached, false)) return true;
+                SETTINGS.asMap().remove(key, cached);
             }
+            final boolean[] loaded = new boolean[1];
+            SettingsEntry entry = SETTINGS.get(key, ignored -> {
+                loaded[0] = true;
+                return loadSettingsEntry(key);
+            });
+            if (populateSettings(reader, access, entry, loaded[0])) return true;
+            SETTINGS.asMap().remove(key, entry);
+            return false;
         } catch (SourceFallback failure) {
             return false;
         } catch (LinkageError | RuntimeException error) {
@@ -162,31 +142,21 @@ public final class OtgSynchronousIoBridge {
             return false;
         }
 
-        final SettingsEntry entry = resolved;
-        try {
-            synchronized (OtgSynchronousIoBridge.class) {
-                if (entry.stamp.generation != CONFIGURATION_GENERATION.get()) {
-                    return false;
-                }
-                // A watched cached result is certified again immediately
-                // before its target is mutated. An unwatchable result is safe
-                // only for the thread that just performed the full read.
-                if (entry.stamp.watched()) {
-                    if (!entry.stamp.reusableNow()) {
-                        SETTINGS.asMap().remove(key, entry);
-                        return false;
-                    }
-                } else if (!authenticatedOnThisThread) {
-                    SETTINGS.asMap().remove(key, entry);
-                    return false;
-                }
-                access.populate(reader, entry.snapshot);
-                success();
-                return true;
+    }
+
+    private static boolean populateSettings(Object reader, SettingsAccess access,
+                                            SettingsEntry entry,
+                                            boolean authenticatedOnThisThread) {
+        synchronized (OtgSynchronousIoBridge.class) {
+            if (entry.stamp.generation != CONFIGURATION_GENERATION.get()) return false;
+            if (entry.stamp.watched()) {
+                if (!entry.stamp.reusableNow()) return false;
+            } else if (!authenticatedOnThisThread) {
+                return false;
             }
-        } catch (LinkageError | RuntimeException error) {
-            fail(error);
-            return false;
+            access.populate(reader, entry.snapshot);
+            success();
+            return true;
         }
     }
 
@@ -283,14 +253,6 @@ public final class OtgSynchronousIoBridge {
         return SETTINGS.estimatedSize();
     }
 
-    static long fileDigestReadsForTest() {
-        return FILE_DIGEST_READS.get();
-    }
-
-    static void resetFileDigestReadsForTest() {
-        FILE_DIGEST_READS.set(0L);
-    }
-
     static long fileAuthenticationProbesForTest() {
         return FILE_AUTHENTICATION_PROBES.get();
     }
@@ -299,80 +261,22 @@ public final class OtgSynchronousIoBridge {
         FILE_AUTHENTICATION_PROBES.set(0L);
     }
 
-    private static SettingsEntry loadSettingsEntry(SettingsLookupKey expected, File file) {
+    private static SettingsEntry loadSettingsEntry(SettingsLookupKey expected) {
         try {
-            FileProbe probe = FileProbe.capture(file, false);
-            if (!probe.logicalPath.equals(expected.logicalPath)
-                || probe.size > MAX_SINGLE_SETTINGS_BYTES) {
-                throw SourceFallback.INSTANCE;
-            }
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream(
-                (int) Math.min(probe.size, IO_BUFFER_BYTES));
-            InputStream input = new BufferedInputStream(
-                Files.newInputStream(probe.path), IO_BUFFER_BYTES);
-            try {
-                byte[] buffer = new byte[IO_BUFFER_BYTES];
-                int count;
-                int total = 0;
-                while ((count = input.read(buffer)) >= 0) {
-                    total = Math.addExact(total, count);
-                    if (total > MAX_SINGLE_SETTINGS_BYTES) throw SourceFallback.INSTANCE;
-                    bytes.write(buffer, 0, count);
-                }
-            } finally {
-                input.close();
-            }
-
-            byte[] source = bytes.toByteArray();
-            FileStamp stamp = FileStamp.authenticate(probe, source);
-            if (stamp.generation != CONFIGURATION_GENERATION.get()) {
-                throw SourceFallback.INSTANCE;
-            }
-            SettingsSnapshot snapshot = parseSettings(source, expected.charset,
-                expected.locale);
-            return new SettingsEntry(stamp, snapshot);
+            FileProbe probe = FileProbe.capture(expected.logicalPath, false);
+            if (probe.size > MAX_SINGLE_SETTINGS_BYTES) throw SourceFallback.INSTANCE;
+            OtgSettingsSnapshot.ReadResult parsed = OtgSettingsSnapshot.readAndClose(
+                Files.newInputStream(probe.path), expected.charset, expected.locale,
+                MAX_SINGLE_SETTINGS_BYTES);
+            FileStamp stamp = FileStamp.authenticate(probe, parsed.bytes);
+            if (stamp.generation != CONFIGURATION_GENERATION.get()) throw SourceFallback.INSTANCE;
+            return new SettingsEntry(stamp, parsed.snapshot);
         } catch (SourceFallback fallback) {
             throw fallback;
         } catch (IOException | RuntimeException error) {
             FatalErrors.rethrowIfFatal(error);
             throw SourceFallback.INSTANCE;
         }
-    }
-
-    private static SettingsSnapshot parseSettings(byte[] bytes, Charset charset,
-                                                   Locale locale) {
-        List<LineRecord> functions = new ArrayList<LineRecord>();
-        List<SettingRecord> settings = new ArrayList<SettingRecord>();
-        try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(
-                new ByteArrayInputStream(bytes), charset), IO_BUFFER_BYTES);
-            int lineNumber = 0;
-            String line;
-            while ((line = reader.readLine()) != null) {
-                lineNumber++;
-                if (line.trim().isEmpty() || line.startsWith("#") || line.startsWith("<")) {
-                    continue;
-                }
-                if (line.contains(":") || line.toLowerCase(locale).contains("(")) {
-                    if (line.contains("(")
-                        && (!line.contains(":") || line.indexOf('(') < line.indexOf(':'))) {
-                        functions.add(new LineRecord(line.trim(), lineNumber));
-                    } else {
-                        String[] split = line.split(":", 2);
-                        settings.add(new SettingRecord(split[0].trim().toLowerCase(locale),
-                            split[1].trim(), lineNumber));
-                    }
-                } else if (line.contains("=")) {
-                    String[] split = line.split("=", 2);
-                    settings.add(new SettingRecord(split[0].trim().toLowerCase(locale),
-                        split[1].trim(), lineNumber));
-                }
-            }
-        } catch (IOException | RuntimeException error) {
-            FatalErrors.rethrowIfFatal(error);
-            throw SourceFallback.INSTANCE;
-        }
-        return new SettingsSnapshot(functions, settings);
     }
 
     private static Node parseNode(DataInputStream input, byte type, String name,
@@ -481,11 +385,11 @@ public final class OtgSynchronousIoBridge {
         private final FileTime modified;
         private final String fileKey;
         private final long generation;
-        private final WatchSnapshot watches;
+        private final OtgFileMutationTracker.Certificate watches;
 
         private FileProbe(Path logicalPath, Path path, boolean exists, long size,
                           FileTime modified, String fileKey, long generation,
-                          WatchSnapshot watches) {
+                          OtgFileMutationTracker.Certificate watches) {
             this.logicalPath = logicalPath;
             this.path = path;
             this.exists = exists;
@@ -496,21 +400,29 @@ public final class OtgSynchronousIoBridge {
             this.watches = watches;
         }
 
-        private static FileProbe capture(File file, boolean allowMissing)
+        private static FileProbe capture(Path requested, boolean allowMissing)
             throws IOException {
             FILE_AUTHENTICATION_PROBES.incrementAndGet();
-            Path requested = logicalPath(file);
             for (int attempt = 0; attempt < 3; attempt++) {
                 long generation = CONFIGURATION_GENERATION.get();
-                final Path path;
+                Path path = canonicalCandidatePath(requested);
+                OtgFileMutationTracker.Certificate mutationBefore = FILE_MUTATIONS.observe(requested, path);
+                final BasicFileAttributes attributes;
                 try {
-                    path = requested.toRealPath();
+                    BasicFileAttributes observed = Files.readAttributes(path,
+                        BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    if (observed.isSymbolicLink()) {
+                        path = path.toRealPath();
+                        mutationBefore = FILE_MUTATIONS.observe(requested, path);
+                        observed = Files.readAttributes(path, BasicFileAttributes.class);
+                    }
+                    attributes = observed;
                 } catch (NoSuchFileException missing) {
                     if (!allowMissing) throw missing;
-                    Path absent = canonicalMissingPath(requested);
-                    WatchSnapshot before = FILE_MUTATIONS.observe(requested, absent);
+                    Path absent = canonicalCandidatePath(requested);
+                    OtgFileMutationTracker.Certificate before = FILE_MUTATIONS.observe(requested, absent);
                     if (!isMissing(absent)) continue;
-                    WatchSnapshot after = FILE_MUTATIONS.observe(requested, absent);
+                    OtgFileMutationTracker.Certificate after = FILE_MUTATIONS.observe(requested, absent);
                     if (generation == CONFIGURATION_GENERATION.get()
                         && before.stableThrough(after)) {
                         return new FileProbe(requested, absent, false, -1L,
@@ -520,22 +432,12 @@ public final class OtgSynchronousIoBridge {
                     continue;
                 }
 
-                WatchSnapshot mutationBefore = FILE_MUTATIONS.observe(requested, path);
-                final BasicFileAttributes before;
-                final BasicFileAttributes after;
-                try {
-                    before = Files.readAttributes(path, BasicFileAttributes.class);
-                    after = Files.readAttributes(path, BasicFileAttributes.class);
-                } catch (NoSuchFileException changed) {
-                    continue;
-                }
-                WatchSnapshot mutationAfter = FILE_MUTATIONS.observe(requested, path);
-                if (before.isRegularFile() && after.isRegularFile()
-                    && sameAttributes(before, after)
+                OtgFileMutationTracker.Certificate mutationAfter = FILE_MUTATIONS.observe(requested, path);
+                if (attributes.isRegularFile()
                     && generation == CONFIGURATION_GENERATION.get()
                     && mutationBefore.stableThrough(mutationAfter)) {
-                    return new FileProbe(requested, path, true, after.size(),
-                        after.lastModifiedTime(), FileStamp.fileKey(after),
+                    return new FileProbe(requested, path, true, attributes.size(),
+                        attributes.lastModifiedTime(), fileKey(attributes),
                         generation, mutationAfter);
                 }
             }
@@ -546,28 +448,25 @@ public final class OtgSynchronousIoBridge {
             FILE_AUTHENTICATION_PROBES.incrementAndGet();
             for (int attempt = 0; attempt < 3; attempt++) {
                 long currentGeneration = CONFIGURATION_GENERATION.get();
-                WatchSnapshot beforeWatch = FILE_MUTATIONS.observeKnown(watches);
+                OtgFileMutationTracker.Certificate beforeWatch = FILE_MUTATIONS.observeKnown(watches);
                 if (exists) {
-                    final BasicFileAttributes before;
-                    final BasicFileAttributes after;
+                    final BasicFileAttributes attributes;
                     try {
-                        before = Files.readAttributes(path, BasicFileAttributes.class);
-                        after = Files.readAttributes(path, BasicFileAttributes.class);
+                        attributes = Files.readAttributes(path, BasicFileAttributes.class);
                     } catch (NoSuchFileException changed) {
                         continue;
                     }
-                    WatchSnapshot afterWatch = FILE_MUTATIONS.observeKnown(watches);
-                    if (before.isRegularFile() && after.isRegularFile()
-                        && sameAttributes(before, after)
+                    OtgFileMutationTracker.Certificate afterWatch = FILE_MUTATIONS.observeKnown(watches);
+                    if (attributes.isRegularFile()
                         && currentGeneration == CONFIGURATION_GENERATION.get()
                         && beforeWatch.stableThrough(afterWatch)) {
-                        return new FileProbe(logicalPath, path, true, after.size(),
-                            after.lastModifiedTime(), FileStamp.fileKey(after),
+                        return new FileProbe(logicalPath, path, true, attributes.size(),
+                            attributes.lastModifiedTime(), fileKey(attributes),
                             currentGeneration, afterWatch);
                     }
                 } else {
                     if (!isMissing(path)) continue;
-                    WatchSnapshot afterWatch = FILE_MUTATIONS.observeKnown(watches);
+                    OtgFileMutationTracker.Certificate afterWatch = FILE_MUTATIONS.observeKnown(watches);
                     if (currentGeneration == CONFIGURATION_GENERATION.get()
                         && beforeWatch.stableThrough(afterWatch)) {
                         return new FileProbe(logicalPath, path, false, -1L,
@@ -584,13 +483,13 @@ public final class OtgSynchronousIoBridge {
             return file.toPath().toAbsolutePath().normalize();
         }
 
-        private static Path canonicalMissingPath(Path requested) throws IOException {
+        private static Path canonicalCandidatePath(Path requested) throws IOException {
             Path parent = requested.getParent();
             Path name = requested.getFileName();
             if (parent == null || name == null) {
                 throw new IOException("OTG path has no watchable parent: " + requested);
             }
-            return parent.toRealPath().resolve(name).normalize();
+            return FILE_MUTATIONS.canonicalDirectory(parent).resolve(name);
         }
 
         private static boolean isMissing(Path candidate) throws IOException {
@@ -623,224 +522,41 @@ public final class OtgSynchronousIoBridge {
             return watches.complete;
         }
 
-        private static boolean sameAttributes(BasicFileAttributes first,
-                                              BasicFileAttributes second) {
-            return first.isRegularFile() == second.isRegularFile()
-                && first.size() == second.size()
-                && first.lastModifiedTime().equals(second.lastModifiedTime())
-                && FileStamp.fileKey(first).equals(FileStamp.fileKey(second));
-        }
-
-        @Override public boolean equals(Object value) {
-            if (this == value) return true;
-            if (!(value instanceof FileProbe)) return false;
-            FileProbe other = (FileProbe) value;
-            return sameFastIdentity(other) && watches.stableThrough(other.watches);
-        }
-
-        @Override public int hashCode() {
-            int result = logicalPath.hashCode();
-            result = 31 * result + path.hashCode();
-            result = 31 * result + (exists ? 1 : 0);
-            result = 31 * result + (int) (size ^ (size >>> 32));
-            result = 31 * result + modified.hashCode();
-            result = 31 * result + fileKey.hashCode();
-            result = 31 * result + (int) (generation ^ (generation >>> 32));
-            return 31 * result + watches.identityHash();
-        }
-    }
-
-    private static final class WatchSnapshot {
-        private final DirectoryWatch source;
-        private final long sourceSequence;
-        private final DirectoryWatch target;
-        private final long targetSequence;
-        private final boolean complete;
-
-        private WatchSnapshot(DirectoryWatch source, DirectoryWatch target,
-                              boolean complete) {
-            this.source = source;
-            this.sourceSequence = source == null ? 0L : source.sequence;
-            this.target = target;
-            this.targetSequence = target == null ? 0L : target.sequence;
-            this.complete = complete;
-        }
-
-        private static WatchSnapshot incomplete() {
-            return new WatchSnapshot(null, null, false);
-        }
-
-        private boolean stableThrough(WatchSnapshot other) {
-            if (other == null || complete != other.complete) return false;
-            if (!complete) return true;
-            return source == other.source && target == other.target
-                && sourceSequence == other.sourceSequence
-                && targetSequence == other.targetSequence;
-        }
-
-        private boolean current() {
-            return complete && FILE_MUTATIONS.isCurrent(this);
-        }
-
-        private int identityHash() {
-            if (!complete) return 0;
-            int result = System.identityHashCode(source);
-            result = 31 * result + (int) (sourceSequence ^ (sourceSequence >>> 32));
-            result = 31 * result + System.identityHashCode(target);
-            return 31 * result + (int) (targetSequence ^ (targetSequence >>> 32));
-        }
-    }
-
-    /** One shared watcher. Hot lookups only poll it and compare memory tokens. */
-    private static final class FileMutationTracker {
-        private final WatchService watcher;
-        private final Map<Path, DirectoryWatch> directories =
-            new HashMap<Path, DirectoryWatch>();
-        private final Map<WatchKey, DirectoryWatch> keys =
-            new HashMap<WatchKey, DirectoryWatch>();
-        private long sequence;
-
-        private FileMutationTracker() {
-            WatchService created = null;
-            try {
-                created = FileSystems.getDefault().newWatchService();
-            } catch (IOException | RuntimeException unavailable) {
-                // An unwatchable filesystem remains correct by making every
-                // probe unique; it merely loses hot digest reuse.
-            }
-            watcher = created;
-        }
-
-        private synchronized WatchSnapshot observe(Path source, Path target) {
-            drain();
-            if (watcher == null || source == null || target == null) {
-                return WatchSnapshot.incomplete();
-            }
-            DirectoryWatch sourceWatch = register(source.getParent());
-            DirectoryWatch targetWatch = source.getParent() != null
-                && source.getParent().equals(target.getParent())
-                    ? sourceWatch : register(target.getParent());
-            drain();
-            boolean complete = active(sourceWatch) && active(targetWatch);
-            return complete
-                ? new WatchSnapshot(sourceWatch, targetWatch, true)
-                : WatchSnapshot.incomplete();
-        }
-
-        private synchronized WatchSnapshot observeKnown(WatchSnapshot expected) {
-            drain();
-            if (expected == null || !expected.complete
-                || !active(expected.source) || !active(expected.target)) {
-                return WatchSnapshot.incomplete();
-            }
-            return new WatchSnapshot(expected.source, expected.target, true);
-        }
-
-        private synchronized boolean isCurrent(WatchSnapshot expected) {
-            drain();
-            return expected != null && expected.complete
-                && active(expected.source) && active(expected.target)
-                && expected.sourceSequence == expected.source.sequence
-                && expected.targetSequence == expected.target.sequence;
-        }
-
-        private DirectoryWatch register(Path rawDirectory) {
-            if (watcher == null || rawDirectory == null) return null;
-            Path directory = rawDirectory.toAbsolutePath().normalize();
-            DirectoryWatch state = directories.get(directory);
-            if (state != null && !active(state)) {
-                directories.remove(directory);
-                keys.remove(state.key);
-                state = null;
-            }
-            if (state != null) return state;
-            try {
-                WatchKey key = directory.register(watcher,
-                    StandardWatchEventKinds.ENTRY_CREATE,
-                    StandardWatchEventKinds.ENTRY_DELETE,
-                    StandardWatchEventKinds.ENTRY_MODIFY);
-                state = new DirectoryWatch(directory, key, nextSequence());
-                directories.put(directory, state);
-                keys.put(key, state);
-                return state;
-            } catch (IOException | RuntimeException unavailable) {
-                return null;
-            }
-        }
-
-        private boolean active(DirectoryWatch state) {
-            return state != null && state.key.isValid()
-                && directories.get(state.path) == state
-                && keys.get(state.key) == state;
-        }
-
-        private void drain() {
-            if (watcher == null) return;
-            WatchKey key;
-            while ((key = watcher.poll()) != null) {
-                DirectoryWatch state = keys.get(key);
-                boolean changed = !key.pollEvents().isEmpty();
-                if (state != null && changed) state.sequence = nextSequence();
-                if (!key.reset() && state != null) {
-                    keys.remove(key);
-                    directories.remove(state.path);
-                }
-            }
-        }
-
-        private long nextSequence() {
-            sequence = sequence == Long.MAX_VALUE ? 1L : sequence + 1L;
-            return sequence;
-        }
-    }
-
-    private static final class DirectoryWatch {
-        private final Path path;
-        private final WatchKey key;
-        private long sequence;
-
-        private DirectoryWatch(Path path, WatchKey key, long sequence) {
-            this.path = path;
-            this.key = key;
-            this.sequence = sequence;
+        private static String fileKey(BasicFileAttributes attributes) {
+            Object key = attributes.fileKey();
+            return key == null ? "<null>" : key.toString();
         }
     }
 
     private static final class FileStamp {
         private final FileProbe probe;
-        private final byte[] sha256;
         private final long generation;
 
-        private FileStamp(FileProbe probe, byte[] sha256) {
+        private FileStamp(FileProbe probe) {
             this.probe = probe;
-            this.sha256 = sha256.clone();
             this.generation = probe.generation;
         }
 
-        private static FileStamp authenticate(FileProbe before, byte[] source)
+        private static FileStamp authenticate(FileProbe before, long sourceBytes)
             throws IOException {
-            if (before == null || !before.exists || source == null
-                || before.size != source.length) {
+            if (before == null || !before.exists || before.size != sourceBytes) {
                 throw new IOException("OTG settings source did not match its observation");
             }
-            byte[] digest = DIGEST_WORKSPACE.get().digest(source);
             FileProbe after = before.reobserve();
-            if (!before.stableThrough(after) || after.size != source.length) {
+            if (!before.stableThrough(after) || after.size != sourceBytes) {
                 throw new IOException("OTG file changed while reading: " + before.path);
             }
-            return new FileStamp(after, digest);
+            return new FileStamp(after);
         }
 
         private static FileStamp authenticate(FileProbe before) throws IOException {
             if (before == null) throw new IOException("missing OTG file observation");
-            byte[] digest = before.exists
-                ? DIGEST_WORKSPACE.get().digest(before.path) : new byte[0];
             FileProbe after = before.reobserve();
             if (!before.stableThrough(after)) {
-                throw new IOException("OTG file changed while fingerprinting: "
+                throw new IOException("OTG file changed while reading: "
                     + before.path);
             }
-            return new FileStamp(after, digest);
+            return new FileStamp(after);
         }
 
         private boolean reusableNow() {
@@ -851,56 +567,6 @@ public final class OtgSynchronousIoBridge {
             return probe.watched();
         }
 
-        private static String fileKey(BasicFileAttributes attributes) {
-            Object key = attributes.fileKey();
-            return key == null ? "<null>" : key.toString();
-        }
-
-        @Override public boolean equals(Object value) {
-            if (this == value) return true;
-            if (!(value instanceof FileStamp)) return false;
-            FileStamp other = (FileStamp) value;
-            return probe.equals(other.probe)
-                && Arrays.equals(sha256, other.sha256);
-        }
-
-        @Override public int hashCode() {
-            return 31 * probe.hashCode() + Arrays.hashCode(sha256);
-        }
-    }
-
-    private static final class DigestWorkspace {
-        private final MessageDigest digest;
-        private final byte[] buffer = new byte[16 * 1024];
-
-        private DigestWorkspace() {
-            try {
-                digest = MessageDigest.getInstance("SHA-256");
-            } catch (NoSuchAlgorithmException impossible) {
-                throw new IllegalStateException("SHA-256 unavailable", impossible);
-            }
-        }
-
-        private byte[] digest(Path path) throws IOException {
-            FILE_DIGEST_READS.incrementAndGet();
-            digest.reset();
-            InputStream input = new BufferedInputStream(Files.newInputStream(path),
-                buffer.length);
-            try {
-                int count;
-                while ((count = input.read(buffer)) >= 0) {
-                    digest.update(buffer, 0, count);
-                }
-            } finally {
-                input.close();
-            }
-            return digest.digest();
-        }
-
-        private byte[] digest(byte[] value) {
-            digest.reset();
-            return digest.digest(value);
-        }
     }
 
     private static final class SettingsLookupKey {
@@ -935,47 +601,11 @@ public final class OtgSynchronousIoBridge {
 
     private static final class SettingsEntry {
         private final FileStamp stamp;
-        private final SettingsSnapshot snapshot;
+        private final OtgSettingsSnapshot snapshot;
 
-        private SettingsEntry(FileStamp stamp, SettingsSnapshot snapshot) {
+        private SettingsEntry(FileStamp stamp, OtgSettingsSnapshot snapshot) {
             this.stamp = stamp;
             this.snapshot = snapshot;
-        }
-    }
-
-    private static class LineRecord {
-        final String value;
-        final int line;
-
-        private LineRecord(String value, int line) {
-            this.value = value;
-            this.line = line;
-        }
-    }
-
-    private static final class SettingRecord extends LineRecord {
-        private final String key;
-
-        private SettingRecord(String key, String value, int line) {
-            super(value, line);
-            this.key = key;
-        }
-    }
-
-    private static final class SettingsSnapshot {
-        private final List<LineRecord> functions;
-        private final List<SettingRecord> settings;
-        private final int weight;
-
-        private SettingsSnapshot(List<LineRecord> functions, List<SettingRecord> settings) {
-            this.functions = Collections.unmodifiableList(new ArrayList<LineRecord>(functions));
-            this.settings = Collections.unmodifiableList(new ArrayList<SettingRecord>(settings));
-            long bytes = 128L;
-            for (LineRecord line : functions) bytes += 48L + (long) line.value.length() * 2L;
-            for (SettingRecord setting : settings) {
-                bytes += 72L + (long) (setting.key.length() + setting.value.length()) * 2L;
-            }
-            this.weight = (int) Math.min(Integer.MAX_VALUE, bytes);
         }
     }
 
@@ -996,7 +626,7 @@ public final class OtgSynchronousIoBridge {
         }
 
         @SuppressWarnings("unchecked")
-        private void populate(Object target, SettingsSnapshot snapshot) {
+        private void populate(Object target, OtgSettingsSnapshot snapshot) {
             try {
                 List<Object> functions = new ArrayList<Object>(snapshot.functions.size());
                 for (LineRecord line : snapshot.functions) functions.add(newLine(line));
@@ -1222,7 +852,7 @@ public final class OtgSynchronousIoBridge {
                     safe.asMap().remove(logicalPath, entry);
                 }
 
-                FileProbe probe = FileProbe.capture(new File(key), true);
+                FileProbe probe = FileProbe.capture(logicalPath, true);
                 pending.set(new PendingMetadata(key, logicalPath, probe, null));
                 return false;
             } catch (IOException | RuntimeException error) {
@@ -1244,7 +874,7 @@ public final class OtgSynchronousIoBridge {
                     && key.equals(observed.requestedPath) && observed.hit != null;
                 Path logicalPath = pairedHit
                     ? observed.logicalPath : FileProbe.logicalPath(new File(key));
-                MetadataEntry entry = pairedHit ? observed.hit : currentEntry(key);
+                MetadataEntry entry = pairedHit ? observed.hit : currentEntry(logicalPath);
                 if (entry == null) return null;
                 // containsKey() already gives a paired hit its filesystem
                 // linearization point. A later directory event may invalidate
@@ -1294,9 +924,11 @@ public final class OtgSynchronousIoBridge {
                 Node blueprint = value == null ? null
                     : parsed != null && parsed.tag == value
                         ? parsed.blueprint : access.capture(value);
-                // Authenticate positive construction before publication; later
-                // hits use the same constructor and immutable node shape.
-                if (blueprint != null) access.materialize(blueprint);
+                // The optimized parser already materialized this exact node
+                // shape. Values supplied externally still need that proof.
+                if (blueprint != null && (parsed == null || parsed.tag != value)) {
+                    access.materialize(blueprint);
+                }
                 FileStamp after = FileStamp.authenticate(before.probe);
                 if (!after.watched()) {
                     return original.put(key, value);
@@ -1313,7 +945,7 @@ public final class OtgSynchronousIoBridge {
                 }
             } catch (IOException error) {
                 if (before.probe.generation != CONFIGURATION_GENERATION.get()) return null;
-                // Fingerprinting is an ICE-only precondition. If it cannot be
+                // Authentication is an ICE-only precondition. If it cannot be
                 // completed, retain the target HashMap's exact fail-open
                 // behavior instead of losing the value or repeatedly reading.
                 return original.put(key, value);
@@ -1334,15 +966,14 @@ public final class OtgSynchronousIoBridge {
             return original.entrySet();
         }
 
-        private MetadataEntry currentEntry(String key) {
+        private MetadataEntry currentEntry(Path logicalPath) {
             try {
-                Path logicalPath = FileProbe.logicalPath(new File(key));
                 MetadataEntry entry = safe.getIfPresent(logicalPath);
                 if (entry == null) return null;
                 if (entry.stamp.reusableNow()) return entry;
                 safe.asMap().remove(logicalPath, entry);
                 return null;
-            } catch (IOException | RuntimeException error) {
+            } catch (RuntimeException error) {
                 FatalErrors.rethrowIfFatal(error);
                 return null;
             }

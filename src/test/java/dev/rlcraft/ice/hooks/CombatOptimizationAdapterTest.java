@@ -18,6 +18,7 @@ import java.nio.FloatBuffer;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import org.junit.Assume;
@@ -118,6 +119,9 @@ public class CombatOptimizationAdapterTest {
                 "java/util/List", null));
             assertEquals(2, countCallsInMethod(modelPartBytes, "renderJustPart", "(F)V",
                 "java/util/List", null));
+            assertEquals(1, countCallsInMethod(modelPartBytes, "applyLocalTransform",
+                "(FL" + MoBendsModelPartAdapter.MATRIX + ";)V",
+                MoBendsModelPartAdapter.TARGET, MoBendsModelPartAdapter.ROTATE_POSE_METHOD));
 
             assertEquals("goblinbob.mobends.core.data.LivingEntityData",
                 loader.define("goblinbob.mobends.core.data.LivingEntityData",
@@ -206,6 +210,100 @@ public class CombatOptimizationAdapterTest {
             }
         }
         assertTrue("matrix must be recomputed after raw quaternion bits change", changed);
+    }
+
+    @Test
+    public void cachedMoBendsPoseMatchesOriginalForRawInputsAndRepeatedPasses() throws Exception {
+        File jarFile = configuredJar("ice.mobends.jar", "run with -PmoBendsJar=<jar>");
+        JarFile jar = new JarFile(jarFile);
+        ByteLoader loader = new ByteLoader(new URL[] { jarFile.toURI().toURL() }, getClass().getClassLoader());
+        try {
+            Class<?> quaternion = loader.define("goblinbob.mobends.core.math.Quaternion",
+                new MoBendsQuaternionAdapter().transform("goblinbob.mobends.core.math.Quaternion",
+                    read(jar, "goblinbob.mobends.core.math.Quaternion"), null));
+            verifyQuaternionPoseCache(loader, quaternion);
+        } finally {
+            loader.close();
+            jar.close();
+        }
+    }
+
+    @Test
+    public void cpuPoseCacheDoesNotResetAConsumerGlBufferCursor() throws Exception {
+        File jarFile = configuredJar("ice.mobends.jar", "run with -PmoBendsJar=<jar>");
+        JarFile jar = new JarFile(jarFile);
+        ByteLoader loader = new ByteLoader(new URL[] { jarFile.toURI().toURL() }, getClass().getClassLoader());
+        try {
+            Class<?> quaternion = loader.define("goblinbob.mobends.core.math.Quaternion",
+                new MoBendsQuaternionAdapter().transform("goblinbob.mobends.core.math.Quaternion",
+                    read(jar, "goblinbob.mobends.core.math.Quaternion"), null));
+            Object value = quaternion.newInstance();
+            Object matrix = loader.loadClass("goblinbob.mobends.core.math.matrix.Mat4x4d").newInstance();
+            Method glMatrix = quaternion.getMethod(MoBendsQuaternionAdapter.METHOD);
+            Method applyPose = quaternion.getMethod(MoBendsQuaternionAdapter.POSE_METHOD, Object.class);
+            FloatBuffer buffer = (FloatBuffer) glMatrix.invoke(value);
+            buffer.position(7);
+            // A CPU conversion reads absolute indices; neither it nor a cached
+            // multiply needs to rewind a buffer used by a separate GL consumer.
+            applyPose.invoke(value, matrix);
+            assertEquals(7, buffer.position());
+            applyPose.invoke(value, matrix);
+            assertEquals(7, buffer.position());
+            assertSame(buffer, glMatrix.invoke(value));
+            assertEquals(0, buffer.position());
+        } finally {
+            loader.close();
+            jar.close();
+        }
+    }
+
+    private static void verifyQuaternionPoseCache(ByteLoader loader, Class<?> quaternion) throws Exception {
+        Class<?> matrixInterface = loader.loadClass("goblinbob.mobends.core.math.matrix.IMat4x4d");
+        Class<?> matrix = loader.loadClass("goblinbob.mobends.core.math.matrix.Mat4x4d");
+        Method originalRotate = loader.loadClass("goblinbob.mobends.core.math.TransformUtils")
+            .getMethod("rotate", matrixInterface, quaternion);
+        Method applyPose = quaternion.getMethod(MoBendsQuaternionAdapter.POSE_METHOD, Object.class);
+        Method glMatrix = quaternion.getMethod(MoBendsQuaternionAdapter.METHOD);
+        Method getFields = matrix.getMethod("getFields");
+        Field poseField = quaternion.getDeclaredField(MoBendsQuaternionAdapter.POSE_FIELD);
+        poseField.setAccessible(true);
+        Field[] components = { quaternion.getField("x"), quaternion.getField("y"),
+            quaternion.getField("z"), quaternion.getField("w") };
+        float[] edges = { 0.0F, -0.0F, 1.0F, -1.0F, Float.MIN_VALUE,
+            Float.MAX_VALUE, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY,
+            Float.intBitsToFloat(0x7fc12345), Float.intBitsToFloat(0xffc54321) };
+        Object value = quaternion.newInstance();
+        Object firstPose = null;
+        Random random = new Random(0xB3AD5L);
+        for (int sample = 0; sample < 256; sample++) {
+            for (int component = 0; component < components.length; component++) {
+                components[component].setFloat(value, sample < edges.length * 2
+                    ? edges[(sample + component) % edges.length]
+                    : random.nextFloat() * 2.0F - 1.0F);
+            }
+            // Cover GL first, CPU first, and a changed pose after a GL-cache hit.
+            if ((sample & 1) == 0) glMatrix.invoke(value);
+            for (int pass = 0; pass < 3; pass++) {
+                double[] initial = new double[16];
+                for (int i = 0; i < initial.length; i++) initial[i] = random.nextDouble() * 8.0D - 4.0D;
+                Object expected = matrix.getConstructor(double[].class).newInstance((Object) initial);
+                Object actual = matrix.getConstructor(double[].class).newInstance((Object) initial);
+                originalRotate.invoke(null, expected, value);
+                applyPose.invoke(value, actual);
+                double[] expectedFields = (double[]) getFields.invoke(expected);
+                double[] actualFields = (double[]) getFields.invoke(actual);
+                for (int i = 0; i < initial.length; i++) {
+                    assertEquals("pose sample " + sample + ", pass " + pass + ", field " + i,
+                        Double.doubleToRawLongBits(expectedFields[i]),
+                        Double.doubleToRawLongBits(actualFields[i]));
+                }
+                Object cachedPose = poseField.get(value);
+                if (firstPose == null) firstPose = cachedPose;
+                assertSame("rotation storage must be reused across passes and input changes",
+                    firstPose, cachedPose);
+                assertEquals(0, ((FloatBuffer) glMatrix.invoke(value)).position());
+            }
+        }
     }
 
     private static int countCalls(byte[] bytes, final String owner, final String name) {

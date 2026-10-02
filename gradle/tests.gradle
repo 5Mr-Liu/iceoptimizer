@@ -1,0 +1,32 @@
+sourceSets.test.compileClasspath += sourceSets.early.output + sourceSets.hooks.output + sourceSets.profiler.output
+sourceSets.test.runtimeClasspath += sourceSets.early.output + sourceSets.hooks.output + sourceSets.profiler.output
+
+def optionalTestInputs = [
+    foamfixJar: 'ice.foamfix.jar', optifineJar: 'ice.optifine.jar',
+    konkreteJar: 'ice.konkrete.jar', rusticJar: 'ice.rustic.jar',
+    xaeroWorldMapJar: 'ice.xaero.worldmap.jar', renderLibJar: 'ice.renderlib.jar',
+    srpJar: 'ice.srp.jar', srpMixinsJar: 'ice.srp.mixins.jar',
+    lycanitesJar: 'ice.lycanites.jar', moBendsJar: 'ice.mobends.jar',
+    iceAndFireJar: 'ice.iceandfire.jar', fbpJar: 'ice.fbp.jar',
+    minecraftSrgJar: 'ice.minecraft.srg.jar', minecraftClientJar: 'ice.minecraft.client.jar',
+    notchSrg: 'ice.notch.srg', llibraryJar: 'ice.llibrary.jar',
+    ichunUtilJar: 'ice.ichunutil.jar', oreLibJar: 'ice.orelib.jar',
+    betterFoliageJar: 'ice.betterfoliage.jar', betterCavesJar: 'ice.bettercaves.jar',
+    qualityToolsJar: 'ice.qualitytools.jar', quarkJar: 'ice.quark.jar',
+    betterFoliageRuntimeClass: 'ice.betterfoliage.runtimeClass', dynamicTreesJar: 'ice.dynamictrees.jar',
+    otgJar: 'ice.otg.jar', chunkAnimatorJar: 'ice.chunkanimator.jar',
+    dregoraDiscoveryDir: 'ice.dregora.discoveryDir', dregoraModsDir: 'ice.dregora.modsDir',
+    dregoraSrpJar: 'ice.dregora.srp.jar', dregoraLycanitesJar: 'ice.dregora.lycanites.jar',
+    dregoraRenderLibJar: 'ice.dregora.renderlib.jar', dregoraFoliageJar: 'ice.dregora.foliage.jar',
+    dregoraIceAndFireJar: 'ice.dregora.iceandfire.jar'
+]
+test {
+    dependsOn earlyClasses, hooksClasses, profilerClasses
+    // These require the completed installation archives and run in verifyArtifactStartup.
+    exclude '**/FinalOptimizerJarIsolationTest.class', '**/FinalProfilerJarIsolationTest.class', '**/ForgeSingleJarDiscoveryTest.class'
+    optionalTestInputs.each { propertyName, systemName ->
+        if (project.hasProperty(propertyName)) {
+            systemProperty systemName, file(project.property(propertyName)).absolutePath
+        }
+    }
+}

@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.render.telemetry;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -20,6 +21,80 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 
 public final class CorrelatedRenderProfilerTest {
+    @Test
+    public void repeatedCountersRemainIsolatedAcrossViewsAndGenerations() {
+        ClientEpochs epochs = new ClientEpochs();
+        FrameStamp primary = new FrameStamp(1L, 1L, epochs.snapshot());
+        FrameStamp portal = new FrameStamp(1L, 2L, epochs.snapshot());
+        epochs.invalidateResources();
+        FrameStamp reloaded = new FrameStamp(1L, 1L, epochs.snapshot());
+        CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(4);
+        for (int i = 0; i < 1000; i++) {
+            profiler.addCounter(primary, RenderPass.ENTITY_PASS_0,
+                RenderBackendId.ICE_NATIVE, RenderCounter.DRAW, 1L);
+            profiler.addCounter(primary, RenderPass.MAIN_SOLID,
+                RenderBackendId.LEGACY, RenderCounter.VERTEX, 4L);
+        }
+        profiler.addCounter(portal, RenderPass.ENTITY_PASS_0,
+            RenderBackendId.ICE_NATIVE, RenderCounter.DRAW, 7L);
+        profiler.addCounter(reloaded, RenderPass.ENTITY_PASS_0,
+            RenderBackendId.ICE_NATIVE, RenderCounter.DRAW, 11L);
+        // Returning from a portal or an equal-but-distinct stamp must resume
+        // the existing profile rather than replace its previous counters.
+        FrameStamp equivalent = new FrameStamp(1L, 2L,
+            new ClientEpochs().snapshot());
+        profiler.addCounter(equivalent, RenderPass.ENTITY_PASS_0,
+            RenderBackendId.ICE_NATIVE, RenderCounter.DRAW, 3L);
+        Map<RenderProfileKey, PassProfile> profiles = profiler.snapshot().getProfiles();
+        assertEquals(4, profiles.size());
+        assertEquals(Long.valueOf(1000L), profiles.get(new RenderProfileKey(primary,
+            RenderPass.ENTITY_PASS_0, RenderBackendId.ICE_NATIVE)).getCounters().get(RenderCounter.DRAW));
+        assertEquals(Long.valueOf(4000L), profiles.get(new RenderProfileKey(primary,
+            RenderPass.MAIN_SOLID, RenderBackendId.LEGACY)).getCounters().get(RenderCounter.VERTEX));
+        assertEquals(Long.valueOf(10L), profiles.get(new RenderProfileKey(portal,
+            RenderPass.ENTITY_PASS_0, RenderBackendId.ICE_NATIVE)).getCounters().get(RenderCounter.DRAW));
+        assertEquals(Long.valueOf(11L), profiles.get(new RenderProfileKey(reloaded,
+            RenderPass.ENTITY_PASS_0, RenderBackendId.ICE_NATIVE)).getCounters().get(RenderCounter.DRAW));
+    }
+
+    @Test
+    public void cachedCountersExpireWhenAnotherTelemetryPathAdvancesFrames() {
+        ClientEpochs epochs = new ClientEpochs();
+        FrameStamp old = new FrameStamp(1L, 1L, epochs.snapshot());
+        FrameStamp recent = new FrameStamp(10L, 1L, epochs.snapshot());
+        CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(4);
+        profiler.addCounter(old, RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE,
+            RenderCounter.DRAW, 1L);
+        profiler.beginCpu(recent, RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE,
+            CpuWorkKind.SUBMISSION).close();
+        profiler.addCounter(old, RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE,
+            RenderCounter.DRAW, 5L);
+        assertNull(profiler.snapshot().getProfiles().get(new RenderProfileKey(old,
+            RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE)));
+        assertEquals(2L, profiler.snapshot().getDroppedFrames());
+        profiler.addCounter(recent, RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE,
+            RenderCounter.DRAW, 3L);
+        assertEquals(Long.valueOf(3L), profiler.snapshot().getProfiles().get(
+            new RenderProfileKey(recent, RenderPass.MAIN_SOLID, RenderBackendId.ICE_NATIVE))
+                .getCounters().get(RenderCounter.DRAW));
+    }
+
+    @Test
+    public void primitiveCountersSaturateAndSnapshotsDoNotChangeAfterPublication() {
+        FrameStamp stamp = new FrameStamp(1L, 1L, new ClientEpochs().snapshot());
+        CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(4);
+        RenderProfileKey key = new RenderProfileKey(stamp, RenderPass.MAIN_SOLID,
+            RenderBackendId.ICE_NATIVE);
+        profiler.addCounter(stamp, key.getPass(), key.getBackend(), RenderCounter.DRAW, 10L);
+        PassProfile before = profiler.snapshot().getProfiles().get(key);
+        profiler.addCounter(stamp, key.getPass(), key.getBackend(), RenderCounter.DRAW, Long.MAX_VALUE);
+        assertEquals(Long.valueOf(10L), before.getCounters().get(RenderCounter.DRAW));
+        assertEquals(Long.valueOf(Long.MAX_VALUE), profiler.snapshot().getProfiles()
+            .get(key).getCounters().get(RenderCounter.DRAW));
+        assertFalse(profiler.snapshot().getProfiles().get(key).getCounters()
+            .containsKey(RenderCounter.VERTEX));
+    }
+
     @Test
     public void boundsCpuNestingAndAllowsOwnerToRecoverAfterWrongThreadClose()
         throws Exception {

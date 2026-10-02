@@ -77,7 +77,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         IceMod.LOGGER.info("ICE RLCraft 客户端优化运行时启动：{} 个工作线程，CPU 队列 {}，渲染队列 {}，兼容策略 {}",
             config.getWorkerThreads(), config.getWorkerQueueCapacity(), config.getRenderQueueCapacity(), packLock.getState());
         if (!coreModPresent) {
-            IceMod.LOGGER.error("ICE Optimizer Core JAR 未加载；客户端将安全运行，但字节码优化不会生效");
+            IceMod.LOGGER.error("ICE Optimizer 启动插件或转换器未注册；客户端将继续运行，但字节码优化不会生效");
         }
         if (!packLock.permitsPatches()) IceMod.LOGGER.warn("ICE 外部优化补丁保持关闭：{}", packLock.getDetail());
     }

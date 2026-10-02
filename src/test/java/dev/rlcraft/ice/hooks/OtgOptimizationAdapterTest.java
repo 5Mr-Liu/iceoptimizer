@@ -43,7 +43,12 @@ public class OtgOptimizationAdapterTest {
             "fcbe8092a9fb55a51ed81d07aef6c8700fdf3580ff3e8c7b78bfff720142a404"),
         sample("com.pg85.otg.customobjects.CustomObjectManager",
             "otg-configuration-generation",
-            "e485b584cac97eafd36ecd664c6117a0389ca21a7f3c7441cda868ebe43b25ef")
+            "e485b584cac97eafd36ecd664c6117a0389ca21a7f3c7441cda868ebe43b25ef"),
+        sample("com.pg85.otg.util.CompressionUtils", "otg-structure-compression",
+            "32a02ca984f6c053518b29721b253e567b32df22f6ce59b075933f49650e0c03"),
+        sample("com.pg85.otg.customobjects.structures.CustomStructureFileManager",
+            "otg-structure-save-allocations",
+            "bde1ef06441acb565528d14f1f4f237853eb0bd916d048ebb19764e33eff4141")
     };
 
     @Test
@@ -83,7 +88,17 @@ public class OtgOptimizationAdapterTest {
     }
 
     private static void verifyCalls(Sample sample, byte[] transformed) {
-        if (sample.className.endsWith(".BO3Loader")) {
+        if (sample.className.endsWith(".CompressionUtils")) {
+            assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgStructureCompressionAdapter.BRIDGE, "compress", "([B)[B"));
+            assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgStructureCompressionAdapter.BRIDGE, "isEnabled", "()Z"));
+        } else if (sample.className.endsWith(".CustomStructureFileManager")) {
+            assertTrue(hasMethod(transformed, OtgStructureSaveAllocationAdapter.ORIGINAL,
+                "(Ljava/util/Map;Lcom/pg85/otg/common/LocalWorld;)V"));
+            assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,
+                OtgStructureCompressionAdapter.BRIDGE, "isEnabled", "()Z"));
+        } else if (sample.className.endsWith(".BO3Loader")) {
             assertEquals(1, countCalls(transformed, Opcodes.INVOKESTATIC,
                 OtgBo3MetadataAdapter.BRIDGE, "createMetadataMap",
                 OtgBo3MetadataAdapter.CREATE_MAP_DESCRIPTOR));

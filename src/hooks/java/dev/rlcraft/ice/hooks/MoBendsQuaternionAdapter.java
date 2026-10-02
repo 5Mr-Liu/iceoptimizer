@@ -21,6 +21,12 @@ final class MoBendsQuaternionAdapter implements OptimizerBytecodeAdapter {
     static final String MATRIX_FIELD = "rlcraftIce$glMatrix";
     static final String VALID_FIELD = "rlcraftIce$glMatrixValid";
     static final String METHOD = "rlcraftIce$getGlMatrix";
+    static final String POSE_FIELD = "rlcraftIce$poseMatrix";
+    static final String POSE_VALID_FIELD = "rlcraftIce$poseMatrixValid";
+    static final String POSE_METHOD = "rlcraftIce$applyPoseRotation";
+    static final String POSE_MATRIX = "goblinbob/mobends/core/math/matrix/Mat4x4d";
+    static final String MATRIX_INTERFACE = "goblinbob/mobends/core/math/matrix/IMat4x4d";
+    private static final String REFRESH_MATRIX_METHOD = "rlcraftIce$refreshMatrix";
 
     @Override
     public byte[] transform(String transformedName, byte[] originalClass, TargetSpec target) {
@@ -36,9 +42,14 @@ final class MoBendsQuaternionAdapter implements OptimizerBytecodeAdapter {
         reader.accept(node, ClassReader.EXPAND_FRAMES);
         rejectField(node, MATRIX_FIELD);
         rejectField(node, VALID_FIELD);
+        rejectField(node, POSE_FIELD);
+        rejectField(node, POSE_VALID_FIELD);
         for (String component : new String[] { "X", "Y", "Z", "W" }) rejectField(node, bitsField(component));
         for (MethodNode method : node.methods) {
-            if (METHOD.equals(method.name)) throw new IllegalStateException("MoBends Quaternion 已存在 ICE 方法");
+            if (METHOD.equals(method.name) || POSE_METHOD.equals(method.name)
+                || REFRESH_MATRIX_METHOD.equals(method.name)) {
+                throw new IllegalStateException("MoBends Quaternion 已存在 ICE 方法");
+            }
         }
         String[] interfaces = node.interfaces.toArray(new String[node.interfaces.size()]);
         if (!Arrays.asList(interfaces).contains(ACCESS)) node.interfaces.add(ACCESS);
@@ -46,15 +57,89 @@ final class MoBendsQuaternionAdapter implements OptimizerBytecodeAdapter {
             MATRIX_FIELD, "Ljava/nio/FloatBuffer;", null, null));
         node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
             VALID_FIELD, "Z", null, null));
+        node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
+            POSE_FIELD, "L" + POSE_MATRIX + ";", null, null));
+        node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
+            POSE_VALID_FIELD, "Z", null, null));
         for (String component : new String[] { "X", "Y", "Z", "W" }) {
             node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
                 bitsField(component), "I", null, null));
         }
+        addMatrixRefreshMethod(node);
         addMatrixMethod(node);
+        addPoseRotationMethod(node);
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    /** Shared input proof and conversion; a hit never touches the buffer cursor. */
+    private static void addMatrixRefreshMethod(ClassNode node) {
+        MethodNode method = new MethodNode(Opcodes.ASM5,
+            Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
+            REFRESH_MATRIX_METHOD, "()V", null, null);
+        MethodVisitor code = method;
+        code.visitCode();
+        String[] fields = { "x", "y", "z", "w" };
+        for (int i = 0; i < fields.length; i++) {
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, fields[i], "F");
+            code.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Float", "floatToRawIntBits", "(F)I", false);
+            code.visitVarInsn(Opcodes.ISTORE, 1 + i);
+        }
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, VALID_FIELD, "Z");
+        Label recompute = new Label();
+        code.visitJumpInsn(Opcodes.IFEQ, recompute);
+        for (int i = 0; i < fields.length; i++) {
+            code.visitVarInsn(Opcodes.ILOAD, 1 + i);
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION,
+                bitsField(fields[i].toUpperCase()), "I");
+            code.visitJumpInsn(Opcodes.IF_ICMPNE, recompute);
+        }
+        code.visitInsn(Opcodes.RETURN);
+
+        code.visitLabel(recompute);
+        // A CPU pose and the GL buffer share the same four raw-float inputs.
+        // Invalidate the pose before conversion; input bits are committed only
+        // after a successful conversion, so a failed conversion is retried.
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitInsn(Opcodes.ICONST_0);
+        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, POSE_VALID_FIELD, "Z");
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, MATRIX_FIELD, "Ljava/nio/FloatBuffer;");
+        code.visitVarInsn(Opcodes.ASTORE, 5);
+        code.visitVarInsn(Opcodes.ALOAD, 5);
+        Label haveBuffer = new Label();
+        code.visitJumpInsn(Opcodes.IFNONNULL, haveBuffer);
+        code.visitIntInsn(Opcodes.BIPUSH, 16);
+        code.visitMethodInsn(Opcodes.INVOKESTATIC, "org/lwjgl/BufferUtils", "createFloatBuffer",
+            "(I)Ljava/nio/FloatBuffer;", false);
+        code.visitVarInsn(Opcodes.ASTORE, 5);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitVarInsn(Opcodes.ALOAD, 5);
+        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, MATRIX_FIELD, "Ljava/nio/FloatBuffer;");
+        code.visitLabel(haveBuffer);
+        code.visitVarInsn(Opcodes.ALOAD, 5);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitMethodInsn(Opcodes.INVOKESTATIC, "goblinbob/mobends/core/math/QuaternionUtils",
+            "quatToGlMatrix", "(Ljava/nio/FloatBuffer;L" + QUATERNION + ";)Ljava/nio/FloatBuffer;", false);
+        code.visitInsn(Opcodes.POP);
+        for (int i = 0; i < fields.length; i++) {
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitVarInsn(Opcodes.ILOAD, 1 + i);
+            code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION,
+                bitsField(fields[i].toUpperCase()), "I");
+        }
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitInsn(Opcodes.ICONST_1);
+        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, VALID_FIELD, "Z");
+        code.visitInsn(Opcodes.RETURN);
+        code.visitMaxs(0, 0);
+        code.visitEnd();
+        node.methods.add(method);
     }
 
     private static void addMatrixMethod(ClassNode node) {
@@ -63,64 +148,89 @@ final class MoBendsQuaternionAdapter implements OptimizerBytecodeAdapter {
             METHOD, "()Ljava/nio/FloatBuffer;", null, null);
         MethodVisitor code = method;
         code.visitCode();
+        emitMatrixRefresh(code);
         code.visitVarInsn(Opcodes.ALOAD, 0);
         code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, MATRIX_FIELD, "Ljava/nio/FloatBuffer;");
         code.visitVarInsn(Opcodes.ASTORE, 1);
-        code.visitVarInsn(Opcodes.ALOAD, 1);
-        Label haveBuffer = new Label();
-        code.visitJumpInsn(Opcodes.IFNONNULL, haveBuffer);
-        code.visitIntInsn(Opcodes.BIPUSH, 16);
-        code.visitMethodInsn(Opcodes.INVOKESTATIC, "org/lwjgl/BufferUtils", "createFloatBuffer",
-            "(I)Ljava/nio/FloatBuffer;", false);
-        code.visitVarInsn(Opcodes.ASTORE, 1);
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitVarInsn(Opcodes.ALOAD, 1);
-        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, MATRIX_FIELD, "Ljava/nio/FloatBuffer;");
-        code.visitLabel(haveBuffer);
-        String[] fields = { "x", "y", "z", "w" };
-        for (int i = 0; i < fields.length; i++) {
-            code.visitVarInsn(Opcodes.ALOAD, 0);
-            code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, fields[i], "F");
-            code.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Float", "floatToRawIntBits", "(F)I", false);
-            code.visitVarInsn(Opcodes.ISTORE, 2 + i);
-        }
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, VALID_FIELD, "Z");
-        Label recompute = new Label();
-        code.visitJumpInsn(Opcodes.IFEQ, recompute);
-        for (int i = 0; i < fields.length; i++) {
-            code.visitVarInsn(Opcodes.ILOAD, 2 + i);
-            code.visitVarInsn(Opcodes.ALOAD, 0);
-            code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION,
-                bitsField(fields[i].toUpperCase()), "I");
-            code.visitJumpInsn(Opcodes.IF_ICMPNE, recompute);
-        }
         code.visitVarInsn(Opcodes.ALOAD, 1);
         code.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/nio/FloatBuffer", "rewind", "()Ljava/nio/Buffer;", false);
         code.visitInsn(Opcodes.POP);
         code.visitVarInsn(Opcodes.ALOAD, 1);
         code.visitInsn(Opcodes.ARETURN);
-
-        code.visitLabel(recompute);
-        code.visitVarInsn(Opcodes.ALOAD, 1);
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitMethodInsn(Opcodes.INVOKESTATIC, "goblinbob/mobends/core/math/QuaternionUtils",
-            "quatToGlMatrix", "(Ljava/nio/FloatBuffer;L" + QUATERNION + ";)Ljava/nio/FloatBuffer;", false);
-        code.visitInsn(Opcodes.POP);
-        for (int i = 0; i < fields.length; i++) {
-            code.visitVarInsn(Opcodes.ALOAD, 0);
-            code.visitVarInsn(Opcodes.ILOAD, 2 + i);
-            code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION,
-                bitsField(fields[i].toUpperCase()), "I");
-        }
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitInsn(Opcodes.ICONST_1);
-        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, VALID_FIELD, "Z");
-        code.visitVarInsn(Opcodes.ALOAD, 1);
-        code.visitInsn(Opcodes.ARETURN);
         code.visitMaxs(0, 0);
         code.visitEnd();
         node.methods.add(method);
+    }
+
+    private static void emitMatrixRefresh(MethodVisitor code) {
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitMethodInsn(Opcodes.INVOKESPECIAL, QUATERNION, REFRESH_MATRIX_METHOD, "()V", false);
+    }
+
+    private static void addPoseRotationMethod(ClassNode node) {
+        MethodNode method = new MethodNode(Opcodes.ASM5,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
+            POSE_METHOD, "(Ljava/lang/Object;)V", null, null);
+        MethodVisitor code = method;
+        code.visitCode();
+        emitMatrixRefresh(code);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, POSE_FIELD, "L" + POSE_MATRIX + ";");
+        code.visitVarInsn(Opcodes.ASTORE, 3);
+        Label haveMatrix = new Label();
+        code.visitVarInsn(Opcodes.ALOAD, 3);
+        code.visitJumpInsn(Opcodes.IFNONNULL, haveMatrix);
+        code.visitTypeInsn(Opcodes.NEW, POSE_MATRIX);
+        code.visitInsn(Opcodes.DUP);
+        code.visitMethodInsn(Opcodes.INVOKESPECIAL, POSE_MATRIX, "<init>", "()V", false);
+        code.visitVarInsn(Opcodes.ASTORE, 3);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitVarInsn(Opcodes.ALOAD, 3);
+        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, POSE_FIELD, "L" + POSE_MATRIX + ";");
+        code.visitLabel(haveMatrix);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, POSE_VALID_FIELD, "Z");
+        Label ready = new Label();
+        code.visitJumpInsn(Opcodes.IFNE, ready);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitFieldInsn(Opcodes.GETFIELD, QUATERNION, MATRIX_FIELD, "Ljava/nio/FloatBuffer;");
+        code.visitVarInsn(Opcodes.ASTORE, 2);
+        code.visitVarInsn(Opcodes.ALOAD, 3);
+        code.visitMethodInsn(Opcodes.INVOKEVIRTUAL, POSE_MATRIX, "getFields", "()[D", false);
+        code.visitVarInsn(Opcodes.ASTORE, 4);
+        // quatToMat computes the same float expressions as quatToGlMatrix, then
+        // widens each result to double. Preserve that order and signed zeros.
+        for (int i = 0; i < 16; i++) {
+            code.visitVarInsn(Opcodes.ALOAD, 4);
+            pushIndex(code, i);
+            code.visitVarInsn(Opcodes.ALOAD, 2);
+            pushIndex(code, i);
+            code.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/nio/FloatBuffer", "get", "(I)F", false);
+            code.visitInsn(Opcodes.F2D);
+            code.visitInsn(Opcodes.DASTORE);
+        }
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitInsn(Opcodes.ICONST_1);
+        code.visitFieldInsn(Opcodes.PUTFIELD, QUATERNION, POSE_VALID_FIELD, "Z");
+        code.visitLabel(ready);
+        code.visitVarInsn(Opcodes.ALOAD, 1);
+        code.visitTypeInsn(Opcodes.CHECKCAST, MATRIX_INTERFACE);
+        code.visitVarInsn(Opcodes.ASTORE, 1);
+        code.visitVarInsn(Opcodes.ALOAD, 1);
+        code.visitVarInsn(Opcodes.ALOAD, 3);
+        code.visitVarInsn(Opcodes.ALOAD, 1);
+        String matrix = "Lgoblinbob/mobends/core/math/matrix/IMatd;";
+        code.visitMethodInsn(Opcodes.INVOKESTATIC, "goblinbob/mobends/core/math/matrix/MatrixUtils",
+            "multiply", "(" + matrix + matrix + matrix + ")V", false);
+        code.visitInsn(Opcodes.RETURN);
+        code.visitMaxs(0, 0);
+        code.visitEnd();
+        node.methods.add(method);
+    }
+
+    private static void pushIndex(MethodVisitor code, int index) {
+        if (index <= 5) code.visitInsn(Opcodes.ICONST_0 + index);
+        else code.visitIntInsn(Opcodes.BIPUSH, index);
     }
 
     private static byte[] transformGlHelper(byte[] originalClass) {

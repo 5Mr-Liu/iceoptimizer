@@ -57,6 +57,7 @@ import org.lwjgl.opengl.GLSync;
  */
 public final class LwjglTerrainArena {
     private static final int STRIDE = 28;
+    private static final TerrainLayer[] TERRAIN_LAYERS = TerrainLayer.values();
     private static final int REGION_SIZE = 256;
     private static final int MAX_UPLOAD_BYTES = 16 * 1024 * 1024;
     private static final int MAX_VISIBLE_MESHES = 131072;
@@ -261,7 +262,7 @@ public final class LwjglTerrainArena {
         boolean previousRetired = false;
         try {
             ByteBuffer normalized = normalizeIntoStaging(source, sourceBytes,
-                stride, bytes, position, regionX, regionY, regionZ);
+                stride, bytes, position, regionX, regionY, regionZ, staging);
             long normalizedChecksum = checksum(normalized, bytes);
             lastUploadPersistent = write(range, normalized,
                 preferPersistentWrite);
@@ -1703,10 +1704,11 @@ public final class LwjglTerrainArena {
         if (failure != null) rethrow(failure);
     }
 
-    private ByteBuffer normalizeIntoStaging(ByteBuffer source, int sourceBytes,
-                                            int sourceStride, int bytes,
-                                            BlockPos chunk, int regionX,
-                                            int regionY, int regionZ) {
+    static ByteBuffer normalizeIntoStaging(ByteBuffer source, int sourceBytes,
+                                           int sourceStride, int bytes,
+                                           BlockPos chunk, int regionX,
+                                           int regionY, int regionZ,
+                                           ByteBuffer staging) {
         if (staging == null || staging.capacity() < bytes) {
             throw new IllegalStateException("terrain staging budget");
         }
@@ -1721,10 +1723,9 @@ public final class LwjglTerrainArena {
             int vertices = sourceBytes / sourceStride;
             for (int vertex = 0; vertex < vertices; vertex++) {
                 int offset = vertex * sourceStride;
-                ByteBuffer prefix = input.duplicate().order(ByteOrder.nativeOrder());
-                prefix.position(offset);
-                prefix.limit(offset + STRIDE);
-                staging.put(prefix);
+                input.limit(offset + STRIDE);
+                input.position(offset);
+                staging.put(input);
             }
         }
         ByteBuffer output = staging.duplicate().order(ByteOrder.nativeOrder());
@@ -1757,53 +1758,14 @@ public final class LwjglTerrainArena {
             && DefaultVertexFormats.TEX_2S.equals(format.getElement(3));
     }
 
-    static byte[] packVanillaBlockPrefixForTest(byte[] source, int sourceStride) {
-        if (source == null || sourceStride < STRIDE
-            || source.length == 0 || source.length % sourceStride != 0) {
-            throw new IllegalArgumentException("test extended terrain bytes");
-        }
-        int vertices = source.length / sourceStride;
-        byte[] result = new byte[Math.multiplyExact(vertices, STRIDE)];
-        for (int vertex = 0; vertex < vertices; vertex++) {
-            System.arraycopy(source, vertex * sourceStride, result,
-                vertex * STRIDE, STRIDE);
-        }
-        return result;
-    }
-
     private static TerrainLayer layer(BlockRenderLayer layer) {
         if (layer == null) return null;
         int ordinal = layer.ordinal();
-        TerrainLayer[] values = TerrainLayer.values();
-        return ordinal >= 0 && ordinal < values.length ? values[ordinal] : null;
+        return ordinal < TERRAIN_LAYERS.length ? TERRAIN_LAYERS[ordinal] : null;
     }
 
     private static int regionOrigin(int coordinate) {
         return Math.floorDiv(coordinate, REGION_SIZE) * REGION_SIZE;
-    }
-
-    static byte[] normalizeForTest(byte[] source, int chunkX, int chunkY, int chunkZ) {
-        if (source == null || source.length % STRIDE != 0) {
-            throw new IllegalArgumentException("test terrain bytes");
-        }
-        ByteBuffer input = ByteBuffer.wrap(source.clone())
-            .order(ByteOrder.nativeOrder());
-        BlockPos chunk = new BlockPos(chunkX, chunkY, chunkZ);
-        byte[] result = new byte[source.length];
-        ByteBuffer output = ByteBuffer.wrap(result).order(ByteOrder.nativeOrder());
-        output.put(input);
-        float dx = chunkX - regionOrigin(chunkX);
-        float dy = chunkY - regionOrigin(chunkY);
-        float dz = chunkZ - regionOrigin(chunkZ);
-        for (int offset = 0; offset < result.length; offset += STRIDE) {
-            output.putFloat(offset, output.getFloat(offset) * MODEL_SCALE
-                + MODEL_TRANSLATION + dx);
-            output.putFloat(offset + 4, output.getFloat(offset + 4) * MODEL_SCALE
-                + MODEL_TRANSLATION + dy);
-            output.putFloat(offset + 8, output.getFloat(offset + 8) * MODEL_SCALE
-                + MODEL_TRANSLATION + dz);
-        }
-        return result;
     }
 
     static int regionOriginForTest(int coordinate) { return regionOrigin(coordinate); }

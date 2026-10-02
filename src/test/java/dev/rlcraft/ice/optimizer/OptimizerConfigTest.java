@@ -8,6 +8,30 @@ import org.junit.Test;
 
 public final class OptimizerConfigTest {
     @Test
+    public void fbpCubeSubmissionDoesNotDependOnModernParticleQualification() {
+        boolean originalEnabled = OptimizerConfig.settings.enabled;
+        boolean originalModern = OptimizerConfig.settings.modernRenderer;
+        boolean originalParticles = OptimizerConfig.settings.modernParticleBackend;
+        boolean originalCube = OptimizerConfig.settings.fbpCubeSubmission;
+        try {
+            OptimizerConfig.settings.enabled = true;
+            OptimizerConfig.settings.modernRenderer = false;
+            OptimizerConfig.settings.modernParticleBackend = false;
+            OptimizerConfig.settings.fbpCubeSubmission = true;
+            assertTrue(ClientOptimizerConfig.capture().enabled(OptimizationModule.FBP_CUBE_SUBMISSION));
+            assertFalse(OptimizationModule.FBP_CUBE_SUBMISSION.isRuntimeManagedRenderer());
+            assertFalse(OptimizationModule.FBP_CUBE_SUBMISSION.supports(OptimizerRuntimeSide.DEDICATED_SERVER));
+            OptimizerConfig.settings.fbpCubeSubmission = false;
+            assertFalse(ClientOptimizerConfig.capture().enabled(OptimizationModule.FBP_CUBE_SUBMISSION));
+        } finally {
+            OptimizerConfig.settings.enabled = originalEnabled;
+            OptimizerConfig.settings.modernRenderer = originalModern;
+            OptimizerConfig.settings.modernParticleBackend = originalParticles;
+            OptimizerConfig.settings.fbpCubeSubmission = originalCube;
+        }
+    }
+
+    @Test
     public void reviewedChunkMeshOptimizationsAreEnabledByDefault() {
         assertTrue(OptimizerConfig.settings.betterFoliageAoScratch);
         assertTrue(OptimizerConfig.settings.dynamicTreesConnectionMemo);

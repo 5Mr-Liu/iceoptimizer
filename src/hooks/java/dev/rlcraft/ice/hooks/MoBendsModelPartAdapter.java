@@ -7,6 +7,8 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 
 /** Exact parent-topology cache and indexed child traversal for Mo' Bends ModelPart. */
@@ -18,9 +20,15 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         "dev/rlcraft/ice/optimizer/compat/mobends/MoBendsRenderBridge";
     static final String CHAIN_FIELD = "rlcraftIce$transformChain";
     static final String SCALES_FIELD = "rlcraftIce$transformScales";
+    static final String CHAIN_READY_FIELD = "rlcraftIce$stateBatchTransformChainReady";
+    static final String TRANSFORM_ACCESS =
+        "dev/rlcraft/ice/optimizer/compat/mobends/MoBendsStateBatchTransformAccess";
     static final String RESOLVE_METHOD = "rlcraftIce$resolveTransformChain";
     static final String RENDER_ORIGINAL = "rlcraftIce$renderPartOriginal";
     static final String JUST_ORIGINAL = "rlcraftIce$renderJustPartOriginal";
+    static final String ROTATE_POSE_METHOD = "rlcraftIce$rotatePoseMatrix";
+    static final String QUATERNION = MoBendsQuaternionAdapter.QUATERNION;
+    static final String ROTATE_POSE_DESCRIPTOR = "(L" + MATRIX + ";L" + QUATERNION + ";)V";
 
     @Override
     public byte[] transform(String transformedName, byte[] originalClass, TargetSpec target) {
@@ -30,6 +38,8 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         if (!TARGET.equals(node.name)) throw new IllegalStateException("MoBends ModelPart 类名变化：" + node.name);
         rejectField(node, CHAIN_FIELD);
         rejectField(node, SCALES_FIELD);
+        rejectField(node, CHAIN_READY_FIELD);
+        boolean batchReviewed = reviewedBatchGraph(node);
         int characterMethods = 0;
         MethodNode render = null;
         MethodNode just = null;
@@ -38,7 +48,7 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
             if ("renderPart".equals(method.name) && "(F)V".equals(method.desc)) render = method;
             if ("renderJustPart".equals(method.name) && "(F)V".equals(method.desc)) just = method;
             if (RESOLVE_METHOD.equals(method.name) || RENDER_ORIGINAL.equals(method.name)
-                || JUST_ORIGINAL.equals(method.name)) {
+                || JUST_ORIGINAL.equals(method.name) || ROTATE_POSE_METHOD.equals(method.name)) {
                 throw new IllegalStateException("MoBends ModelPart 已存在 ICE 方法：" + method.name);
             }
         }
@@ -50,16 +60,124 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
             CHAIN_FIELD, "[L" + PART + ";", null, null));
         node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
             SCALES_FIELD, "[F", null, null));
+        node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
+            CHAIN_READY_FIELD, "Z", null, null));
+        if (batchReviewed) {
+            node.interfaces.add(TRANSFORM_ACCESS);
+            ModelSubclassStateBatchAdapter.addExactClassReady(node, "ice$stateBatchTransformClassReady");
+            ModelSubclassStateBatchAdapter.addDisplayListAccess(node, "field_78811_r", "field_78812_q");
+            replaceStateBatchReady(node);
+        }
+        if (ModelSubclassStateBatchAdapter.reviewed(node, "func_78788_d", "(F)V",
+            "003c8005df15c1a39e8399eb486a4d0aa8f2a321b4c58afc833f7c56f33a2e77")) {
+            ModelSubclassStateBatchAdapter.wrapCompiler(node,
+                ModelStateBatchMethodProof.method(node, "func_78788_d", "(F)V"),
+                "rlcraftIce$compileMoBendsDisplayListOriginal");
+        }
         addResolveMethod(node);
         addCharacterTransform(node, false);
         addCharacterTransform(node, true);
-        wrapRender(node, render, false);
-        wrapRender(node, just, true);
+        wrapRender(node, render, false, batchReviewed);
+        wrapRender(node, just, true, batchReviewed);
+        redirectPoseRotation(node);
 
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static boolean reviewedBatchGraph(ClassNode node) {
+        return ModelSubclassStateBatchAdapter.reviewed(node, "func_78785_a", "(F)V",
+                "d7135cc1e1b07f90fefd47da8a07da8b41d03be459b29f104b7b13fd0705d934")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "renderPart", "(F)V",
+                "db7a2f9480965d6c5c6f17602a74e66ce2d338b715b7ea5a1b16e1d103b8f46b")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "renderJustPart", "(F)V",
+                "2bf2c4590fa263dc0df6c66a6d4712e8be5378f8516c46c9a3a6a93303d9f01e")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "applyPreTransform", "(F)V",
+                "d3db669bca0085e850b664472f755bbedbc084a3457b5b47046e8e8e62935612")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "applyLocalTransform", "(F)V",
+                "ba08c5fa55332e2e397305f1d2a1ec674603eac117bf969bb161b87cf36bcbb3")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "getParent", "()L" + PART + ";",
+                "626ed7e4e2308338200991e6cd41a31ad0b8a0d5f9e7e7f355ff4db9b42f9e82")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "getOffsetScale", "()F",
+                "7abab3728190634778b95b64bee207d120ee8df535cd3f8a8eb7b0310ff0fb79")
+            && ModelSubclassStateBatchAdapter.reviewed(node, "isShowing", "()Z",
+                "bca759c666933004841f9abc2d228d5ec2b25292d7efed82ef0f25ce84cd3bf3");
+    }
+
+    private static void replaceStateBatchReady(ClassNode node) {
+        node.methods.remove(ModelStateBatchMethodProof.method(node, "ice$stateBatchNodeReady", "()Z"));
+        MethodNode ready = new MethodNode(Opcodes.ASM5, Opcodes.ACC_PUBLIC | Opcodes.ACC_SYNTHETIC,
+            "ice$stateBatchNodeReady", "()Z", null, null);
+        ready.visitCode();
+        Label declined = new Label();
+        ready.visitVarInsn(Opcodes.ALOAD, 0);
+        ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, "field_78812_q", "Z");
+        ready.visitJumpInsn(Opcodes.IFEQ, declined);
+        ready.visitMethodInsn(Opcodes.INVOKESTATIC, BRIDGE, "useModelRender", "()Z", false);
+        ready.visitJumpInsn(Opcodes.IFEQ, declined);
+        ready.visitVarInsn(Opcodes.ALOAD, 0);
+        ready.visitMethodInsn(Opcodes.INVOKESPECIAL, TARGET, RESOLVE_METHOD, "()[L" + PART + ";", false);
+        ready.visitJumpInsn(Opcodes.IFNULL, declined);
+        ready.visitVarInsn(Opcodes.ALOAD, 0);
+        ready.visitFieldInsn(Opcodes.GETFIELD, TARGET, CHAIN_READY_FIELD, "Z");
+        ready.visitInsn(Opcodes.IRETURN);
+        ready.visitLabel(declined);
+        ready.visitInsn(Opcodes.ICONST_0);
+        ready.visitInsn(Opcodes.IRETURN);
+        ready.visitMaxs(0, 0);
+        ready.visitEnd();
+        node.methods.add(ready);
+    }
+
+    private static void redirectPoseRotation(ClassNode node) {
+        int redirected = 0;
+        for (MethodNode method : node.methods) {
+            if (!"applyLocalTransform".equals(method.name)
+                || !("(FL" + MATRIX + ";)V").equals(method.desc)) continue;
+            for (AbstractInsnNode instruction = method.instructions.getFirst(); instruction != null;
+                 instruction = instruction.getNext()) {
+                if (!(instruction instanceof MethodInsnNode)) continue;
+                MethodInsnNode call = (MethodInsnNode) instruction;
+                if (call.getOpcode() == Opcodes.INVOKESTATIC
+                    && "goblinbob/mobends/core/math/TransformUtils".equals(call.owner)
+                    && "rotate".equals(call.name) && ROTATE_POSE_DESCRIPTOR.equals(call.desc)) {
+                    call.owner = TARGET;
+                    call.name = ROTATE_POSE_METHOD;
+                    redirected++;
+                }
+            }
+        }
+        if (redirected != 1) {
+            throw new IllegalStateException("MoBends ModelPart CPU rotation 调用图变化：" + redirected);
+        }
+        MethodNode method = new MethodNode(Opcodes.ASM5,
+            Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
+            ROTATE_POSE_METHOD, ROTATE_POSE_DESCRIPTOR, null, null);
+        MethodVisitor code = method;
+        code.visitCode();
+        code.visitMethodInsn(Opcodes.INVOKESTATIC, BRIDGE, "useQuaternionCache", "()Z", false);
+        Label fallback = new Label();
+        code.visitJumpInsn(Opcodes.IFEQ, fallback);
+        code.visitVarInsn(Opcodes.ALOAD, 1);
+        code.visitTypeInsn(Opcodes.INSTANCEOF, MoBendsQuaternionAdapter.ACCESS);
+        code.visitJumpInsn(Opcodes.IFEQ, fallback);
+        code.visitVarInsn(Opcodes.ALOAD, 1);
+        code.visitTypeInsn(Opcodes.CHECKCAST, MoBendsQuaternionAdapter.ACCESS);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitMethodInsn(Opcodes.INVOKEINTERFACE, MoBendsQuaternionAdapter.ACCESS,
+            MoBendsQuaternionAdapter.POSE_METHOD, "(Ljava/lang/Object;)V", true);
+        code.visitInsn(Opcodes.RETURN);
+        code.visitLabel(fallback);
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitVarInsn(Opcodes.ALOAD, 1);
+        code.visitMethodInsn(Opcodes.INVOKESTATIC, "goblinbob/mobends/core/math/TransformUtils",
+            "rotate", ROTATE_POSE_DESCRIPTOR, false);
+        code.visitInsn(Opcodes.RETURN);
+        code.visitMaxs(0, 0);
+        code.visitEnd();
+        node.methods.add(method);
     }
 
     private static void addResolveMethod(ClassNode node) {
@@ -139,6 +257,8 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         code.visitVarInsn(Opcodes.ASTORE, 4);
         code.visitInsn(Opcodes.ICONST_0);
         code.visitVarInsn(Opcodes.ISTORE, 2);
+        code.visitInsn(Opcodes.ICONST_1);
+        code.visitVarInsn(Opcodes.ISTORE, 5);
         Label fill = new Label();
         Label store = new Label();
         code.visitLabel(fill);
@@ -149,6 +269,20 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         code.visitVarInsn(Opcodes.ILOAD, 2);
         code.visitVarInsn(Opcodes.ALOAD, 4);
         code.visitInsn(Opcodes.AASTORE);
+        Label chainPartProved = new Label();
+        Label chainPartUnknown = new Label();
+        code.visitVarInsn(Opcodes.ALOAD, 4);
+        code.visitTypeInsn(Opcodes.INSTANCEOF, TRANSFORM_ACCESS);
+        code.visitJumpInsn(Opcodes.IFEQ, chainPartUnknown);
+        code.visitVarInsn(Opcodes.ALOAD, 4);
+        code.visitTypeInsn(Opcodes.CHECKCAST, TRANSFORM_ACCESS);
+        code.visitMethodInsn(Opcodes.INVOKEINTERFACE, TRANSFORM_ACCESS,
+            "ice$stateBatchTransformClassReady", "()Z", true);
+        code.visitJumpInsn(Opcodes.IFNE, chainPartProved);
+        code.visitLabel(chainPartUnknown);
+        code.visitInsn(Opcodes.ICONST_0);
+        code.visitVarInsn(Opcodes.ISTORE, 5);
+        code.visitLabel(chainPartProved);
         code.visitVarInsn(Opcodes.ALOAD, 4);
         code.visitMethodInsn(Opcodes.INVOKEINTERFACE, PART, "getParent", "()L" + PART + ";", true);
         code.visitVarInsn(Opcodes.ASTORE, 4);
@@ -158,6 +292,9 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         code.visitVarInsn(Opcodes.ALOAD, 0);
         code.visitVarInsn(Opcodes.ALOAD, 1);
         code.visitFieldInsn(Opcodes.PUTFIELD, TARGET, CHAIN_FIELD, "[L" + PART + ";");
+        code.visitVarInsn(Opcodes.ALOAD, 0);
+        code.visitVarInsn(Opcodes.ILOAD, 5);
+        code.visitFieldInsn(Opcodes.PUTFIELD, TARGET, CHAIN_READY_FIELD, "Z");
 
         code.visitLabel(cachedReady);
         code.visitVarInsn(Opcodes.ALOAD, 0);
@@ -197,8 +334,23 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         emitDefaultCall(code, descriptor, matrix);
         code.visitInsn(Opcodes.RETURN);
         code.visitLabel(fast);
-        code.visitVarInsn(Opcodes.ALOAD, 0);
-        code.visitMethodInsn(Opcodes.INVOKESPECIAL, TARGET, RESOLVE_METHOD, "()[L" + PART + ";", false);
+        if (matrix) {
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitMethodInsn(Opcodes.INVOKESPECIAL, TARGET, RESOLVE_METHOD, "()[L" + PART + ";", false);
+        } else {
+            Label resolve = new Label();
+            Label chainLoaded = new Label();
+            code.visitMethodInsn(Opcodes.INVOKESTATIC, ModelSubclassStateBatchAdapter.BRIDGE,
+                "isActive", "()Z", false);
+            code.visitJumpInsn(Opcodes.IFEQ, resolve);
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitFieldInsn(Opcodes.GETFIELD, TARGET, CHAIN_FIELD, "[L" + PART + ";");
+            code.visitJumpInsn(Opcodes.GOTO, chainLoaded);
+            code.visitLabel(resolve);
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitMethodInsn(Opcodes.INVOKESPECIAL, TARGET, RESOLVE_METHOD, "()[L" + PART + ";", false);
+            code.visitLabel(chainLoaded);
+        }
         int chainLocal = matrix ? 3 : 2;
         int scalesLocal = chainLocal + 1;
         int indexLocal = scalesLocal + 1;
@@ -288,7 +440,8 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         code.visitMethodInsn(Opcodes.INVOKESPECIAL, PART, "applyCharacterTransform", descriptor, true);
     }
 
-    private static void wrapRender(ClassNode node, MethodNode original, boolean justPart) {
+    private static void wrapRender(ClassNode node, MethodNode original, boolean justPart,
+                                   boolean batchReviewed) {
         String publicName = justPart ? "renderJustPart" : "renderPart";
         String originalName = justPart ? JUST_ORIGINAL : RENDER_ORIGINAL;
         int access = original.access;
@@ -321,6 +474,16 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         code.visitVarInsn(Opcodes.FLOAD, 1);
         code.visitMethodInsn(Opcodes.INVOKEVIRTUAL, TARGET, "func_78788_d", "(F)V", false);
         code.visitLabel(compiled);
+        Label scopeStart = new Label();
+        Label scopeEnd = new Label();
+        Label scopeHandler = new Label();
+        if (batchReviewed) {
+            code.visitVarInsn(Opcodes.ALOAD, 0);
+            code.visitMethodInsn(Opcodes.INVOKESTATIC, ModelSubclassStateBatchAdapter.BRIDGE,
+                "begin", "(Lnet/minecraft/client/model/ModelRenderer;)Z", false);
+            code.visitVarInsn(Opcodes.ISTORE, 5);
+            code.visitLabel(scopeStart);
+        }
         code.visitMethodInsn(Opcodes.INVOKESTATIC, "net/minecraft/client/renderer/GlStateManager",
             "func_179094_E", "()V", false);
         code.visitVarInsn(Opcodes.ALOAD, 0);
@@ -361,7 +524,16 @@ final class MoBendsModelPartAdapter implements OptimizerBytecodeAdapter {
         code.visitLabel(noChildren);
         code.visitMethodInsn(Opcodes.INVOKESTATIC, "net/minecraft/client/renderer/GlStateManager",
             "func_179121_F", "()V", false);
+        if (batchReviewed) {
+            code.visitLabel(scopeEnd);
+            ModelSubclassStateBatchAdapter.emitEnd(wrapper, 5);
+        }
         code.visitInsn(Opcodes.RETURN);
+        if (batchReviewed) {
+            code.visitLabel(scopeHandler);
+            ModelSubclassStateBatchAdapter.emitFailure(wrapper, 5, 6);
+            code.visitTryCatchBlock(scopeStart, scopeEnd, scopeHandler, "java/lang/Throwable");
+        }
         code.visitMaxs(0, 0);
         code.visitEnd();
         node.methods.add(wrapper);

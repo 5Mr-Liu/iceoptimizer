@@ -1,11 +1,21 @@
 ICE Performance Recorder installation
 =====================================
 
-Copy BOTH JAR files from this ZIP into the Minecraft instance's mods folder.
-The profiler main JAR provides recording and reports; profiler-core provides
-the optional deep bytecode probes. Keep both files on the same version and
-remove older profiler main/core JARs before installation.
+Copy ice-rlcraft-profiler-<version>.jar into mods.
+This JAR contains recording, reports and the optional deep bytecode probes.
+Stop Minecraft/server before upgrading. Remove older profiler Main/Core JARs;
+keep the optimizer JAR and other mods. Configuration, reports and saves can stay.
+The profiler remains optional and is distributed separately from the optimizer.
 
-安装方法：把 ZIP 内的两个 JAR 一起放入实例的 mods 目录。Profiler 主 JAR
-提供记录与报告，profiler-core 提供可选的深度字节码探针。两个文件必须同版，
-安装前请移除旧版 profiler 主/Core JAR。
+The workspace tools/deploy-profiler.ps1 accepts -Archive and -ModsDirectory,
+backs up only matching profiler JARs, and prints a RollbackManifest path.
+Restore that installation with -RollbackManifest <path> after stopping Minecraft.
+
+安装方法：把 ice-rlcraft-profiler-<版本>.jar 放入 mods。
+这个 JAR 已包含记录、报告以及可选的深度字节码探针。
+升级前关闭游戏/服务端，移除旧版 profiler 主/Core JAR，保留 optimizer
+和其他模组。配置、已有报告和存档可以保留。Profiler 仍单独发布、按需安装。
+
+工作区 tools/deploy-profiler.ps1 支持 -Archive 和 -ModsDirectory，
+只备份与迁移 Profiler JAR，并输出 RollbackManifest 路径。
+关闭游戏后用 -RollbackManifest <路径> 可恢复该次安装前的 Profiler 文件。

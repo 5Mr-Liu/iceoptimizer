@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.profiler.sampling;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
@@ -25,7 +26,7 @@ public class StackTraceRepositoryTest {
     }
 
     @Test
-    public void fullDictionaryMergesLineVariantsIntoStablePrefixRepresentative() {
+    public void fullDictionaryRetainsOnlyProvenPrefixForDifferentCallers() {
         StackTraceRepository repository = new StackTraceRepository(1, 8);
         int representative = repository.intern(new StackTraceElement[] {
             frame("a.A", "leaf", 1), frame("b.B", "middle", 2),
@@ -37,10 +38,51 @@ public class StackTraceRepositoryTest {
             frame("c.C", "root", 103), frame("z.Z", "different", 104)
         });
 
-        assertEquals(representative, merged);
+        assertTrue(StackTraceRepository.isPrefixOnly(merged));
+        assertFalse(StackTraceRepository.isPrefixOnly(representative));
+        StackTraceElement[] prefix = repository.get(merged);
+        assertEquals(4, prefix.length);
+        assertEquals("a.A", prefix[0].getClassName());
+        assertEquals(-1, prefix[0].getLineNumber());
+        assertEquals(null, prefix[0].getFileName());
+        assertEquals("c.C", prefix[2].getClassName());
+        assertEquals("truncatedCaller", prefix[3].getMethodName());
+        assertEquals("d.D", repository.get(representative)[3].getClassName());
+        assertEquals(representative, repository.intern(new StackTraceElement[] {
+            frame("a.A", "leaf", 1), frame("b.B", "middle", 2),
+            frame("c.C", "root", 3), frame("d.D", "first", 4)
+        }));
+        assertEquals(2, repository.size());
         assertEquals(1L, repository.getOverflowCount());
         assertEquals(1L, repository.getPrefixMergedCount());
         assertEquals(0L, repository.getDroppedCount());
+    }
+
+    @Test
+    public void prefixViewsStayImmutableAndStatisticsCountOnlyNewSamples() {
+        StackTraceRepository repository = new StackTraceRepository(1, 8);
+        repository.intern(new StackTraceElement[] {
+            frame("a.A", "leaf"), frame("b.B", "middle"),
+            frame("c.C", "root"), frame("old.Caller", "run")
+        });
+        StackTraceRepository.StatisticsWindow window =
+            repository.beginStatisticsWindow();
+        int prefix = repository.intern(new StackTraceElement[] {
+            frame("a.A", "leaf"), frame("b.B", "middle"),
+            frame("c.C", "root"), frame("new.Caller", "run")
+        });
+        StackTraceElement[] callerOwned = repository.get(prefix);
+        callerOwned[0] = frame("mutated.Caller", "run");
+        assertEquals("a.A", repository.get(prefix)[0].getClassName());
+        StackTraceRepository.Statistics stats =
+            repository.finishStatisticsWindow(window);
+        assertEquals(1L, stats.getOverflow());
+        assertEquals(1L, stats.getPrefixMerged());
+        assertEquals(0L, stats.getDropped());
+        assertEquals(2, repository.size());
+        assertEquals(2, repository.snapshot().size());
+        assertEquals(0, repository.get(Integer.MIN_VALUE).length);
+        assertEquals(0, repository.get(-1).length);
     }
 
     @Test

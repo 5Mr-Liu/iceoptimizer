@@ -54,7 +54,7 @@ public enum OptimizationModule {
     LYCANITES_BLOCK_MEMBERSHIP("lycanites-block-membership", "Lycanites 方块列表成员索引", true),
     SRP_SPAWN_FILTER("srp-spawn-filter", "SRPMixins 刷怪过滤编译路径", true),
     KONKRETE_LOCALE_LOOKUP("konkrete-locale-lookup", "Konkrete 本地化反向索引"),
-    VANILLA_CHUNK_COMPRESSION("vanilla-chunk-compression", "区块 NBT 并行压缩与顺序写盘", true),
+    VANILLA_CHUNK_COMPRESSION("vanilla-chunk-compression", "区块 NBT 保存、压缩与顺序写盘", true),
     FORGE_BLOCKSTATE_DIRECT_CALLS("forge-blockstate-direct-calls", "区块光照/AO Forge 直调"),
     // Modern renderer modules are runtime-managed. Keep every entry below the
     // append-only boundary: injected ordinal call sites depend on every older
@@ -109,7 +109,9 @@ public enum OptimizationModule {
     OTG_SYNC_FILE_CACHE("otg-sync-file-cache",
         "OTG 同步配置与 BO3 NBT 安全缓存", true),
     ICEANDFIRE_PATH_NODE_CACHE("iceandfire-path-node-cache",
-        "Ice and Fire 单次寻路缓存", true);
+        "Ice and Fire 单次寻路缓存", true),
+    FBP_CUBE_SUBMISSION("fbp-cube-submission",
+        "FBP 立方体粒子提交精简");
 
     private static final Map<String, OptimizationModule> MODULES_BY_ID;
     private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;

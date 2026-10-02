@@ -9,6 +9,7 @@ public final class RenderMatrixBridge {
     private static final float[] PROJECTION = new float[16];
     private static final int[] VIEWPORT = new int[4];
     private static long version;
+    private static Snapshot cachedSnapshot;
 
     private RenderMatrixBridge() {
     }
@@ -25,11 +26,16 @@ public final class RenderMatrixBridge {
         }
         for (int i = 0; i < 4; i++) VIEWPORT[i] = viewport.get(i);
         if (version != Long.MAX_VALUE) version++;
+        cachedSnapshot = null;
     }
 
     public static synchronized Snapshot snapshot() {
         if (version == 0L) return null;
-        return new Snapshot(MODEL_VIEW.clone(), PROJECTION.clone(), VIEWPORT.clone(), version);
+        if (cachedSnapshot == null) {
+            cachedSnapshot = new Snapshot(MODEL_VIEW.clone(), PROJECTION.clone(),
+                VIEWPORT.clone(), version);
+        }
+        return cachedSnapshot;
     }
 
     public static final class Snapshot {
@@ -58,6 +64,7 @@ public final class RenderMatrixBridge {
         public long getMatrixHash() { return matrixHash; }
 
         boolean matrixEquals(Snapshot other) {
+            if (this == other) return true;
             if (other == null || matrixHash != other.matrixHash) return false;
             for (int i = 0; i < 16; i++) {
                 if (Float.floatToRawIntBits(modelView[i])

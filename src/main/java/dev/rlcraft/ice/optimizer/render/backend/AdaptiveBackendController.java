@@ -24,6 +24,7 @@ public final class AdaptiveBackendController {
     private static final int DEFAULT_MAX_WORKLOAD_RETESTS = 3;
     private static final long DEFAULT_TRANSITION_TIMEOUT_FRAMES = 600L;
     private static final int MAX_CONSECUTIVE_EMPTY_MODERN_ARMS = 8;
+    private static final long REGRESSION_SAMPLE_INTERVAL = 16L;
     private static final double SEVERE_MEDIAN_REGRESSION = -0.25D;
     private static final double SEVERE_P95_REGRESSION = 0.25D;
 
@@ -37,6 +38,7 @@ public final class AdaptiveBackendController {
     private final int profileWarmupFrames;
     private final long retestCooldownFrames;
     private final int maximumWorkloadRetests;
+    private final CandidateDataSource candidateDataSource;
     private BackendLifecycleState state = BackendLifecycleState.LEGACY;
     private long generation;
     private int warmupSeen;
@@ -76,12 +78,21 @@ public final class AdaptiveBackendController {
     private long timedOutTransitions;
     private int consecutiveEmptyModernArms;
     private long lastEmptyModernFrame = Long.MIN_VALUE;
+    private BackendLifecycleState awaitingCandidateState;
+    private BackendLifecycleState parentSuspendedState;
+    private boolean modernWorkObserved;
 
     public AdaptiveBackendController(ModuleCircuitBreaker breaker,
                                      EnumSet<ModernCapability> requiredCapabilities) {
+        this(breaker, requiredCapabilities, CandidateDataSource.NONE);
+    }
+
+    public AdaptiveBackendController(ModuleCircuitBreaker breaker,
+                                     EnumSet<ModernCapability> requiredCapabilities,
+                                     CandidateDataSource candidateDataSource) {
         this(breaker, requiredCapabilities, 120, 8, 8, 0.05D, 0.02D,
             DEFAULT_PROFILE_WARMUP_FRAMES, DEFAULT_RETEST_COOLDOWN_FRAMES,
-            DEFAULT_MAX_WORKLOAD_RETESTS);
+            DEFAULT_MAX_WORKLOAD_RETESTS, candidateDataSource);
     }
 
     public AdaptiveBackendController(ModuleCircuitBreaker breaker,
@@ -92,8 +103,20 @@ public final class AdaptiveBackendController {
                                      double maximumP95Regression) {
         this(breaker, requiredCapabilities, warmupFrames, validationFrames,
             requiredAbbaCycles, minimumMedianImprovement, maximumP95Regression,
+            CandidateDataSource.NONE);
+    }
+
+    public AdaptiveBackendController(ModuleCircuitBreaker breaker,
+                                     EnumSet<ModernCapability> requiredCapabilities,
+                                     int warmupFrames, int validationFrames,
+                                     int requiredAbbaCycles,
+                                     double minimumMedianImprovement,
+                                     double maximumP95Regression,
+                                     CandidateDataSource candidateDataSource) {
+        this(breaker, requiredCapabilities, warmupFrames, validationFrames,
+            requiredAbbaCycles, minimumMedianImprovement, maximumP95Regression,
             DEFAULT_PROFILE_WARMUP_FRAMES, DEFAULT_RETEST_COOLDOWN_FRAMES,
-            DEFAULT_MAX_WORKLOAD_RETESTS);
+            DEFAULT_MAX_WORKLOAD_RETESTS, candidateDataSource);
     }
 
     AdaptiveBackendController(ModuleCircuitBreaker breaker,
@@ -105,7 +128,23 @@ public final class AdaptiveBackendController {
                               int profileWarmupFrames,
                               long retestCooldownFrames,
                               int maximumWorkloadRetests) {
-        if (breaker == null || requiredCapabilities == null) {
+        this(breaker, requiredCapabilities, warmupFrames, validationFrames,
+            requiredAbbaCycles, minimumMedianImprovement, maximumP95Regression,
+            profileWarmupFrames, retestCooldownFrames, maximumWorkloadRetests,
+            CandidateDataSource.NONE);
+    }
+
+    AdaptiveBackendController(ModuleCircuitBreaker breaker,
+                              EnumSet<ModernCapability> requiredCapabilities,
+                              int warmupFrames, int validationFrames,
+                              int requiredAbbaCycles,
+                              double minimumMedianImprovement,
+                              double maximumP95Regression,
+                              int profileWarmupFrames,
+                              long retestCooldownFrames,
+                              int maximumWorkloadRetests,
+                              CandidateDataSource candidateDataSource) {
+        if (breaker == null || requiredCapabilities == null || candidateDataSource == null) {
             throw new IllegalArgumentException("backend dependencies");
         }
         this.breaker = breaker;
@@ -120,6 +159,7 @@ public final class AdaptiveBackendController {
         this.profileWarmupFrames = Math.max(1, profileWarmupFrames);
         this.retestCooldownFrames = Math.max(1L, retestCooldownFrames);
         this.maximumWorkloadRetests = Math.max(0, maximumWorkloadRetests);
+        this.candidateDataSource = candidateDataSource;
         int armCapacity = this.requiredAbbaCycles * 2;
         legacySamples = new long[armCapacity];
         modernSamples = new long[armCapacity];
@@ -148,6 +188,9 @@ public final class AdaptiveBackendController {
         timedOutTransitions = 0L;
         consecutiveEmptyModernArms = 0;
         lastEmptyModernFrame = Long.MIN_VALUE;
+        awaitingCandidateState = null;
+        parentSuspendedState = null;
+        modernWorkObserved = false;
         learnedImprovement = 0.0D;
         learnedP95Regression = 0.0D;
         recoverableFailurePending = false;
@@ -192,6 +235,13 @@ public final class AdaptiveBackendController {
         return ABBA[abbaIndex & 3];
     }
 
+    /** Qualification measures every frame; certified rendering only samples. */
+    public boolean shouldMeasureFrame(long frameId) {
+        return frameId > 0L && (state == BackendLifecycleState.PAIRED_MEASURE
+            || state == BackendLifecycleState.REGRESSION_MONITOR
+                && frameId % REGRESSION_SAMPLE_INTERVAL == 0L);
+    }
+
     /**
      * Selects a scene-load profile without allocating on the render thread.
      * Initial and retry measurements wait for the same bucket to remain warm;
@@ -207,7 +257,8 @@ public final class AdaptiveBackendController {
         lastPreparedFrame = frameId;
         if (state == BackendLifecycleState.QUARANTINED
             || state == BackendLifecycleState.CAPABILITY_SELF_TEST
-            || state == BackendLifecycleState.WARMUP) return false;
+            || state == BackendLifecycleState.WARMUP
+            || awaitingCandidateState != null) return false;
         if (state == BackendLifecycleState.OUTPUT_VALIDATE) return true;
         if (state == BackendLifecycleState.PAIRED_MEASURE) {
             return prepareMeasurementBucket(bucket, frameId);
@@ -251,6 +302,7 @@ public final class AdaptiveBackendController {
         }
         if (!observeWarmBucket(bucket, frameId)) return false;
         workloadRetests++;
+        modernWorkObserved = false;
         active = false;
         state = BackendLifecycleState.PAIRED_MEASURE;
         measurementBucket = bucket;
@@ -280,7 +332,7 @@ public final class AdaptiveBackendController {
     /** Frame-aware hot-path form which sleeps between bounded retest probes. */
     public boolean mayInspectOrRetestCandidate(long frameId) {
         if (shouldInspectCandidate()) return true;
-        return state == BackendLifecycleState.LEGACY && profiledWorkloads
+        return state == BackendLifecycleState.LEGACY && awaitingCandidateState == null && profiledWorkloads
             && evaluatedWorkloadProfiles > 0 && !workloadRetestsDisabled
             && workloadRetests < maximumWorkloadRetests
             && frameId > 0L && retestCooldownElapsed(frameId);
@@ -324,6 +376,12 @@ public final class AdaptiveBackendController {
         }
         BackendLifecycleState expired = state;
         timedOutTransitions++;
+        if (candidateDataSource != CandidateDataSource.NONE && profiledWorkloads
+            && (expired == BackendLifecycleState.OUTPUT_VALIDATE
+            || expired == BackendLifecycleState.PAIRED_MEASURE && !modernWorkObserved)) {
+            waitForCandidateData(expired, frameId);
+            return true;
+        }
         workloadRetestsDisabled = true;
         fallback(expired.name() + " made no progress for "
             + DEFAULT_TRANSITION_TIMEOUT_FRAMES + " frames; dormant Legacy", false);
@@ -333,8 +391,9 @@ public final class AdaptiveBackendController {
 
     /**
      * Records a MODERN ABBA arm which had no eligible work to submit. Eight
-     * distinct frames are enough to prove that the current hook cannot finish
-     * this measurement; duplicate traversals in one frame do not accelerate it.
+     * distinct frames suspend unproductive measurement. Model data may arrive
+     * later, so an unpopulated model arm waits for a new capture instead of
+     * recording an unmeasured load bucket as a permanent rejection.
      */
     public boolean recordEmptyModernArm(MeasurementArm arm, long frameId) {
         if (state != BackendLifecycleState.PAIRED_MEASURE
@@ -350,10 +409,82 @@ public final class AdaptiveBackendController {
         if (consecutiveEmptyModernArms < MAX_CONSECUTIVE_EMPTY_MODERN_ARMS) {
             return false;
         }
+        if (candidateDataSource != CandidateDataSource.NONE
+            && profiledWorkloads && !modernWorkObserved) {
+            waitForCandidateData(BackendLifecycleState.PAIRED_MEASURE, frameId);
+            return true;
+        }
         workloadRetestsDisabled = true;
         fallback("modern measurement produced no candidate work for "
             + MAX_CONSECUTIVE_EMPTY_MODERN_ARMS + " frames; dormant Legacy", false);
         return true;
+    }
+
+    /** Cold compiler/admission paths keep collecting data while render hooks sleep. */
+    public boolean isAwaitingCandidateData() { return awaitingCandidateState != null; }
+
+    /** Actual submission is independent of delayed or unstable GPU measurements. */
+    public void recordModernWork() {
+        if (state != BackendLifecycleState.PAIRED_MEASURE) return;
+        modernWorkObserved = true;
+        consecutiveEmptyModernArms = 0;
+        lastEmptyModernFrame = Long.MIN_VALUE;
+    }
+
+    /** A successful new model publication can resume the already-validated path. */
+    public boolean candidateDataPublished() {
+        if (candidateDataSource != CandidateDataSource.MODEL_PUBLICATION
+            || awaitingCandidateState == null || state != BackendLifecycleState.LEGACY
+            || !breaker.isOperational()) return false;
+        resumeCandidate("new model capture published");
+        return true;
+    }
+
+    /** New chunk uploads schedule a bounded retry at the next frame boundary. */
+    public boolean terrainCandidateAvailable(long frameId) {
+        if (candidateDataSource != CandidateDataSource.TERRAIN_UPLOAD
+            || awaitingCandidateState == null || state != BackendLifecycleState.LEGACY
+            || !breaker.isOperational() || frameId <= 0L
+            || !retestCooldownElapsed(frameId)) return false;
+        // The same quota covers both heavier-workload probes and data retries.
+        if (workloadRetestsDisabled || workloadRetests >= maximumWorkloadRetests) return false;
+        workloadRetests++;
+        resumeCandidate("new terrain upload observed");
+        return true;
+    }
+
+    private void resumeCandidate(String reason) {
+        BackendLifecycleState resumed = awaitingCandidateState;
+        awaitingCandidateState = null;
+        modernWorkObserved = false;
+        active = false;
+        measurementBucket = -1;
+        selectedModernBucket = -1;
+        resetBucketObservation();
+        clearMeasurements();
+        resetTransitionTimer();
+        state = resumed;
+        detail = reason + "; resuming " + detailForState(resumed);
+    }
+
+    private void waitForCandidateData(BackendLifecycleState resumed, long frameId) {
+        boolean terrain = candidateDataSource == CandidateDataSource.TERRAIN_UPLOAD;
+        if (terrain && (workloadRetestsDisabled || workloadRetests >= maximumWorkloadRetests)) {
+            workloadRetestsDisabled = true;
+            fallback("terrain qualification retry budget exhausted; dormant Legacy", false);
+            resetTransitionTimer();
+            return;
+        }
+        awaitingCandidateState = resumed;
+        active = false;
+        clearMeasurements();
+        resetBucketObservation();
+        resetTransitionTimer();
+        state = BackendLifecycleState.LEGACY;
+        detail = terrain ? "terrain qualification awaits a new chunk upload"
+            : "model qualification awaits newly captured geometry";
+        if (terrain) nextRetestFrame = frameId > Long.MAX_VALUE - retestCooldownFrames
+            ? Long.MAX_VALUE : frameId + retestCooldownFrames;
     }
 
     public void recordMeasurement(SceneFingerprint scene, MeasurementArm arm,
@@ -376,6 +507,7 @@ public final class AdaptiveBackendController {
         }
         if (arm == MeasurementArm.LEGACY) legacySamples[legacyCount++] = frameNanos;
         else {
+            modernWorkObserved = true;
             modernSamples[modernCount++] = frameNanos;
             consecutiveEmptyModernArms = 0;
             lastEmptyModernFrame = Long.MIN_VALUE;
@@ -429,6 +561,7 @@ public final class AdaptiveBackendController {
         }
         regressionSamples[regressionCount++] = modernNanos;
         if (regressionCount < regressionSamples.length) return;
+        Arrays.sort(regressionSamples, 0, regressionCount);
         long median = percentile(regressionSamples, regressionCount, 0.50D);
         long p95 = percentile(regressionSamples, regressionCount, 0.95D);
         regressionCount = 0;
@@ -475,6 +608,8 @@ public final class AdaptiveBackendController {
     }
 
     public void fallback(String reason, boolean quarantine) {
+        parentSuspendedState = null;
+        awaitingCandidateState = null;
         rejectCurrentWorkloadProfile();
         active = false;
         recoverableFailurePending = false;
@@ -511,6 +646,8 @@ public final class AdaptiveBackendController {
             fallback("insufficient paired samples", false);
             return;
         }
+        Arrays.sort(legacySamples, 0, legacyCount);
+        Arrays.sort(modernSamples, 0, modernCount);
         long legacyMedian = percentile(legacySamples, legacyCount, 0.50D);
         long modernMedian = percentile(modernSamples, modernCount, 0.50D);
         long legacyP95 = percentile(legacySamples, legacyCount, 0.95D);
@@ -541,10 +678,31 @@ public final class AdaptiveBackendController {
     public void suspendByParent(String reason) {
         if (state == BackendLifecycleState.LEGACY
             || state == BackendLifecycleState.QUARANTINED) return;
-        fallback(reason == null ? "parent backend unavailable" : reason, false);
+        parentSuspendedState = state;
+        active = false;
+        state = BackendLifecycleState.LEGACY;
+        resetTransitionTimer();
+        detail = reason == null ? "parent backend unavailable" : reason;
+    }
+
+    /** Restore only a dependency pause, never a measured or correctness rejection. */
+    public boolean resumeAfterParent() {
+        if (parentSuspendedState == null || state != BackendLifecycleState.LEGACY
+            || !breaker.isOperational()) return false;
+        BackendLifecycleState resumed = parentSuspendedState;
+        parentSuspendedState = null;
+        active = false;
+        state = resumed == BackendLifecycleState.REGRESSION_MONITOR
+            ? BackendLifecycleState.MODERN : resumed;
+        if (state == BackendLifecycleState.PAIRED_MEASURE) clearMeasurements();
+        resetTransitionTimer();
+        detail = "terrain parent resumed; " + detailForState(state);
+        return true;
     }
 
     private void quarantine(String reason) {
+        parentSuspendedState = null;
+        awaitingCandidateState = null;
         active = false;
         recoverableFailurePending = false;
         state = BackendLifecycleState.QUARANTINED;
@@ -678,10 +836,8 @@ public final class AdaptiveBackendController {
     }
 
     private static long percentile(long[] values, int length, double quantile) {
-        long[] copy = Arrays.copyOf(values, length);
-        Arrays.sort(copy);
         int index = (int) Math.ceil(quantile * length) - 1;
-        return copy[Math.max(0, Math.min(copy.length - 1, index))];
+        return values[Math.max(0, Math.min(length - 1, index))];
     }
 
     private static double clamp(double value, double minimum, double maximum) {

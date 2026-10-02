@@ -7,10 +7,102 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertNotNull;
 
 import java.nio.FloatBuffer;
+import java.util.Random;
 import org.junit.Test;
 import org.lwjgl.BufferUtils;
 
 public final class EarlyMatrixStateTrackerTest {
+    @Test
+    public void optimizedMultiplicationMatchesOriginalFloatBitsAndOverflow() {
+        Random random = new Random(0x1ce107L);
+        for (int sample = 0; sample < 1024; sample++) {
+            float[] left = randomFiniteMatrix(random, sample < 512);
+            float[] right = randomFiniteMatrix(random, sample < 512);
+            float[] expected = originalMultiply(left, right);
+            EarlyMatrixStateTracker.seed(5888, FloatBuffer.wrap(left), identity());
+            long invalidations = EarlyMatrixStateTracker.invalidations();
+            EarlyMatrixStateTracker.multMatrix(FloatBuffer.wrap(right));
+            if (expected == null) {
+                assertFalse(EarlyMatrixStateTracker.isKnown());
+                assertEquals(invalidations + 1,
+                    EarlyMatrixStateTracker.invalidations());
+            } else {
+                assertRawMatrix(expected, EarlyMatrixStateTracker.modelView());
+                assertEquals(invalidations,
+                    EarlyMatrixStateTracker.invalidations());
+            }
+        }
+    }
+
+    @Test
+    public void unitAndGeneralAxisRotationsMatchOriginalFloatBits() {
+        Random random = new Random(0x107aceL);
+        float[] angles = {0.0F, -0.0F, 90.0F, -90.0F, 180.0F,
+            Float.MIN_VALUE, Float.MAX_VALUE, -367.125F};
+        for (int sample = 0; sample < 32; sample++) {
+            float[] left = randomFiniteMatrix(random, sample < 16);
+            for (int axis = 0; axis < 3; axis++) {
+                for (int signs = 0; signs < 8; signs++) {
+                    float[] direction = {0.0F, 0.0F, 0.0F};
+                    for (int i = 0; i < 3; i++) {
+                        direction[i] = (signs & (1 << i)) == 0 ? 0.0F : -0.0F;
+                    }
+                    direction[axis] = (signs & (1 << axis)) == 0 ? 1.0F : -1.0F;
+                    for (float angle : angles) {
+                        assertRotationMatchesOriginal(left, angle,
+                            direction[0], direction[1], direction[2]);
+                    }
+                }
+            }
+            // General and non-unit axes retain normalization and use the same
+            // multiplication kernel as the unit axis path.
+            assertRotationMatchesOriginal(left, 53.25F, 2.0F, -3.0F, 4.0F);
+            assertRotationMatchesOriginal(left, -19.5F, -0.0F, 7.0F, -0.0F);
+            assertRotationMatchesOriginal(left, 91.0F,
+                Float.MIN_VALUE, 0.0F, 0.0F);
+        }
+    }
+
+    @Test
+    public void invalidRotationInputsStillInvalidateExactlyOnce() {
+        float[][] invalid = {
+            {30.0F, 0.0F, -0.0F, 0.0F},
+            {30.0F, Float.NaN, 0.0F, 0.0F},
+            {30.0F, 0.0F, Float.POSITIVE_INFINITY, 0.0F},
+            {30.0F, 0.0F, 0.0F, Float.NEGATIVE_INFINITY},
+            {Float.NaN, 1.0F, 0.0F, 0.0F},
+            {Float.POSITIVE_INFINITY, 0.0F, 1.0F, 0.0F}
+        };
+        for (float[] values : invalid) {
+            seedIdentity();
+            long invalidations = EarlyMatrixStateTracker.invalidations();
+            EarlyMatrixStateTracker.rotate(values[0], values[1], values[2], values[3]);
+            assertFalse(EarlyMatrixStateTracker.isKnown());
+            assertNull(EarlyMatrixStateTracker.modelView());
+            assertEquals(invalidations + 1, EarlyMatrixStateTracker.invalidations());
+        }
+    }
+
+    @Test
+    public void seedAndMultiplyReadFromPositionWithoutConsumingCallerBuffers() {
+        FloatBuffer matrix = FloatBuffer.allocate(24);
+        for (int index = 0; index < 16; index++) {
+            matrix.put(4 + index, index % 5 == 0 ? 1.0F : 0.0F);
+        }
+        matrix.put(16, 7.0F);
+        matrix.position(4);
+        matrix.limit(20);
+        matrix = matrix.asReadOnlyBuffer();
+        matrix.mark();
+        EarlyMatrixStateTracker.seed(5888, matrix, identity());
+        assertEquals(7.0F, EarlyMatrixStateTracker.modelView()[12], 0.0F);
+        EarlyMatrixStateTracker.multMatrix(matrix);
+        assertEquals(14.0F, EarlyMatrixStateTracker.modelView()[12], 0.0F);
+        assertEquals(4, matrix.position());
+        assertEquals(20, matrix.limit());
+        matrix.reset();
+    }
+
     @Test
     public void mirrorsPostMultipliedTranslateScaleAndStackRestore() {
         seedIdentity();
@@ -111,6 +203,79 @@ public final class EarlyMatrixStateTrackerTest {
         texture.put(0, Float.NEGATIVE_INFINITY);
         EarlyMatrixStateTracker.seed(5888, identity(), identity(), texture);
         assertFalse(EarlyMatrixStateTracker.isKnown());
+    }
+
+    private static void assertRotationMatchesOriginal(float[] left,
+                                                       float degrees,
+                                                       float x, float y, float z) {
+        double length = Math.sqrt((double) x * x + (double) y * y + (double) z * z);
+        float nx = (float) (x / length);
+        float ny = (float) (y / length);
+        float nz = (float) (z / length);
+        double radians = degrees * (Math.PI / 180.0D);
+        float c = (float) Math.cos(radians);
+        float s = (float) Math.sin(radians);
+        float one = 1.0F - c;
+        float[] rotation = new float[16];
+        rotation[0] = nx * nx * one + c;
+        rotation[1] = ny * nx * one + nz * s;
+        rotation[2] = nx * nz * one - ny * s;
+        rotation[4] = nx * ny * one - nz * s;
+        rotation[5] = ny * ny * one + c;
+        rotation[6] = ny * nz * one + nx * s;
+        rotation[8] = nx * nz * one + ny * s;
+        rotation[9] = ny * nz * one - nx * s;
+        rotation[10] = nz * nz * one + c;
+        rotation[15] = 1.0F;
+        float[] expected = originalMultiply(left, rotation);
+        EarlyMatrixStateTracker.seed(5888, FloatBuffer.wrap(left), identity());
+        EarlyMatrixStateTracker.rotate(degrees, x, y, z);
+        if (expected == null) {
+            assertFalse(EarlyMatrixStateTracker.isKnown());
+        } else {
+            assertRawMatrix(expected, EarlyMatrixStateTracker.modelView());
+        }
+    }
+
+    /** Reference the original ordered loop, including its +0 accumulator. */
+    private static float[] originalMultiply(float[] left, float[] right) {
+        float[] result = new float[16];
+        for (int column = 0; column < 4; column++) {
+            for (int row = 0; row < 4; row++) {
+                float value = 0.0F;
+                for (int k = 0; k < 4; k++) {
+                    value += left[k * 4 + row] * right[column * 4 + k];
+                }
+                if (!Float.isFinite(value)) return null;
+                result[column * 4 + row] = value;
+            }
+        }
+        return result;
+    }
+
+    private static float[] randomFiniteMatrix(Random random, boolean bounded) {
+        float[] result = new float[16];
+        for (int i = 0; i < result.length; i++) {
+            if (random.nextInt(4) == 0) {
+                result[i] = random.nextBoolean() ? 0.0F : -0.0F;
+            } else if (bounded) {
+                result[i] = (random.nextFloat() - 0.5F) * 200.0F;
+            } else {
+                int bits;
+                do { bits = random.nextInt(); }
+                while ((bits & 0x7f800000) == 0x7f800000);
+                result[i] = Float.intBitsToFloat(bits);
+            }
+        }
+        return result;
+    }
+
+    private static void assertRawMatrix(float[] expected, float[] actual) {
+        assertNotNull(actual);
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals("matrix slot " + i, Float.floatToRawIntBits(expected[i]),
+                Float.floatToRawIntBits(actual[i]));
+        }
     }
 
     private static void seedIdentity() {

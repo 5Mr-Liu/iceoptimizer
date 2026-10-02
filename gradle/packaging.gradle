@@ -1,0 +1,110 @@
+def sourceDateEpochText = System.getenv('SOURCE_DATE_EPOCH')
+def sourceDateEpochSeconds = sourceDateEpochText == null || sourceDateEpochText.trim().isEmpty()
+    ? 0L : Long.parseLong(sourceDateEpochText.trim())
+if (sourceDateEpochSeconds < 0L) throw new GradleException('SOURCE_DATE_EPOCH must be non-negative')
+def implementationTimestamp = new Date(Math.multiplyExact(sourceDateEpochSeconds, 1000L))
+    .format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
+def releaseManifest = { String title, String modId ->
+    [
+        'Specification-Title': modId,
+        'Specification-Vendor': project.mod_vendor,
+        'Specification-Version': '1',
+        'Implementation-Title': title,
+        'Implementation-Version': project.version,
+        'Implementation-Vendor': project.mod_vendor,
+        'Implementation-Timestamp': implementationTimestamp
+    ]
+}
+ext.profilerHookPatterns = [
+    'dev/rlcraft/ice/hooks/IceProfilerLoadingPlugin*.class',
+    'dev/rlcraft/ice/hooks/IceProfilerTransformer*.class',
+    'dev/rlcraft/ice/hooks/ProbeProtocol*.class'
+]
+
+[processResources, processProfilerResources].each { resourceTask ->
+    resourceTask.inputs.property 'version', project.version
+    resourceTask.inputs.property 'mcversion', '1.12.2'
+    resourceTask.filesMatching('mcmod-*.info') {
+        expand 'version': project.version, 'mcversion': '1.12.2'
+    }
+}
+
+// Development and reobfuscated runtime archives are not installation files.
+jar {
+    classifier = 'dev'
+    destinationDir = file("$buildDir/intermediates/dev")
+    manifest { attributes(releaseManifest('ICE RLCraft Optimizer Development', 'iceoptimizer')) }
+}
+shadowJar {
+    baseName = 'ice-rlcraft-optimizer-runtime'
+    classifier = ''
+    destinationDir = file("$buildDir/intermediates/optimizer")
+    configurations = [project.configurations.optimizerLibraries]
+    relocate 'org.agrona', 'dev.rlcraft.ice.shadow.agrona'
+    relocate 'com.github.benmanes.caffeine', 'dev.rlcraft.ice.shadow.caffeine'
+    relocate 'net.jpountz', 'dev.rlcraft.ice.shadow.lz4'
+    rename { String name -> name == 'mcmod-optimizer.info' ? 'mcmod.info' : name }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    manifest { attributes(releaseManifest('ICE RLCraft Optimizer Runtime', 'iceoptimizer')) }
+}
+task optimizerHooksJar(type: Jar, dependsOn: [earlyClasses, hooksClasses]) {
+    baseName = 'ice-rlcraft-optimizer-hooks'
+    classifier = ''
+    destinationDir = file("$buildDir/intermediates/optimizer")
+    from(sourceSets.early.output)
+    from(sourceSets.hooks.output) { exclude profilerHookPatterns }
+}
+task optimizerJar(type: Jar, dependsOn: ['reobfShadowJar', optimizerHooksJar]) {
+    baseName = 'ice-rlcraft-optimizer'
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    from({ zipTree(shadowJar.archivePath) }) { exclude 'META-INF/MANIFEST.MF' }
+    from({ zipTree(optimizerHooksJar.archivePath) }) { exclude 'META-INF/MANIFEST.MF' }
+    manifest {
+        attributes(releaseManifest('ICE RLCraft Optimizer', 'iceoptimizer') + [
+            'FMLCorePlugin': 'dev.rlcraft.ice.hooks.IceOptimizerLoadingPlugin',
+            'FMLCorePluginContainsFMLMod': 'true'
+        ])
+    }
+}
+task profilerRuntimeJar(type: Jar, dependsOn: profilerClasses) {
+    baseName = 'ice-rlcraft-profiler-runtime'
+    classifier = ''
+    destinationDir = file("$buildDir/intermediates/profiler")
+    from(sourceSets.profiler.output) {
+        rename { String name -> name == 'mcmod-profiler.info' ? 'mcmod.info' : name }
+    }
+    manifest { attributes(releaseManifest('ICE Performance Recorder Runtime', 'iceprofiler')) }
+}
+task profilerHooksJar(type: Jar, dependsOn: hooksClasses) {
+    baseName = 'ice-rlcraft-profiler-hooks'
+    classifier = ''
+    destinationDir = file("$buildDir/intermediates/profiler")
+    from(sourceSets.hooks.output) { include profilerHookPatterns }
+}
+task profilerJar(type: Jar, dependsOn: ['reobfProfilerRuntimeJar', profilerHooksJar]) {
+    baseName = 'ice-rlcraft-profiler'
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    from({ zipTree(profilerRuntimeJar.archivePath) }) { exclude 'META-INF/MANIFEST.MF' }
+    from({ zipTree(profilerHooksJar.archivePath) }) { exclude 'META-INF/MANIFEST.MF' }
+    manifest {
+        attributes(releaseManifest('ICE Performance Recorder', 'iceprofiler') + [
+            'FMLCorePlugin': 'dev.rlcraft.ice.hooks.IceProfilerLoadingPlugin',
+            'FMLCorePluginContainsFMLMod': 'true'
+        ])
+    }
+}
+task optimizerBundleZip(type: Zip, dependsOn: optimizerJar) {
+    baseName = 'ice-rlcraft-optimizer-bundle'
+    classifier = ''
+    destinationDir = file("$buildDir/libs")
+    from({ optimizerJar.archivePath })
+    from('packaging/optimizer-install.txt') { rename { 'INSTALL.txt' } }
+}
+reobf {
+    shadowJar { }
+    profilerRuntimeJar { }
+}

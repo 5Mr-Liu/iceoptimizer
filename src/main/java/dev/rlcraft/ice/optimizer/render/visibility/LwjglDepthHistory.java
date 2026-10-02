@@ -85,6 +85,7 @@ public final class LwjglDepthHistory {
     private long authorizedFrame = Long.MIN_VALUE;
     private long authorizedScene = Long.MIN_VALUE;
     private long authorizedSignature;
+    private boolean authorizedRefreshHistory;
     private Throwable readbackFailure;
     private RenderChunk[] filterScratch;
     private int pendingFilterRemoved;
@@ -150,18 +151,7 @@ public final class LwjglDepthHistory {
                     try {
                         DepthFrame frame = consume(slots[index], capture);
                         if (frame != null) {
-                            long sequence = nextSceneSerial(publicationSequence);
-                            if (sequence <= publicationSequence) {
-                                occlusionGate.invalidate();
-                            }
-                            publicationSequence = sequence;
-                            frame.publicationSerial = sequence;
-                            latest = frame;
-                            history.publish(frame.key, frame.hzb);
-                            published++;
-                            if (frame.oracleValidated) {
-                                noteOracleValidatedPublication();
-                            }
+                            publishDepthFrame(frame);
                         }
                     } catch (Throwable error) {
                         readbackFailure = error;
@@ -189,12 +179,30 @@ public final class LwjglDepthHistory {
         return completed;
     }
 
+    private void publishDepthFrame(DepthFrame frame) {
+        long sequence = nextSceneSerial(publicationSequence);
+        if (sequence <= publicationSequence) occlusionGate.invalidate();
+        publicationSequence = sequence;
+        frame.publicationSerial = sequence;
+        latest = frame;
+        history.publish(frame.key, frame.hzb);
+        published++;
+        if (frame.oracleValidated) noteOracleValidatedPublication();
+    }
+
     /**
      * CPU-only gate used before any fallback GL state query.  CAPTURE_READY
      * authorizes exactly one capture with the same frame, scene and view.
      */
     public CaptureOutcome preflightCapture(FrameStamp stamp, double viewX,
                                            double viewY, double viewZ) {
+        return preflightCapture(stamp, viewX, viewY, viewZ, false);
+    }
+
+    /** Requests fresh validation evidence without invalidating usable depth. */
+    public CaptureOutcome preflightCapture(FrameStamp stamp, double viewX,
+                                           double viewY, double viewZ,
+                                           boolean refreshHistory) {
         guard.check();
         clearCaptureAuthorization();
         if (stamp == null || !supported()) return CaptureOutcome.UNSUPPORTED_SOURCE;
@@ -205,8 +213,8 @@ public final class LwjglDepthHistory {
         }
         int currentDimension = dimension();
         DepthFrame reusable = latest;
-        if (reusable != null && reusable.matches(matrices, viewX, viewY, viewZ,
-            stamp, currentDimension)) return CaptureOutcome.HISTORY_REUSED;
+        if (canReuse(reusable, matrices, viewX, viewY, viewZ, stamp,
+            currentDimension, refreshHistory)) return CaptureOutcome.HISTORY_REUSED;
         Capture pending = pendingCapture;
         if (pending != null && pending.matchesView(stamp, matrices, viewX, viewY,
             viewZ, sceneSerial, currentDimension)) {
@@ -225,6 +233,7 @@ public final class LwjglDepthHistory {
         authorizedFrame = stamp.getFrameId();
         authorizedScene = sceneSerial;
         authorizedSignature = signature;
+        authorizedRefreshHistory = refreshHistory;
         return CaptureOutcome.CAPTURE_READY;
     }
 
@@ -236,20 +245,29 @@ public final class LwjglDepthHistory {
     public CaptureOutcome capture(FrameStamp stamp, double viewX, double viewY,
                                   double viewZ, boolean validateSource) {
         return captureInternal(stamp, viewX, viewY, viewZ, validateSource,
-            false);
+            false, false);
     }
 
     public CaptureOutcome capturePreflighted(FrameStamp stamp, double viewX,
                                              double viewY, double viewZ,
                                              boolean validateSource) {
         return captureInternal(stamp, viewX, viewY, viewZ, validateSource,
-            true);
+            true, false);
+    }
+
+    public CaptureOutcome capturePreflighted(FrameStamp stamp, double viewX,
+                                             double viewY, double viewZ,
+                                             boolean validateSource,
+                                             boolean refreshHistory) {
+        return captureInternal(stamp, viewX, viewY, viewZ, validateSource,
+            true, refreshHistory);
     }
 
     private CaptureOutcome captureInternal(FrameStamp stamp, double viewX,
                                            double viewY, double viewZ,
                                            boolean validateSource,
-                                           boolean requirePreflight) {
+                                           boolean requirePreflight,
+                                           boolean refreshHistory) {
         guard.check();
         if (stamp == null || !supported()) {
             clearCaptureAuthorization();
@@ -264,8 +282,8 @@ public final class LwjglDepthHistory {
         }
         int currentDimension = dimension();
         DepthFrame reusable = latest;
-        if (reusable != null && reusable.matches(matrices, viewX, viewY, viewZ,
-            stamp, currentDimension)) {
+        if (canReuse(reusable, matrices, viewX, viewY, viewZ, stamp,
+            currentDimension, refreshHistory)) {
             clearCaptureAuthorization();
             return CaptureOutcome.HISTORY_REUSED;
         }
@@ -279,7 +297,7 @@ public final class LwjglDepthHistory {
             currentDimension);
         boolean authorized = requirePreflight
             && consumeCaptureAuthorization(stamp.getFrameId(), sceneSerial,
-                signature);
+                signature, refreshHistory);
         if (requirePreflight && !authorized) return CaptureOutcome.VIEW_UNSTABLE;
         if (!requirePreflight) {
             clearCaptureAuthorization();
@@ -368,6 +386,16 @@ public final class LwjglDepthHistory {
         }
     }
 
+    private static boolean canReuse(DepthFrame frame,
+                                    RenderMatrixBridge.Snapshot matrices,
+                                    double viewX, double viewY, double viewZ,
+                                    FrameStamp stamp, int dimension,
+                                    boolean refreshHistory) {
+        return !refreshHistory && frame != null
+            && !frame.confirmationRefreshRequested
+            && frame.matches(matrices, viewX, viewY, viewZ, stamp, dimension);
+    }
+
     /** Preserves relative order and removes only provably hidden opaque chunks. */
     public int filter(Object container, BlockRenderLayer layer, FrameStamp stamp) {
         guard.check();
@@ -422,6 +450,13 @@ public final class LwjglDepthHistory {
             rawOccluded = saturatedAdd(rawOccluded, rawRemoved);
             confirmationDeferrals = saturatedAdd(confirmationDeferrals,
                 deferred);
+            // Reusing one publication cannot provide the independent second
+            // witness required by StableOcclusionGate. Request another capture
+            // only after a real candidate needs it; an exhausted witness table
+            // must not turn every stationary frame into a pointless readback.
+            if (deferred > 0 && occlusionGate.getCapacity() > 0) {
+                frame.confirmationRefreshRequested = true;
+            }
             animationBypasses = saturatedAdd(animationBypasses, animated);
             if (removed <= 0) return 0;
             if (!filterTransaction.begin(container, chunks)) {
@@ -516,27 +551,30 @@ public final class LwjglDepthHistory {
     }
 
     /**
-     * Live candidate validation: generation/matrix identity, exact pyramid
-     * max invariants, and sampled coarse-query implications against level 0.
+     * Live candidate validation; null means this view has no usable history.
+     * Pyramid invariants are checked at most once per immutable image, only
+     * while output validation requests them.
      */
-    public boolean validateHistory(FrameStamp stamp, Object container) {
+    public Boolean validateHistory(FrameStamp stamp, Object container) {
         guard.check();
         if (!(container instanceof TerrainRenderListAccessor) || stamp == null
-            || latest == null) return false;
+            || latest == null) return null;
         TerrainRenderListAccessor accessor = (TerrainRenderListAccessor) container;
         DepthFrame frame = latest;
         if (!frame.matches(RenderMatrixBridge.snapshot(), accessor.ice$viewEntityX(),
-            accessor.ice$viewEntityY(), accessor.ice$viewEntityZ(), stamp, dimension())
-            || !frame.hzb.isConservativeHierarchy()) return false;
+            accessor.ice$viewEntityY(), accessor.ice$viewEntityZ(), stamp, dimension())) {
+            return null;
+        }
+        if (frame.hzb.isClosed() || !frame.hasConservativeHierarchy()) return Boolean.FALSE;
         List<RenderChunk> chunks = accessor.ice$renderChunks();
-        if (chunks == null) return false;
+        if (chunks == null) return Boolean.FALSE;
         int stride = Math.max(1, chunks.size() / 32);
         for (int i = 0; i < chunks.size(); i += stride) {
             RenderChunk chunk = chunks.get(i);
             if (!ChunkAnimatorRenderBridge.requiresCompatibilityDraw(chunk)
-                && !frame.validateProjection(chunk)) return false;
+                && !frame.validateProjection(chunk)) return Boolean.FALSE;
         }
-        return true;
+        return Boolean.TRUE;
     }
 
     public void invalidateScene() {
@@ -734,9 +772,11 @@ public final class LwjglDepthHistory {
     }
 
     private boolean consumeCaptureAuthorization(long frameId, long scene,
-                                                long signature) {
+                                                long signature,
+                                                boolean refreshHistory) {
         boolean matches = authorizedFrame == frameId && authorizedScene == scene
-            && authorizedSignature == signature;
+            && authorizedSignature == signature
+            && authorizedRefreshHistory == refreshHistory;
         clearCaptureAuthorization();
         return matches;
     }
@@ -745,6 +785,7 @@ public final class LwjglDepthHistory {
         authorizedFrame = Long.MIN_VALUE;
         authorizedScene = Long.MIN_VALUE;
         authorizedSignature = 0L;
+        authorizedRefreshHistory = false;
     }
 
     private boolean supported() {
@@ -1061,8 +1102,10 @@ public final class LwjglDepthHistory {
         private final int lowWidth;
         private final int lowHeight;
         private final boolean oracleValidated;
+        private byte hierarchyValidation;
         private final Projection projectionScratch = new Projection();
         private long publicationSerial;
+        private boolean confirmationRefreshRequested;
 
         private DepthFrame(Capture capture, ConservativeHzb hzb, HzbHistoryKey key,
                            int scale, int lowWidth, int lowHeight,
@@ -1074,6 +1117,15 @@ public final class LwjglDepthHistory {
             this.lowWidth = lowWidth;
             this.lowHeight = lowHeight;
             this.oracleValidated = oracleValidated;
+        }
+
+        private boolean hasConservativeHierarchy() {
+            if (hierarchyValidation == 0) {
+                // The source oracle only reads the owned base before
+                // publication; a retained hierarchy has no production writer.
+                hierarchyValidation = (byte) (hzb.isConservativeHierarchy() ? 1 : -1);
+            }
+            return hierarchyValidation > 0;
         }
 
         private boolean matches(RenderMatrixBridge.Snapshot matrices,

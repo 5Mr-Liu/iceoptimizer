@@ -61,38 +61,45 @@ public final class LycanitesObjRenderBridge {
             synchronized (LOCK) {
                 refreshEpochs(runtime);
                 MeshAccess access = access(group);
-                MeshSignature signature = access.capture(group);
-                if (signature == null || !signature.isTriangleMesh()) return false;
                 long frame = OptimizerBridge.currentFrameId();
                 ModelEntry modelEntry = MODELS.get(model);
-                if (modelEntry == null) {
-                    if (MODELS.size() >= MAX_MODELS
-                        && !evictOldestModel(runtime)) return false;
-                    modelEntry = new ModelEntry();
-                    MODELS.put(model, modelEntry);
+                GroupEntry entry = modelEntry == null ? null
+                    : modelEntry.groups.get(group);
+                boolean uploaded = entry != null && modelEntry.vboStyle
+                    && entry.ownedHandle == null
+                    && access.matchesUploaded(group, entry.signature, entry.vbo);
+                if (!uploaded) {
+                    MeshSignature signature = access.capture(group);
+                    if (signature == null || !signature.isTriangleMesh()) return false;
+                    if (modelEntry == null) {
+                        if (MODELS.size() >= MAX_MODELS
+                            && !evictOldestModel(runtime)) return false;
+                        modelEntry = new ModelEntry(isVboModel(model));
+                        MODELS.put(model, modelEntry);
+                    }
+                    modelEntry.lastUsedFrame = frame;
+                    if (entry == null) {
+                        if (groupCount >= MAX_GROUPS
+                            && !evictOldestGroup(runtime)) return false;
+                        entry = new GroupEntry(signature);
+                        entry.lastUsedFrame = frame;
+                        modelEntry.groups.put(group, entry);
+                        groupCount++;
+                        return false;
+                    }
+                    if (!entry.signature.sameAs(signature)) {
+                        release(entry, true, false, runtime);
+                        entry.reset(signature);
+                        return false;
+                    }
                 }
                 modelEntry.lastUsedFrame = frame;
-                GroupEntry entry = modelEntry.groups.get(group);
-                if (entry == null) {
-                    if (groupCount >= MAX_GROUPS
-                        && !evictOldestGroup(runtime)) return false;
-                    entry = new GroupEntry(signature);
-                    entry.lastUsedFrame = frame;
-                    modelEntry.groups.put(group, entry);
-                    groupCount++;
-                    return false;
-                }
-                if (!entry.signature.sameAs(signature)) {
-                    release(entry, true, false, runtime);
-                    entry.reset(signature);
-                    return false;
-                }
                 entry.lastUsedFrame = frame;
                 if (entry.vbo <= 0) {
                     if (++entry.observations < WARMUP_CALLS
                         || !prepare(entry, group, access, runtime)) return false;
                 }
-                issued = emit(entry, color, uvOffset, isVboModel(model));
+                issued = emit(entry, color, uvOffset, modelEntry.vboStyle);
             }
             if (!issued) return false;
             runtime.recordExternalModelDraw();
@@ -633,7 +640,10 @@ public final class LycanitesObjRenderBridge {
     private static final class ModelEntry {
         private final IdentityHashMap<Object, GroupEntry> groups =
             new IdentityHashMap<Object, GroupEntry>();
+        private final boolean vboStyle;
         private long lastUsedFrame;
+
+        private ModelEntry(boolean vboStyle) { this.vboStyle = vboStyle; }
     }
 
     private static final class GroupEntry {
@@ -732,6 +742,26 @@ public final class LycanitesObjRenderBridge {
                 ((Object[]) vertexValue).length,
                 normalValue == null ? 0 : ((Object[]) normalValue).length,
                 vbo.getInt(meshValue));
+        }
+
+        /**
+         * VBOModel draws the already uploaded GL buffer: it reads indices.length,
+         * not the public CPU array elements. Those arrays remain mutable, so this
+         * shortcut applies only while Mesh still publishes the same borrowed
+         * VBO. Mesh.delete(), a replacement buffer/array, and epoch changes force
+         * the regular validation path. Tessellator and detached ICE-owned data
+         * continue to validate their CPU geometry.
+         */
+        private boolean matchesUploaded(Object group, MeshSignature expected,
+                                        int uploadedVbo) throws Exception {
+            if (expected == null || expected.group != group || uploadedVbo <= 0
+                || expected.vbo != uploadedVbo) return false;
+            Object meshValue = mesh.get(group);
+            return meshValue == expected.mesh
+                && vbo.getInt(meshValue) == uploadedVbo
+                && indices.get(meshValue) == expected.indices
+                && vertices.get(meshValue) == expected.vertices
+                && normals.get(meshValue) == expected.normals;
         }
 
         private int rawVbo(Object meshValue) throws Exception {
