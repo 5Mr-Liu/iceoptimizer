@@ -26,6 +26,7 @@ final class ForgeBlockStateDirectAdapter implements OptimizerBytecodeAdapter {
         "dev/rlcraft/ice/optimizer/compat/chunk/ForgeBlockStateDirectBridge";
     static final String ORIGINAL_REFLECTOR_LIGHT = "ice$original$getLightValue";
     static final String ORIGINAL_STATE_LIGHT = "ice$original$getLightValueWorld";
+    static final String ORIGINAL_STATE_OPACITY = "ice$original$getLightOpacityWorld";
     static final String ORIGINAL_SIDE_RENDER = "ice$original$doesSideBlockRendering";
     private final Part part;
 
@@ -65,18 +66,21 @@ final class ForgeBlockStateDirectAdapter implements OptimizerBytecodeAdapter {
 
     private static void transformState(ClassNode node) {
         MethodNode light = findObjectMethod(node, "getLightValue", Type.INT_TYPE, 2);
+        MethodNode opacity = findObjectMethod(node, "getLightOpacity", Type.INT_TYPE, 2);
         MethodNode side = findObjectMethod(node, "doesSideBlockRendering", Type.BOOLEAN_TYPE, 3);
         int lightReflect = countCalls(light, "net/optifine/reflect/Reflector", "callInt");
+        int opacityReflect = countCalls(opacity, "net/optifine/reflect/Reflector", "callInt");
         int sideReflect = countCalls(side, "net/optifine/reflect/Reflector", "callBoolean");
-        if (lightReflect == 0 && sideReflect == 0) {
+        if (lightReflect == 0 && sideReflect == 0 && opacityReflect == 0) {
             throw new OptimizerAdapterSkippedException(
                 "当前 BlockState 实现已经是 Forge 直调，不需要额外包装");
         }
-        if (lightReflect != 1 || sideReflect != 1) {
+        if (lightReflect != 1 || sideReflect != 1 || opacityReflect != 1) {
             throw new IllegalStateException("OptiFine BlockState 反射调用图变化：light="
                 + lightReflect + ", side=" + sideReflect);
         }
         wrapInt(node, light, ORIGINAL_STATE_LIGHT, "tryBlockLightValue", false);
+        wrapInt(node, opacity, ORIGINAL_STATE_OPACITY, "tryBlockLightOpacity", false);
         wrapBoolean(node, side);
     }
 
@@ -87,12 +91,13 @@ final class ForgeBlockStateDirectAdapter implements OptimizerBytecodeAdapter {
         String descriptor = method.desc;
         String signature = method.signature;
         String[] exceptions = exceptions(method);
+        String publicName = method.name;
         method.name = originalName;
         method.access = (method.access & ~(Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED))
             | Opcodes.ACC_PRIVATE | Opcodes.ACC_SYNTHETIC;
 
         MethodNode wrapper = new MethodNode(Opcodes.ASM5, access,
-            isStatic ? "getLightValue" : "getLightValue", descriptor,
+            publicName, descriptor,
             signature, exceptions);
         Type[] arguments = Type.getArgumentTypes(descriptor);
         int resultLocal = isStatic ? arguments.length : arguments.length + 1;

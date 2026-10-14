@@ -72,7 +72,7 @@ public class ReportWriterTest {
                 2, 1, 1, 1, 3, 2, 100, 80,
                 Arrays.asList(new WorldGauge(0, 300, 900, 120)), new JvmSnapshot(512L << 20, 1024L << 20, 2048L << 20, 1, 40, 0.5D),
                 Collections.singletonList(new ProbeMetric(1,
-                    "example,\"quoted\"", 2L, 3L, 2L)), churn));
+                    "example,\"quoted\"", 2L, 3L, 2L)), churn, 120, 2000000000L, 2));
             long now = System.nanoTime();
             StackSample sample = new StackSample(now, 1L, "Server thread", ThreadRole.SERVER_MAIN, stackId, 10L, 20L, Thread.State.RUNNABLE);
             session.trigger(new HitchTrigger(TriggerType.SERVER_TICK, now, System.currentTimeMillis(), TimeUnit.MILLISECONDS.toNanos(120), TimeUnit.MILLISECONDS.toNanos(75), "test"), Collections.singletonList(sample));
@@ -115,7 +115,7 @@ public class ReportWriterTest {
             assertTrue(renderer.contains("terrain_draw_arena_total=80"));
             assertTimelineCsv(new File(report, "timeline.csv"));
             assertProbeCsv(new File(report, "probes.csv"));
-            assertIcecapV4(new File(report, "test-session.icecap"));
+            assertIcecapV5(new File(report, "test-session.icecap"));
             assertZipMatchesDirectory(report);
         } finally {
             resetRendererDiagnostics();
@@ -177,10 +177,13 @@ public class ReportWriterTest {
         List<List<String>> records = parseCsv(new String(Files.readAllBytes(
             file.toPath()), StandardCharsets.UTF_8));
         assertEquals(2, records.size());
-        assertEquals(42, records.get(0).size());
+        assertEquals(45, records.get(0).size());
         assertEquals(records.get(0).size(), records.get(1).size());
         assertEquals("-1:10/20/30/40/50/60/70/80;0:1/2/3/4/5/6/7/8",
             records.get(1).get(41));
+        assertEquals("120", records.get(1).get(42));
+        assertEquals("2000000000", records.get(1).get(43));
+        assertEquals("2", records.get(1).get(44));
     }
 
     private static void assertProbeCsv(File file) throws Exception {
@@ -226,12 +229,12 @@ public class ReportWriterTest {
         return records;
     }
 
-    private static void assertIcecapV4(File file) throws Exception {
+    private static void assertIcecapV5(File file) throws Exception {
         DataInputStream input = new DataInputStream(new BufferedInputStream(
             new GZIPInputStream(new FileInputStream(file))));
         try {
             assertEquals("ICECAP", input.readUTF());
-            assertEquals(4, input.readInt());
+            assertEquals(5, input.readInt());
             assertEquals("test-session", input.readUTF());
             input.readLong();
             input.readLong();
@@ -265,6 +268,9 @@ public class ReportWriterTest {
             assertChunkChurnDimension(input, 0, 1L);
             assertEquals(5L, input.readLong());
             assertEquals(9, input.readInt());
+            assertEquals(120, input.readInt());
+            assertEquals(2000000000L, input.readLong());
+            assertEquals(2, input.readByte());
 
             int clusters = input.readInt();
             assertEquals(1, clusters);

@@ -15,7 +15,5 @@ public interface PendingTickAccessor {
 
     List<NextTickListEntry> ice$pendingTicksThisTick();
 
-    long ice$pendingTickVersion();
-
     List<NextTickListEntry> ice$originalPendingBlockUpdates(Chunk chunk, boolean remove);
 }

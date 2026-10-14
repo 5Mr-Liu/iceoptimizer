@@ -1,0 +1,171 @@
+完整地形后端共存与雾效修正 — 2026-10-12（最终更新 22:44）
+
+当前结果
+已经产出 1.0.29 Build29 集成候选。两轮独立配对组合试验的三场景
+FPS 比值几何平均提升为 64.28% / 60.05%；最终集成 JAR 的确认运行，
+对第二轮基线提升 59.73%。本机该固定场景集的综合 50% 目标已观察到。
+静止场景最低一组为 47.46%，不能宣称每个场景或所有机器均至少提升 50%。
+这些是 ICE + 单独安装的 Nothirium 的组合收益，不是 ICE 独自实现的收益。
+原版对照指同一 Dregora 整合包移除 ICE/Nothirium，不是纯净 Minecraft。
+
+交付与复现
+- build/libs/ice-rlcraft-optimizer-1.0.29.jar
+- build/libs/ice-rlcraft-optimizer-bundle-1.0.29.zip（同一 JAR 与安装说明）
+- 冻结实测 JAR：build/fps-target/129-build29-integrated-candidate/
+  SHA256 0E5E751E25ACFADB44AC6FF3EC145AB4C5224813A878DFBCE13D0060AC7F3891
+- 客户端需另装 Nothirium 1.12.2-0.4.9-beta 与 RenderLib 1.12.2-1.4.5。
+  当前整合包已经含有 RenderLib，无需重复安装。官方链接见文末。
+- 关闭游戏，移除旧 ICE Optimizer/Main/Core，换成上述单个 ICE JAR。
+  不安装 ice-nothirium-fog-experiment.jar；已并入正常 ICE 适配器。
+  不混用其他地形替换后端。未安装 Nothirium 时维持 ICE 既有路径，
+  因而仅替换 ICE 本身不能复现本报告中的大幅提升。
+- 当前候选尚未发布，未部署到用户原游戏目录；所有实测使用独立快照。
+
+验证边界
+本机 RTX 4060 Laptop，Java 8 / Forge 14.23.5.2860 / Minecraft 1.12.2。
+视距 15，原有 1920x1080 与原 options/OptiFine/shader 设置保留；相同
+源存档、夹具、相机、120 秒预热、三个 60 秒场景。没有删除原有模组。
+采用稳定创造飞行观察自然地形，场景为静止、18 度/秒转向、局部移动；
+它不是长时间生存或战斗验收，战斗专项仍保持停止。
+所有正式样本均非 pilot、窗口全程活跃、无性能插桩；测试串行运行。
+自然实体会变化，帧样本相关，不能由帧数推导独立重复次数或置信区间。
+原基线两次静止 FPS 自身相差约 13.4%，不能选择低基线隐去波动。
+GPU 中位耗时变大、集成服 P95 部分上升；FPS 改善不代表所有子系统更快。
+长时间运行、方块编辑、动态光、资源包覆盖、其他显卡尚需更多实机覆盖。
+Nothirium 官方要求 OptiFine Smart Animations 关闭，且不支持自定义方块
+渲染层；本机原配置 ofSmartAnimations=false，已扫描模组无自定义层文件。
+不能为追求数字主动关闭用户原本开启的视觉特性后仍声称同画质。
+
+下面保留实验过程，以最新结果为准。
+
+目标仍为相对同一 Dregora 整合包卸载 ICE 的整包 FPS 至少提升 50%。
+保留画质、视距、玩法及慢帧检查；仅做普通游玩，不恢复战斗专项。
+
+本轮源码修改
+- 启动时通过实际 JAR 的 coremod 清单及两个类入口识别 Nothirium，
+  支持 mods 与 mods/1.12.2；不依赖文件名，不初始化外部类。
+- 检出后不安装 ICE 渲染层专用钩子；客户端配置快照同步排除渲染模块，
+  不创建 ModernRendererRuntime。保留独立优化和共享目标的处理。
+- 不改用户配置文件；未安装替换后端时保持既有行为。
+- 这是组合测试的接入候选，尚不能宣称 ICE 自身达到 50% 增益。
+
+独立工具层的雾效实验（早期状态；现已集成至 Build29）
+- 对用户另行提供的 Nothirium 0.4.9 shader 进行严格成对指纹校验后，
+  使用线性雾公式、原 GL 的眼空间/径向距离及 RGB 雾混合规则。
+- 对资源包替换的未知 shader 保留原实现；没有打包外部 shader 或实现。
+- 更换雾距离语义后，实验关闭原水平距离雾裁剪，保留原视距及视锥流程。
+  这避免用不适用的裁剪距离漏掉仍可见的地形，并将额外成本纳入实测。
+- 正式资源读取器会给末行补 LF；首轮 v1 因指纹拒绝未启用，已在预热阶段
+  终止，不能作为修正后性能数据。v2 只规范化该末尾换行，实机确认启用。
+
+离屏验证
+- 修复探针中兼容管线 current secondary color / fog coordinate 状态污染。
+  旧扩展测试的差异不能全归因于 shader，原始结果仍保留。
+- 96 组：LINEAR/EXP/EXP2、轴向/径向、0/25 度转向、平面/斜面、
+  相机偏移、雾 alpha=0.35/1；修正后覆盖差异为 0，通道误差最多 1。
+- 原 shader 在这些用例中最大通道差 148；局部雾数学验证不等于整个世界
+  视觉等价，仍需纹理、透明层、动态光、区块变化和普通游玩的实机检查。
+- 对实际依赖的 GL20/GL42/GL43/FogUtil 四个类完成 68 个方法的 ASM 校验。
+
+已有自然地形 v2 记录的边界
+- 无 ICE 基线对外部后端：静止 205.743 -> 302.548 FPS（+47.05%），
+  转向 189.651 -> 295.945 FPS（+56.05%）。外部后端第三个移动场景未完成，
+  比较器判定 NOT_EVALUABLE；不得以两项几何平均值宣称完成目标。
+- 新修正后端实验使用相同冻结 v2 夹具、120 秒预热、三个 60 秒场景，
+  在 C 盘独立快照运行；原游戏、配置及存档未修改。
+
+关键文件
+tools/NothiriumFogCompat*.java、tools/NothiriumFogShaderRewrite.java
+tools/build-nothirium-fog-compat.ps1
+build/fps-target/129-nothirium-fog-probe-reset.txt
+build/fps-target/129-nothirium-fog-compat-v2/
+C:/Users/32884/.codex/scratch/ice-fps-target/live-129-fog-corrected-v2-1/
+
+官方项目与使用边界
+https://modrinth.com/mod/nothirium
+https://github.com/Meldexun/Nothirium
+外部依赖为 ARR，不随 ICE 重新分发。本轮工具与适配代码独立编写，
+后端本身的性能增益必须标为组合结果，不能归为 ICE 自有渲染实现。
+
+21:53 更新：构建与第一轮完整试验
+- Build28 共存候选构建通过：1261 项常规用例中 1130 通过、131 跳过，
+  10 项最终产物启动检查通过，零失败。可选真实模组输入未全部提供，
+  不能将跳过项记为通过；本次新增 3 项共存测试全部通过。
+- 首次离线构建缺失 OTG/IvToolkit/Mixin 的解析元数据，改为显式使用已安装
+  本地依赖后成功；没有通过删除测试规避代码问题。
+- 冻结候选：build/fps-target/129-build28-external-candidate/
+  optimizer SHA256 360C0655389B03762ADA5D8A9CABE18B57B3F4AA813008416DC8028E483CE730。
+- 新共存代码在真实整合包启动中已确认检测后端并停用自身渲染专用钩子。
+- 独立雾效修正 v2 完整三场景：静止 285.0505、转向 290.2589、
+  移动 286.183 FPS。相对旧自然地形基线分别 +38.55%、+53.05%、+53.75%，
+  三项几何平均 +48.2781%；所有帧 P95/P99 改善，但 GPU 用时增加。
+  该数据只有一组，实体不同，且初始 pitch 偏差约 0.103 度，比较器正确
+  拒绝正式验收。不能宣称达到 50%，也不能忽略较慢的静止场景。
+- 修复夹具登录时鼠标增量造成的视角漂移：新命令参数声明固定 yaw/pitch，
+  在实际 render 边界应用，两个参数与夹具身份写入启动元数据。没有篡改
+  已结束的原始记录，也没有放宽既有视角检查。
+- 冻结新夹具 build/fps-target/129-fixed-camera-fixture-v3/，SHA256
+  27CD04FB9FCA962E05255FB69576EB2F13ED3F62427714BFB0E2A5F87C996DB6。
+  新的组合与无 ICE 基线都使用此夹具；禁止将 v2/v3 混为正式配对。
+
+22:44 更新：两轮配对、生产集成与最终实机确认
+测试根目录 C:/Users/32884/.codex/scratch/ice-fps-target/。
+两轮按候选/基线/基线/候选次序执行，使用冻结 fixed-camera-fixture-v3。
+
+第一轮：original-fixed-camera-v3-1 / combined-build28-fog-v2-1
+（目录均加 live-129-；v2 是雾效补丁版本，夹具为 v3）
+静止：186.920 -> 301.923 FPS（+61.52%）
+转向：174.161 -> 306.487 FPS（+75.98%）
+移动：194.765 -> 303.788 FPS（+55.98%）
+三场景几何平均提升 64.281095%，各场景帧耗时 P95/P99 均改善。
+
+第二轮：original-fixed-camera-v3-2 / combined-build28-fixed-camera-v3-2
+静止：211.924 -> 313.299 FPS（+47.84%）
+转向：176.982 -> 316.432 FPS（+78.79%）
+移动：201.302 -> 312.227 FPS（+55.10%）
+三场景几何平均提升 60.048400%，各场景帧耗时 P95/P99 均改善。
+以上六项比值的几何平均提升 62.150937%；同场景跨两次的几何平均
+分别为静止 54.528649%、转向 77.381003%、移动 55.540065%。
+两轮原始输入/数据：build/fps-target/129-build28-two-pair-evidence.json。
+
+生产化 Build29
+- 将独立编写的 NothiriumFogAdapter/Bridge/ShaderRewrite 集成到普通
+  优化器启动体系，新增四个受结构校验保护的目标；不需要侧载实验 JAR。
+- 新模块追加在枚举末尾，不改变已有序号；RenderLib 仅作为编译期可选
+  依赖，Nothirium 通过本地真实 JAR 验证。打包没有 meldexun/ 类或
+  assets/nothirium/ shader，外部实现和资源都没有重新分发。
+- 在替换 shader 前先确认 FogUtil 距离裁剪适配已安装，避免只修改
+  shader 而保留不适用裁剪规则的半安装状态。未知 shader 对整体拒绝。
+- Build29 全量构建通过：1263 项常规测试中 1133 通过、130 可选跳过，
+  零失败/错误；10 项最终产物启动检查全部通过。提供真实 Nothirium 后
+  对 GL20/42/43/FogUtil 完成 ASM 结构、桥接与归一化测试。
+- 实际生产 ShaderRewrite 的 96 组原生 OpenGL 探针通过：覆盖差异 0，
+  最大通道差 1。只证明该组雾数学条件，不能替代整个游戏的视觉验证。
+
+最终 JAR 确认：integrated-build29-fixed-camera-v3-1，22:37:19 完成
+只有 ICE + Nothirium 两个新增模组，没有实验雾效补丁。
+日志证实 GL43Optifine 后端、FogUtil 适配与实际 shader 成对修正生效。
+相对第二轮原基线（较快的基线）：
+场景     基线 FPS   最终 FPS   提升      P95 ms 原->新       P99 ms 原->新
+静止     211.924    312.502    47.46%    9.7619 -> 8.0626    12.3479 -> 9.2411
+转向     176.982    316.552    78.86%   11.1307 -> 7.9519    13.6887 -> 9.2281
+移动     201.302    311.033    54.51%    9.7838 -> 8.0688    12.0095 -> 9.3448
+综合 59.728751%。相对第一轮基线为 69.302216%，这是同一个候选运行
+复用另一个基线的敏感性比较，不算第二次独立集成包重复测试。
+对第二轮基线，GPU p50 上升约 21.6%–37.3%，集成服 P95 为
+静止 -3.47%、转向 +1.88%、移动 +2.91%；完整数据保留，不只报告 FPS。
+截屏人工复核：同一静止视角地形、远处高塔/树线、雾过渡与 HUD 可见，
+无明显地形缺失；实体和透明动画帧不同，不宣称全图像素一致。
+实际后端报告 1274/15376 可见 section；原版 F3 的 0/0 是计数路径
+不适用于替换后端，不代表没有渲染地形，也不能直接比较两种计数语义。
+
+证据文件（项目根目录下）
+build/fps-target/129-build28-combined-fixed-camera-v3-comparison.txt
+build/fps-target/129-build28-combined-fixed-camera-v3-repeat2.txt
+build/fps-target/129-build29-integrated-vs-baseline2.txt
+build/fps-target/129-build29-integrated-vs-baseline1.txt
+build/fps-target/129-build29-integrated-input-proof.json
+build/fps-target/129-external-renderer-integrated-build29.log
+build/fps-target/129-nothirium-fog-production-native.txt
+
+RenderLib 官方项目：https://modrinth.com/mod/renderlib

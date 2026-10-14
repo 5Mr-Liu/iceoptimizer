@@ -22,6 +22,17 @@ import org.junit.Test;
 
 public final class F3OptimizerSummaryTest {
     @Test
+    public void pauseShowsNoActiveHitsWithoutChangingInstalledPatchCounts() {
+        ModuleStatus module = new ModuleStatus(OptimizationModule.SRP_STATIC_MESH,
+            ModuleState.ACTIVE, 3L, 0L, 0L, 1, 1, "");
+        ClientOptimizerStatus status = new ClientOptimizerStatus(true, true, true,
+            null, null, null, null, null, null, null, Collections.singletonList(module));
+        assertEquals("ICE Opt: PAUSED | CORE OK | HIT 0 | PATCH 1 | MISS 0 | ERR 0",
+            F3OptimizerSummary.format(status).get(0));
+        assertEquals(ModuleState.ACTIVE, status.getModules().get(0).getState());
+    }
+
+    @Test
     public void rendersOnlyWhenConfiguredAndTheVanillaDebugScreenIsOpen() {
         assertFalse(F3OptimizerSummary.shouldRender(false, false));
         assertFalse(F3OptimizerSummary.shouldRender(false, true));

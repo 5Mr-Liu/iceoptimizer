@@ -14,18 +14,21 @@ import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.ARBSync;
+import org.lwjgl.opengl.ARBBufferStorage;
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL15;
+import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL31;
 import org.lwjgl.opengl.GL32;
 import org.lwjgl.opengl.GLContext;
 import org.lwjgl.opengl.GLSync;
 
 /**
  * Render-thread-only bounded HUD stream.  It stores primitive vertex and run
- * metadata, rotates three VBOs without waiting, and can replay every queued
+ * metadata, appends to three persistent pages without waiting, and replays queued
  * primitive through compatibility immediate mode when no slot is safe.
  */
 public final class LwjglHudRenderer {
@@ -43,15 +46,19 @@ public final class LwjglHudRenderer {
     private static final int BYTES_PER_VERTEX = FLOATS_PER_VERTEX * 4;
     private static final int VERTICES_PER_QUAD = 4;
     private static final int SLOT_COUNT = 3;
+    private static final int MINIMUM_PAGE_BYTES = 256 * 1024;
     private final RenderThreadGuard threadGuard;
     private final ResourceLedger ledger;
+    private final CacheBudget budget;
     private final CacheBudget.Reservation directReservation;
     private final ByteBuffer vertices;
+    private final java.nio.FloatBuffer vertexFloats;
     private final int[] modes;
     private final int[] firsts;
     private final int[] counts;
     private final IntBuffer multiFirst;
     private final IntBuffer multiCount;
+    private final IntBuffer stripIndices;
     private final Slot[] slots = new Slot[SLOT_COUNT];
     private final int maximumVertices;
     private long resourceGeneration;
@@ -66,6 +73,13 @@ public final class LwjglHudRenderer {
     private boolean immediate;
     private boolean closed;
     private int nextSlot;
+    private RenderHandle glyphIndexBuffer;
+    private boolean indexAllocationAttempted;
+    private boolean glyphIndicesReady;
+    private long directFlushes;
+    private float[] deferredGlyphs;
+    private int deferredFloatOffset;
+    private float deferredX, deferredY;
     private long modernFlushes;
     private long legacyFlushes;
     private long fenceBusy;
@@ -79,10 +93,11 @@ public final class LwjglHudRenderer {
         }
         this.threadGuard = threadGuard;
         this.ledger = ledger;
+        this.budget = budget;
         int quads = Math.max(64, Math.min(65536, maximumQuads));
         maximumVertices = Math.multiplyExact(quads, VERTICES_PER_QUAD);
         int vertexBytes = Math.multiplyExact(maximumVertices, BYTES_PER_VERTEX);
-        int metadataBytes = Math.multiplyExact(quads, 20);
+        int metadataBytes = Math.multiplyExact(quads, 44);
         long directBytes = Math.addExact((long) vertexBytes, metadataBytes);
         directReservation = budget.tryReserve(BudgetKind.DIRECT, directBytes);
         if (directReservation == null) {
@@ -91,11 +106,21 @@ public final class LwjglHudRenderer {
         try {
             vertices = BufferUtils.createByteBuffer(vertexBytes)
                 .order(ByteOrder.nativeOrder());
+            vertexFloats = vertices.asFloatBuffer();
             modes = new int[quads];
             firsts = new int[quads];
             counts = new int[quads];
             multiFirst = BufferUtils.createIntBuffer(quads);
             multiCount = BufferUtils.createIntBuffer(quads);
+            stripIndices = BufferUtils.createIntBuffer(quads * 6);
+            for (int i = 0; i < quads; i++) {
+                // Original strip triangles (0,1,2), (2,1,3): preserve winding,
+                // interpolation and the default last provoking vertex.
+                int first = i * VERTICES_PER_QUAD;
+                stripIndices.put(first).put(first + 1).put(first + 2)
+                    .put(first + 2).put(first + 1).put(first + 3);
+            }
+            stripIndices.flip();
             for (int i = 0; i < slots.length; i++) slots[i] = new Slot();
         } catch (Throwable error) {
             directReservation.close();
@@ -119,8 +144,8 @@ public final class LwjglHudRenderer {
     public boolean recordQuad(float x0, float y0, float z, float u0, float v0,
                               float x1, float y1, float u1, float v1) {
         threadGuard.check();
-        if (closed || immediate || !topologyCompatible(GL11.GL_QUADS)
-            || !room(4, 1)) return false;
+        if (closed || immediate || !room(4, 1)) return false;
+        materializeDeferredGlyphs();
         int first = vertexCount;
         put(x0, y1, z, u0, v1);
         put(x1, y1, z, u1, v1);
@@ -144,14 +169,64 @@ public final class LwjglHudRenderer {
     /** GlyphLayout owns immutable arrays validated once at construction. */
     boolean recordValidatedGlyphRun(float[] xyzuv, int glyphs, float translateX,
                                     float translateY) {
+        threadGuard.check();
+        if (!closed && !immediate && commandCount == 0 && glyphs > 0 && glyphs <= 8
+            && xyzuv != null && xyzuv.length == glyphs * 20
+            && finite(translateX) && finite(translateY) && room(glyphs * 4, glyphs)) {
+            deferredGlyphs = xyzuv;
+            deferredFloatOffset = 0;
+            deferredX = translateX;
+            deferredY = translateY;
+            vertexCount = glyphs * 4;
+            for (int glyph = 0; glyph < glyphs; glyph++)
+                append(GL11.GL_TRIANGLE_STRIP, glyph * 4, 4, false);
+            return true;
+        }
         return recordGlyphRun(xyzuv, glyphs, translateX, translateY, true);
+    }
+
+    boolean recordValidatedGlyphRange(float[] xyzuv, int firstGlyph, int glyphs,
+                                      float translateX, float translateY) {
+        threadGuard.check();
+        if (xyzuv == null || firstGlyph < 0 || glyphs < 0
+            || firstGlyph > xyzuv.length / 20
+            || glyphs > xyzuv.length / 20 - firstGlyph) return false;
+        if (!closed && !immediate && commandCount == 0 && glyphs > 0 && glyphs <= 8
+            && finite(translateX) && finite(translateY) && room(glyphs * 4, glyphs)) {
+            // GlyphLayout owns this immutable array. A short string commonly
+            // ends at a color/texture boundary; avoid a staging copy entirely.
+            deferredGlyphs = xyzuv;
+            deferredFloatOffset = firstGlyph * 20;
+            deferredX = translateX;
+            deferredY = translateY;
+            vertexCount = glyphs * 4;
+            for (int glyph = 0; glyph < glyphs; glyph++)
+                append(GL11.GL_TRIANGLE_STRIP, glyph * 4, 4, false);
+            return true;
+        }
+        return recordGlyphRange(xyzuv, firstGlyph, glyphs, translateX, translateY, true);
+    }
+
+    private void materializeDeferredGlyphs() {
+        if (deferredGlyphs == null) return;
+        float[] geometry = deferredGlyphs;
+        int first = deferredFloatOffset / 20;
+        int glyphs = vertexCount / 4;
+        deferredGlyphs = null;
+        vertexCount = commandCount = 0;
+        boolean recorded = first == 0 && geometry.length == glyphs * 20
+            ? recordGlyphRun(geometry, glyphs, deferredX, deferredY, true)
+            : recordGlyphRange(geometry, first, glyphs, deferredX, deferredY, true);
+        if (!recorded)
+            throw new IllegalStateException("immutable HUD glyph materialization failed");
     }
 
     private boolean recordGlyphRun(float[] xyzuv, int glyphs, float translateX,
                                    float translateY, boolean validated) {
+        // Retain the established whole-array fast path. Routing ordinary ASCII
+        // strings through the general slice path regressed native font probes.
         threadGuard.check();
-        if (closed || immediate || !topologyCompatible(GL11.GL_TRIANGLE_STRIP)
-            || xyzuv == null || glyphs < 0 || !finite(translateX)
+        if (closed || immediate || xyzuv == null || glyphs < 0 || !finite(translateX)
             || !finite(translateY)) return false;
         int floats;
         int verticesNeeded;
@@ -165,19 +240,69 @@ public final class LwjglHudRenderer {
         if (!validated) {
             for (float value : xyzuv) if (!finite(value)) return false;
         }
+        materializeDeferredGlyphs();
         int firstVertex = vertexCount;
         int firstCommand = commandCount;
         try {
-            for (int glyph = 0; glyph < glyphs; glyph++) {
-                int first = vertexCount;
-                int base = glyph * VERTICES_PER_QUAD * FLOATS_PER_VERTEX;
-                for (int vertex = 0; vertex < VERTICES_PER_QUAD; vertex++) {
-                    int offset = base + vertex * FLOATS_PER_VERTEX;
-                    put(xyzuv[offset] + translateX,
-                        xyzuv[offset + 1] + translateY, xyzuv[offset + 2],
-                        xyzuv[offset + 3], xyzuv[offset + 4]);
+            vertexFloats.position(firstVertex * FLOATS_PER_VERTEX);
+            vertexFloats.put(xyzuv);
+            if (translateX != 0F || translateY != 0F) {
+                for (int vertex = firstVertex; vertex < firstVertex + verticesNeeded; vertex++) {
+                    int offset = vertex * FLOATS_PER_VERTEX;
+                    vertexFloats.put(offset, vertexFloats.get(offset) + translateX);
+                    vertexFloats.put(offset + 1, vertexFloats.get(offset + 1) + translateY);
                 }
-                append(GL11.GL_TRIANGLE_STRIP, first, VERTICES_PER_QUAD, false);
+            }
+            vertexCount += verticesNeeded;
+            vertices.position(vertexCount * BYTES_PER_VERTEX);
+            for (int glyph = 0; glyph < glyphs; glyph++)
+                append(GL11.GL_TRIANGLE_STRIP, firstVertex + glyph * 4, 4, false);
+        } catch (Throwable failure) {
+            vertexCount = firstVertex;
+            commandCount = firstCommand;
+            vertices.position(Math.multiplyExact(vertexCount, BYTES_PER_VERTEX));
+            throw failure;
+        }
+        return true;
+    }
+
+    private boolean recordGlyphRange(float[] xyzuv, int firstGlyph, int glyphs,
+                                     float translateX, float translateY, boolean validated) {
+        threadGuard.check();
+        if (closed || immediate || xyzuv == null || glyphs < 0 || !finite(translateX)
+            || !finite(translateY)) return false;
+        int floats;
+        int verticesNeeded;
+        try {
+            verticesNeeded = Math.multiplyExact(glyphs, VERTICES_PER_QUAD);
+            floats = Math.multiplyExact(verticesNeeded, FLOATS_PER_VERTEX);
+        } catch (ArithmeticException overflow) {
+            return false;
+        }
+        if (firstGlyph < 0 || firstGlyph > xyzuv.length / 20
+            || glyphs > xyzuv.length / 20 - firstGlyph || !room(verticesNeeded, glyphs)) return false;
+        int sourceOffset = firstGlyph * 20;
+        if (!validated) {
+            for (int index = sourceOffset; index < sourceOffset + floats; index++)
+                if (!finite(xyzuv[index])) return false;
+        }
+        materializeDeferredGlyphs();
+        int firstVertex = vertexCount;
+        int firstCommand = commandCount;
+        try {
+            vertexFloats.position(firstVertex * FLOATS_PER_VERTEX);
+            vertexFloats.put(xyzuv, sourceOffset, floats);
+            if (translateX != 0F || translateY != 0F) {
+                for (int vertex = firstVertex; vertex < firstVertex + verticesNeeded; vertex++) {
+                    int offset = vertex * FLOATS_PER_VERTEX;
+                    vertexFloats.put(offset, vertexFloats.get(offset) + translateX);
+                    vertexFloats.put(offset + 1, vertexFloats.get(offset + 1) + translateY);
+                }
+            }
+            vertexCount += verticesNeeded;
+            vertices.position(vertexCount * BYTES_PER_VERTEX);
+            for (int glyph = 0; glyph < glyphs; glyph++) {
+                append(GL11.GL_TRIANGLE_STRIP, firstVertex + glyph * 4, 4, false);
             }
         } catch (Throwable failure) {
             vertexCount = firstVertex;
@@ -191,8 +316,8 @@ public final class LwjglHudRenderer {
     public boolean beginImmediate(int mode) {
         threadGuard.check();
         if (closed || immediate || mode != GL11.GL_TRIANGLE_STRIP
-            || !topologyCompatible(mode)
             || !room(4, 1)) return false;
+        materializeDeferredGlyphs();
         immediate = true;
         immediateMode = mode;
         immediateFirst = vertexCount;
@@ -244,6 +369,7 @@ public final class LwjglHudRenderer {
     public int getCommandCount() { return commandCount; }
     public int getVertexCount() { return vertexCount; }
     public Throwable getLastError() { return lastError; }
+    public long getDirectFlushes() { return directFlushes; }
     public long getModernFlushes() { return modernFlushes; }
     public long getLegacyFlushes() { return legacyFlushes; }
     public long getFenceBusy() { return fenceBusy; }
@@ -257,22 +383,35 @@ public final class LwjglHudRenderer {
         try { verticesNeeded = Math.multiplyExact(glyphs, VERTICES_PER_QUAD); }
         catch (ArithmeticException overflow) { return false; }
         return !closed && !immediate
-            && topologyCompatible(GL11.GL_TRIANGLE_STRIP)
             && room(verticesNeeded, glyphs);
     }
 
     public FlushResult flush(EarlyGlStateTracker.Snapshot state) {
+        return flush(safe(state), state == null ? 0 : state.getArrayBuffer());
+    }
+
+    /** The stream changes only VAO/VBO bindings, so no full snapshot is needed. */
+    public FlushResult flushTracked() {
+        return flush(EarlyGlStateTracker.isHudStreamStateSafe(),
+            EarlyGlStateTracker.arrayBufferBinding());
+    }
+
+    private FlushResult flush(boolean stateSafe, int previousArrayBuffer) {
         threadGuard.check();
         lastError = null;
         if (commandCount == 0) return FlushResult.EMPTY;
         if (immediate) throw new IllegalStateException("flush inside font primitive");
-        if (!safe(state)) {
+        int previousVertexArray = EarlyGlStateTracker.vertexArrayBinding();
+        if (!stateSafe || previousVertexArray == Integer.MIN_VALUE) {
             return legacyAndClear(FlushResult.LEGACY_STATE, null);
         }
+        // Tiny batches have no upload to amortize. Keep exact immediate
+        // primitives, while retaining cached layout/geometry above this layer.
+        if (vertexCount <= 32) return flushDirect();
         Slot slot;
         try {
-            ensureBuffers();
             slot = acquireSlot();
+            if (slot != null && !ensureVertexArray(slot)) slot = null;
         } catch (Throwable error) {
             return legacyAndClear(FlushResult.FAILED_BEFORE_DRAW, error);
         }
@@ -282,56 +421,107 @@ public final class LwjglHudRenderer {
             return legacyAndClear(FlushResult.LEGACY_BUSY, null);
         }
 
-        boolean clientPushed = false;
         boolean issued = false;
+        boolean arrayChanged = false;
+        boolean enableStatePushed = false;
         try {
-            GL11.glPushClientAttrib(GL11.GL_CLIENT_VERTEX_ARRAY_BIT);
-            clientPushed = true;
-            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, slot.bufferId);
+            GL30.glBindVertexArray(slot.vertexArrayId);
+            if (!slot.layoutReady) {
+                ensureGlyphIndices();
+                if (glyphIndicesReady)
+                    GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, glyphIndexBuffer.getNativeId());
+            }
+            if (slot.mapped == null || !slot.layoutReady) {
+                arrayChanged = true;
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, slot.bufferId);
+            }
             vertices.limit(Math.multiplyExact(vertexCount, BYTES_PER_VERTEX));
             vertices.position(0);
-            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, vertices, GL15.GL_STREAM_DRAW);
-            GL13.glClientActiveTexture(GL13.GL_TEXTURE0);
-            GL11.glEnableClientState(GL11.GL_VERTEX_ARRAY);
-            GL11.glEnableClientState(GL11.GL_TEXTURE_COORD_ARRAY);
-            GL11.glDisableClientState(GL11.GL_COLOR_ARRAY);
-            GL11.glVertexPointer(3, GL11.GL_FLOAT, BYTES_PER_VERTEX, 0L);
-            GL11.glTexCoordPointer(2, GL11.GL_FLOAT, BYTES_PER_VERTEX, 12L);
+            int bytes = vertices.remaining();
+            if (!slot.storageAllocated || slot.writeOffset > slot.handle.getBytes() - bytes) {
+                try {
+                    // Mutable fallback or first allocation only. Persistent pages
+                    // wrap in acquireSlot after a nonblocking completion check.
+                    if (slot.handle.getBytes() >= 16384 && GLContext.getCapabilities().GL_ARB_buffer_storage) {
+                        int flags = GL30.GL_MAP_WRITE_BIT | ARBBufferStorage.GL_MAP_PERSISTENT_BIT | ARBBufferStorage.GL_MAP_COHERENT_BIT;
+                        ARBBufferStorage.glBufferStorage(GL15.GL_ARRAY_BUFFER, slot.handle.getBytes(), flags);
+                        slot.mapped = GL30.glMapBufferRange(GL15.GL_ARRAY_BUFFER, 0L, slot.handle.getBytes(), flags, null);
+                        if (slot.mapped == null) {
+                            slot.poisoned = true;
+                            throw new IllegalStateException("HUD persistent map failed");
+                        }
+                    } else GL15.glBufferData(GL15.GL_ARRAY_BUFFER, slot.handle.getBytes(), GL15.GL_STREAM_DRAW);
+                    slot.writeOffset = 0;
+                    slot.storageAllocated = true;
+                } catch (Throwable error) {
+                    // Immutable storage may exist even if mapping threw. Do
+                    // not retry glBufferStorage on that name or reuse it.
+                    slot.poisoned = true;
+                    throw error;
+                }
+            }
+            int firstVertex = slot.writeOffset / BYTES_PER_VERTEX;
+            if (slot.mapped != null) {
+                slot.mapped.position(slot.writeOffset); slot.mapped.put(vertices);
+            } else GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, slot.writeOffset, vertices);
+            slot.writeOffset += bytes;
+            if (!slot.layoutReady) {
+                // A fresh VAO has all other arrays disabled. The caller's
+                // lightmap, color, normal and generic arrays remain untouched.
+                GL11.glEnableClientState(GL11.GL_VERTEX_ARRAY);
+                GL11.glEnableClientState(GL11.GL_TEXTURE_COORD_ARRAY);
+                GL11.glVertexPointer(3, GL11.GL_FLOAT, BYTES_PER_VERTEX, 0L);
+                GL11.glTexCoordPointer(2, GL11.GL_FLOAT, BYTES_PER_VERTEX, 12L);
+                slot.layoutReady = true;
+            }
+            // Primitive restart is global state, not part of a VAO. Respect a
+            // foreign restart index that might match one of our glyph indices.
+            boolean indexedGlyphs = glyphIndicesReady;
+            GL11.glPushClientAttrib(GL11.GL_CLIENT_VERTEX_ARRAY_BIT);
+            enableStatePushed = true;
+            GL11.glDisable(GL31.GL_PRIMITIVE_RESTART);
             for (int command = 0; command < commandCount;) {
                 int mode = modes[command];
                 if (mode == GL11.GL_TRIANGLE_STRIP) {
                     int end = command + 1;
                     while (end < commandCount && modes[end] == mode) end++;
-                    multiFirst.clear();
-                    multiCount.clear();
-                    for (int index = command; index < end; index++) {
-                        multiFirst.put(firsts[index]);
-                        multiCount.put(counts[index]);
+                    if (indexedGlyphs) {
+                        issued = true;
+                        GL32.glDrawElementsBaseVertex(GL11.GL_TRIANGLES, (end - command) * 6,
+                            GL11.GL_UNSIGNED_INT, 0L, firstVertex + firsts[command]);
+                    } else {
+                        // A tiny GPU budget still permits the existing stream.
+                        multiFirst.clear(); multiCount.clear();
+                        for (int index = command; index < end; index++) {
+                            multiFirst.put(firstVertex + firsts[index]);
+                            multiCount.put(counts[index]);
+                        }
+                        multiFirst.flip(); multiCount.flip();
+                        issued = true;
+                        GL14.glMultiDrawArrays(mode, multiFirst, multiCount);
                     }
-                    multiFirst.flip();
-                    multiCount.flip();
-                    issued = true;
-                    GL14.glMultiDrawArrays(mode, multiFirst, multiCount);
                     command = end;
                 } else {
                     issued = true;
-                    GL11.glDrawArrays(mode, firsts[command], counts[command]);
+                    GL11.glDrawArrays(mode, firstVertex + firsts[command], counts[command]);
                     command++;
                 }
             }
         } catch (Throwable error) {
             lastError = error;
         } finally {
+            if (enableStatePushed) try { GL11.glPopClientAttrib(); }
+            catch (Throwable restoreError) {
+                lastError = restoreFailure(lastError, restoreError);
+            }
             vertices.limit(vertices.capacity());
             vertices.position(Math.min(vertices.capacity(),
                 Math.multiplyExact(vertexCount, BYTES_PER_VERTEX)));
-            if (clientPushed) {
-                try { GL11.glPopClientAttrib(); }
-                catch (Throwable restoreError) {
-                    lastError = restoreFailure(lastError, restoreError);
-                }
+            try { GL30.glBindVertexArray(previousVertexArray); }
+            catch (Throwable restoreError) {
+                lastError = restoreFailure(lastError, restoreError);
             }
-            try { GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, state.getArrayBuffer()); }
+            try { if (arrayChanged) GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousArrayBuffer); }
             catch (Throwable restoreError) {
                 lastError = restoreFailure(lastError, restoreError);
             }
@@ -358,25 +548,47 @@ public final class LwjglHudRenderer {
             FatalErrors.rethrowIfFatal(submittedFailure);
             return FlushResult.FAILED_AFTER_DRAW;
         }
-        try {
-            slot.fence = LwjglRetirementFence.tryAfterCurrentCommands(ledger);
-            if (slot.fence == null) {
-                slot.poisoned = true;
-                slot.fence = NeverReadyFence.INSTANCE;
-                lastError = new IllegalStateException("HUD Fence creation failed");
-            }
-        } catch (Throwable error) {
-            slot.poisoned = true;
-            slot.fence = NeverReadyFence.INSTANCE;
-            lastError = error;
-        }
-        Throwable fenceFailure = lastError;
+        // Each submission owns an append-only range. Persistent storage is
+        // fenced once when a page fills, never once per glyph or flush.
         submittedVertices += vertexCount;
         modernFlushes++;
         clear();
-        FatalErrors.rethrowIfFatal(fenceFailure);
-        return lastError == null ? FlushResult.MODERN
-            : FlushResult.FAILED_AFTER_DRAW;
+        return FlushResult.MODERN;
+    }
+
+    private FlushResult flushDirect() {
+        int submitted = vertexCount;
+        try { replayLegacy(); }
+        catch (Throwable error) { lastError = error; }
+        finally { clear(); }
+        submittedVertices += submitted;
+        modernFlushes++;
+        directFlushes++;
+        // A failed immediate batch may have drawn a prefix. Consume it exactly
+        // once, including VM failures; never let the caller replay translucency.
+        FatalErrors.rethrowIfFatal(lastError);
+        return lastError == null ? FlushResult.MODERN : FlushResult.FAILED_AFTER_DRAW;
+    }
+
+    /** Called inside our private VAO, before any draw or vertex-array mutation. */
+    private void ensureGlyphIndices() {
+        if (indexAllocationAttempted) return;
+        indexAllocationAttempted = true;
+        long bytes = (long) stripIndices.capacity() * 4;
+        CacheBudget.Reservation reservation = ledger.reserveGpu(bytes);
+        if (reservation == null) return;
+        int id;
+        try { id = GL15.glGenBuffers(); }
+        catch (Throwable error) { throw error; } // uncertain allocation keeps its charge
+        if (id <= 0) {
+            reservation.close();
+            throw new IllegalStateException("HUD index buffer creation failed");
+        }
+        glyphIndexBuffer = registerBuffer(id, bytes, reservation);
+        GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, id);
+        stripIndices.clear();
+        GL15.glBufferData(GL15.GL_ELEMENT_ARRAY_BUFFER, stripIndices, GL15.GL_STATIC_DRAW);
+        glyphIndicesReady = true;
     }
 
     public void discard() {
@@ -393,7 +605,8 @@ public final class LwjglHudRenderer {
                 if (slot.handle != null && validContext) {
                     ResourceLedger.RetirementFence fence = slot.fence;
                     slot.fence = null;
-                    ledger.retire(slot.handle, fence);
+                    ledger.retire(slot.handle, fence == null
+                        ? LwjglRetirementFence.afterCurrentCommands(ledger) : fence);
                 } else if (slot.fence != null && validContext) {
                     destroySlotFence(slot);
                 } else if (slot.fence != null) {
@@ -405,10 +618,22 @@ public final class LwjglHudRenderer {
                 }
             } catch (Throwable error) {
                 failure = appendFailure(failure, error);
-            } finally {
-                slot.clearReferences(validContext);
             }
+            try {
+                if (slot.vertexArrayHandle != null && validContext) {
+                    ledger.retire(slot.vertexArrayHandle,
+                        LwjglRetirementFence.afterCurrentCommands(ledger));
+                }
+            } catch (Throwable error) {
+                failure = appendFailure(failure, error);
+            } finally { slot.clearReferences(validContext); }
         }
+        if (glyphIndexBuffer != null && validContext) try {
+            ledger.retire(glyphIndexBuffer, LwjglRetirementFence.afterCurrentCommands(ledger));
+        } catch (Throwable error) { failure = appendFailure(failure, error); }
+        glyphIndexBuffer = null;
+        indexAllocationAttempted = false;
+        glyphIndicesReady = false;
         resourceGeneration = resources;
         contextGeneration = context;
         nextSlot = 0;
@@ -432,34 +657,73 @@ public final class LwjglHudRenderer {
         if (failure != null) rethrow(failure);
     }
 
-    private void ensureBuffers() {
+    private boolean createSlot(Slot slot, int bytes) {
         if (resourceGeneration <= 0L || contextGeneration <= 0L) {
             throw new IllegalStateException("HUD generation not prepared");
         }
-        long bytes = vertices.capacity();
-        for (Slot slot : slots) {
-            if (slot.bufferId != 0) continue;
-            CacheBudget.Reservation reservation = ledger.reserveGpu(bytes);
-            if (reservation == null) {
-                throw new IllegalStateException("HUD GPU budget exhausted");
-            }
-            int id;
-            try {
-                id = GL15.glGenBuffers();
-            } catch (Throwable creationFailure) {
-                // A throwing native allocator is outcome-uncertain. Keep the
-                // reservation charged because no reliable name is available
-                // for a one-shot cleanup.
-                rethrow(creationFailure);
-                throw new AssertionError("unreachable HUD allocation");
-            }
-            if (id <= 0) {
-                reservation.close();
-                throw new IllegalStateException("HUD glGenBuffers failed");
-            }
-            RenderHandle handle = registerBuffer(id, bytes, reservation);
-            slot.bufferId = id;
-            slot.handle = handle;
+        long available = budget.availableBytes(BudgetKind.GPU)
+            - (slot.vertexArrayHandle == null
+                ? ResourceLedger.nativeObjectCharge(RenderResourceKind.VERTEX_ARRAY) : 0L);
+        bytes = (int) Math.max(bytes, Math.min(MINIMUM_PAGE_BYTES, available));
+        CacheBudget.Reservation reservation = ledger.reserveGpu(bytes);
+        if (reservation == null) return false;
+        int id;
+        try {
+            id = GL15.glGenBuffers();
+        } catch (Throwable creationFailure) {
+            // A throwing allocator has no reliable name for cleanup.
+            rethrow(creationFailure);
+            throw new AssertionError("unreachable HUD allocation");
+        }
+        if (id <= 0) {
+            reservation.close();
+            throw new IllegalStateException("HUD glGenBuffers failed");
+        }
+        RenderHandle handle = registerBuffer(id, bytes, reservation);
+        RenderHandle previous = slot.handle;
+        slot.bufferId = id;
+        slot.handle = handle;
+        slot.layoutReady = false;
+        slot.storageAllocated = false;
+        slot.mapped = null;
+        slot.writeOffset = 0;
+        // HUD restores client arrays after each draw. Fence only this actual
+        // retirement so in-flight storage remains charged until it completes.
+        if (previous != null) {
+            ResourceLedger.RetirementFence fence = slot.fence;
+            slot.fence = null;
+            ledger.retire(previous, fence == null
+                ? LwjglRetirementFence.afterCurrentCommands(ledger) : fence);
+        }
+        return true;
+    }
+
+    private boolean ensureVertexArray(Slot slot) {
+        if (slot.vertexArrayHandle != null) return true;
+        CacheBudget.Reservation reservation = ledger.reserveNativeObject(
+            RenderResourceKind.VERTEX_ARRAY);
+        if (reservation == null) return false;
+        int id = 0;
+        boolean allocationReturned = false;
+        try {
+            id = GL30.glGenVertexArrays();
+            allocationReturned = true;
+            if (id <= 0) throw new IllegalStateException("HUD VAO creation failed");
+            RenderHandle handle = ledger.registerReservedObject(
+                RenderResourceKind.VERTEX_ARRAY, id, resourceGeneration,
+                contextGeneration, reservation);
+            if (handle == null) throw new IllegalStateException("HUD VAO budget exhausted");
+            slot.vertexArrayId = id;
+            slot.vertexArrayHandle = handle;
+            return true;
+        } catch (Throwable failure) {
+            boolean deleted = false;
+            if (id > 0) try { GL30.glDeleteVertexArrays(id); deleted = true; }
+            catch (Throwable cleanup) { failure = appendFailure(failure, cleanup); }
+            if (deleted || allocationReturned && id <= 0) try { reservation.close(); }
+            catch (Throwable cleanup) { failure = appendFailure(failure, cleanup); }
+            rethrow(failure);
+            return false;
         }
     }
 
@@ -497,21 +761,23 @@ public final class LwjglHudRenderer {
             int index = (nextSlot + checked) % slots.length;
             Slot slot = slots[index];
             if (slot.poisoned) continue;
-            ResourceLedger.RetirementFence fence = slot.fence;
-            if (fence != null) {
-                try {
-                    if (!fence.isSignaled()) continue;
-                    destroySlotFence(slot);
-                } catch (Throwable error) {
-                    slot.poisoned = true;
-                    // This happens before the current batch draws, so surface
-                    // it immediately and let the caller replay that batch on
-                    // the legacy path.  Continuing with another slot hid a
-                    // broken Fence and slowly exhausted the whole ring.
-                    rethrow(error);
-                }
+            int requiredBytes = vertexCount * BYTES_PER_VERTEX;
+            if ((slot.bufferId == 0 || slot.handle != null && slot.handle.getBytes() < requiredBytes)
+                && !createSlot(slot, requiredBytes)) continue;
+            if (slot.mapped != null && (slot.fence != null
+                || slot.writeOffset > slot.handle.getBytes() - requiredBytes)) {
+                // Sealing forbids further appends, even if a later smaller
+                // batch would fit behind the fence. Otherwise that fence
+                // would not cover those writes when the page wraps.
+                if (slot.fence == null) slot.fence = LwjglRetirementFence.afterCurrentCommands(ledger);
+                boolean ready;
+                try { ready = slot.fence.isSignaled(); }
+                catch (Throwable error) { slot.poisoned = true; throw error; }
+                if (!ready) continue;
+                destroySlotFence(slot);
+                slot.writeOffset = 0;
             }
-            nextSlot = (index + 1) % slots.length;
+            nextSlot = index;
             return slot;
         }
         return null;
@@ -539,11 +805,13 @@ public final class LwjglHudRenderer {
                 int end = firsts[command] + counts[command];
                 for (int vertex = firsts[command]; vertex < end; vertex++) {
                     int offset = Math.multiplyExact(vertex, BYTES_PER_VERTEX);
-                    float x = vertices.getFloat(offset);
-                    float y = vertices.getFloat(offset + 4);
-                    float z = vertices.getFloat(offset + 8);
-                    float u = vertices.getFloat(offset + 12);
-                    float v = vertices.getFloat(offset + 16);
+                    int index = vertex * FLOATS_PER_VERTEX;
+                    int source = deferredFloatOffset + index;
+                    float x = deferredGlyphs == null ? vertices.getFloat(offset) : deferredGlyphs[source] + deferredX;
+                    float y = deferredGlyphs == null ? vertices.getFloat(offset + 4) : deferredGlyphs[source + 1] + deferredY;
+                    float z = deferredGlyphs == null ? vertices.getFloat(offset + 8) : deferredGlyphs[source + 2];
+                    float u = deferredGlyphs == null ? vertices.getFloat(offset + 12) : deferredGlyphs[source + 3];
+                    float v = deferredGlyphs == null ? vertices.getFloat(offset + 16) : deferredGlyphs[source + 4];
                     GL11.glTexCoord2f(u, v);
                     GL11.glVertex3f(x, y, z);
                 }
@@ -619,11 +887,8 @@ public final class LwjglHudRenderer {
             && commandCount <= modes.length - commandsNeeded;
     }
 
-    private boolean topologyCompatible(int mode) {
-        return commandCount == 0 || modes[0] == mode;
-    }
-
     private void clear() {
+        deferredGlyphs = null;
         vertexCount = 0;
         commandCount = 0;
         immediate = false;
@@ -673,6 +938,12 @@ public final class LwjglHudRenderer {
     private static final class Slot {
         private int bufferId;
         private RenderHandle handle;
+        private int vertexArrayId;
+        private RenderHandle vertexArrayHandle;
+        private boolean layoutReady;
+        private boolean storageAllocated;
+        private ByteBuffer mapped;
+        private int writeOffset;
         private ResourceLedger.RetirementFence fence;
         private ResourceLedger.RetirementFence uncertainFence;
         private boolean poisoned;
@@ -680,6 +951,12 @@ public final class LwjglHudRenderer {
         private void clearReferences(boolean preserveUncertain) {
             bufferId = 0;
             handle = null;
+            vertexArrayId = 0;
+            vertexArrayHandle = null;
+            layoutReady = false;
+            storageAllocated = false;
+            mapped = null;
+            writeOffset = 0;
             fence = null;
             if (!preserveUncertain) uncertainFence = null;
             poisoned = preserveUncertain && uncertainFence != null;
@@ -692,3 +969,6 @@ public final class LwjglHudRenderer {
         @Override public void destroy() { }
     }
 }
+
+
+

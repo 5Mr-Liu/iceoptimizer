@@ -56,6 +56,10 @@ public final class RenderMatrixBridge {
 
         public float[] copyModelView() { return modelView.clone(); }
         public float[] copyProjection() { return projection.clone(); }
+        public void copyMatrices(float[] modelTarget, float[] projectionTarget) {
+            System.arraycopy(modelView, 0, modelTarget, 0, 16);
+            System.arraycopy(projection, 0, projectionTarget, 0, 16);
+        }
         public int getViewportX() { return viewport[0]; }
         public int getViewportY() { return viewport[1]; }
         public int getWidth() { return viewport[2]; }

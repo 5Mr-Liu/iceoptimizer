@@ -45,7 +45,7 @@ public final class ModuleCircuitBreaker {
             || module.isRuntimeManagedRenderer()) {
             setState(ModuleState.VERIFIED);
             detail = module.isRuntimeManagedRenderer()
-                ? "等待运行时能力、输出与收益认证" : "内建模块已验证";
+                ? "等待运行时所需能力初始化" : "内建模块已验证";
         } else if (patchedTargets.get() > 0) {
             setState(ModuleState.VERIFIED);
             detail = "目标字节码已通过结构验证";
@@ -79,7 +79,7 @@ public final class ModuleCircuitBreaker {
         consecutiveFailures.set(0);
         if (packLockRejected || state.get() == ModuleState.DISABLED) return;
         setState(ModuleState.VERIFIED);
-        detail = "新代际等待能力、输出与收益认证";
+        detail = "新代际等待所需能力初始化";
     }
 
     public synchronized void disable(String reason) {

@@ -71,6 +71,7 @@ final class AnimatedTextureAdapter implements OptimizerBytecodeAdapter {
         }
         List<MethodInsnNode> spriteCalls = new ArrayList<MethodInsnNode>(4);
         List<MethodInsnNode> binds = new ArrayList<MethodInsnNode>(5);
+        List<MethodInsnNode> spriteBinds = new ArrayList<MethodInsnNode>(1);
         for (AbstractInsnNode instruction : update.instructions.toArray()) {
             if (!(instruction instanceof MethodInsnNode)) continue;
             MethodInsnNode call = (MethodInsnNode) instruction;
@@ -82,6 +83,10 @@ final class AnimatedTextureAdapter implements OptimizerBytecodeAdapter {
                 && TEXTURE_UTIL.equals(call.owner)
                 && "func_94277_a".equals(call.name) && "(I)V".equals(call.desc)) {
                 binds.add(call);
+            } else if (call.getOpcode() == Opcodes.INVOKEVIRTUAL
+                && SPRITE.equals(call.owner) && "bindSpriteTexture".equals(call.name)
+                && VOID_DESC.equals(call.desc)) {
+                spriteBinds.add(call);
             }
         }
         // Vanilla dispatches one atlas sprite.  Reviewed OptiFine G5 dispatches
@@ -96,6 +101,13 @@ final class AnimatedTextureAdapter implements OptimizerBytecodeAdapter {
                 + spriteCalls.size() + ", bind=" + binds.size());
         }
         for (MethodInsnNode bind : binds) {
+            update.instructions.insertBefore(bind, new MethodInsnNode(
+                Opcodes.INVOKESTATIC, BOOTSTRAP, "textureBarrier", VOID_DESC,
+                false));
+        }
+        // G5's multi-texture loop binds each standalone sprite through this
+        // method rather than TextureUtil. It is the same binding boundary.
+        for (MethodInsnNode bind : spriteBinds) {
             update.instructions.insertBefore(bind, new MethodInsnNode(
                 Opcodes.INVOKESTATIC, BOOTSTRAP, "textureBarrier", VOID_DESC,
                 false));

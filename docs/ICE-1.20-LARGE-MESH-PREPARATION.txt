@@ -1,0 +1,81 @@
+ICE 1.20 修订 6：复杂建筑区块的上传前 CPU 准备
+日期：2026-10-13
+
+用户要求继续优化单个大型建筑。大型建筑跨多个 16x16x16 渲染区段；
+本次针对其中复杂区段上传时的一项线性 CPU 开销，不把整栋建筑误当一个任务。
+按用户要求，只做源码/字节码分析、编译与制品核对，不运行自动测试、启动
+检查、游戏或性能采样。没有当前建筑场景的实测归因或收益百分比。
+
+依据
+----
+修订 5 的 NativeTerrainRenderer.store 在主线程上传之后 new NativeTerrainFaceIndex：
+对每个非透明四边形读取 12 个位置分量，判断轴对齐、有限值、退化和绕序，
+再累计六个保守剔除平面。顶点数量增大时，这段扫描集中在同一个上传任务内。
+2ms 调度只在任务之间检查，不能中断它。
+
+阅读本地 Nothirium RenderChunkTaskCompile：compileSection 在工作线程计算
+区段网格和可见性，完成后通过 runOnRenderThread 发布 GPU 内容，并在 finally
+归还构建器。RenderLib GLBuffer 的 GPU 存储/映射接口也已查阅；本次不改用
+持久映射、不引入 OpenGL 4.4 要求，不复制第三方代码。
+
+本地 Forge ChunkRenderDispatcher/ChunkRenderWorker 源码显示：工作线程完成
+网格后为每层建立 ListenableFutureTask，放入距离优先的 PendingUpload 队列；
+同一 future 进入 allAsList 和原取消回调，最后才归还构建器、发布 CompiledChunk。
+
+另从用户实际 OptiFine_1.12.2_HD_U_G5.jar 的 bxm.class.xdelta，结合本地原版
+1.12.2 client.jar，离线还原 dispatcher class 并用 javap 读取，未启动 Minecraft
+或执行 ICE 转换器。还原 MD5 与 OptiFine 内记录一致：
+ac8cc74d9f3114057a5c24d5278e77c7。
+uploadChunk 字节码偏移 59 进入非客户端线程分支，75 调用 Runnable/Object
+签名的 ListenableFutureTask.create，87 才进入队列 monitor；原 GPU 分支不改顶点。
+证据位于 build/fps-target/120-hotfix6-source-evidence/。
+这不是整合包所有 coremod 转换后的运行时验证。
+
+实现
+----
+1. ModernTerrainAdapter 仅在 native renderer 启动安装分支中改写这一个 future
+   工厂调用，额外传入 layer/builder/chunk/compiled 参数。仍由原代码将返回的
+   同一 future 放入队列并注册取消，不另建执行器、队列或等待任务。
+2. NativeTerrainUploadTask.create 在工作线程、进入队列锁之前完成原布局检查、
+   坐标快照和面分类。Prepared 只保存 count、坐标数值和 faces，不保留额外
+   世界/区块/BufferBuilder 引用，也不复制或调整顶点缓冲的 position/limit/order。
+3. 原 Runnable 仍执行 dispatcher 的主线程上传分支；外层 Runnable 只在执行
+   期间通过 ThreadLocal 交付 Prepared。Renderer.take 即消费并清除，finally
+   再清理异常或未消费路径，避免结果遗留到下一个区块。
+4. Renderer.store 直接使用已准备的坐标/面信息，GPU 分配、上传、发布、释放
+   仍在原主线程位置。不改变分类算法、顶点/透明顺序和绘制数量。
+5. 无工作线程或其他直接上传入口没有 future，执行同一 prepare 方法，保留
+   该入口的正确性；没有旧渲染回退、运行时 oracle、性能门禁或每帧探针。
+
+取消、空层和 F6
+---------------
+取消的 future 不会执行原上传 Runnable 或发布 Prepared；元数据仅跟随该
+future 生命周期，不依赖复用构建器上额外缓存，也不可能被下一次构建误取。
+原 future 的队列/取消/allAsList/构建器归还关系均保留。没有改变排空调度。
+F6 关闭时 create 使用原 ListenableFutureTask.create，不计算 ICE 元数据；
+切换之前仍先取消所有区块任务、完整排空，之后才交换 GPU 所有者。
+编译中的面准备可能增加切换等待剩余任务的时间，但不引入新的主线程等待关系。
+空层/零顶点在访问旧缓冲内容前返回 EMPTY，保留修订 2 的空透明重排修复。
+透明层不做面分类，保持现有透明网格和顺序。修订 3/4/5 的修复与调度保留。
+
+限制
+----
+只是将 CPU 扫描移到现有工作线程，总扫描量和四边形数量不变；工作线程
+负载增加，队列等待期间会提前持有面数组（每四边形一字节加固定对象开销）。
+没有实测证明平均 FPS、总加载时间或尾延迟改善。
+本版没有把一个 GPU 上传拆成跨帧多个任务；GPU 扩容/传输、绘制前索引生成、
+其他模组及服务端建筑生成仍可能停顿，不能承诺单个大建筑完全流畅。
+版本仍精确为 ICE 1.20 / Minecraft 1.12.2，默认开启，F6 总开关语义保留。
+不改原游戏文件，不部署；Build12/13 否定实验仍不恢复。
+
+编译命令：tools/build-native-terrain-candidate.ps1 -PackageOnly
+构建日志：build/fps-target/120-hotfix6-large-mesh-build.log
+交付包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix6-playtest.zip
+冻结源码、制品与核对记录：build/fps-target/120-hotfix6-release/。
+
+交付记录
+--------
+PackageOnly 构建成功，29 秒；没有运行测试或游戏。
+JAR SHA256：B2A66E77B77EA680818966CDBEAA3A2A91D99024914AAFF5590761D2668631DE
+ZIP SHA256：3B0CB2B14E2F85FC571F4AE01739E051F130C23FFE395844178A8267CB89F195
+CRC、元数据与嵌入 JAR 核对通过，不代表运行时 ASM 或游戏验证。

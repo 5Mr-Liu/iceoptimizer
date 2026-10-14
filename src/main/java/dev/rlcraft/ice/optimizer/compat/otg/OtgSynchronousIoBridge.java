@@ -73,6 +73,12 @@ public final class OtgSynchronousIoBridge {
             })
             .build();
 
+    private static final Cache<Path, MetadataEntry> PREPARED_METADATA = Caffeine.newBuilder()
+        .maximumWeight(METADATA_CACHE_BYTES)
+        .weigher(new Weigher<Path, MetadataEntry>() {
+            @Override public int weigh(Path key, MetadataEntry value) { return value.weight; }
+        }).build();
+
     private static final ClassValue<TagAccess> TAG_ACCESS = new ClassValue<TagAccess>() {
         @Override protected TagAccess computeValue(Class<?> type) {
             try {
@@ -235,6 +241,7 @@ public final class OtgSynchronousIoBridge {
         long current = CONFIGURATION_GENERATION.get();
         CONFIGURATION_GENERATION.set(current == Long.MAX_VALUE ? 1L : current + 1L);
         SETTINGS.invalidateAll();
+        PREPARED_METADATA.invalidateAll();
         for (WeakReference<MetadataMap> reference : METADATA_MAPS) {
             MetadataMap map = reference.get();
             if (map == null) {
@@ -242,6 +249,47 @@ public final class OtgSynchronousIoBridge {
             } else {
                 map.invalidateSafeEntries();
             }
+        }
+    }
+
+    /** Pure parsing at object registration; does not construct resources or run world callbacks. */
+    static OtgSettingsSnapshot prepareSettings(File file) throws IOException {
+        SettingsLookupKey key = SettingsLookupKey.capture(file);
+        SettingsEntry entry = SETTINGS.getIfPresent(key);
+        if (entry != null && entry.stamp.reusableNow()) return entry.snapshot;
+        entry = loadSettingsEntry(key);
+        SETTINGS.put(key, entry);
+        return entry.snapshot;
+    }
+
+    static void prepareMetadata(File file, Class<?> tagClass) throws IOException {
+        Path path = FileProbe.logicalPath(file);
+        MetadataEntry cached = PREPARED_METADATA.getIfPresent(path);
+        if (cached != null && cached.stamp.reusableNow()) return;
+        FileProbe before = FileProbe.capture(path, true);
+        TagAccess access = TAG_ACCESS.get(tagClass);
+        Node root;
+        try { root = readBlueprint(path, true, access); }
+        catch (IOException compressedFailure) { root = readBlueprint(path, false, access); }
+        if (root == null) return;
+        boolean id = false;
+        if (root.children != null) for (Node child : root.children) if ("id".equals(child.name)) { id = true; break; }
+        if (!id) {
+            if (root.children == null || root.children.length == 0) return;
+            root = root.children[0];
+        }
+        FileStamp after = FileStamp.authenticate(before);
+        synchronized (OtgSynchronousIoBridge.class) {
+            if (after.generation == CONFIGURATION_GENERATION.get() && after.watched() && after.reusableNow())
+                PREPARED_METADATA.put(path, new MetadataEntry(after, root));
+        }
+    }
+
+    private static Node readBlueprint(Path path, boolean compressed, TagAccess access) throws IOException {
+        try (InputStream input = new BufferedInputStream(Files.newInputStream(path), IO_BUFFER_BYTES)) {
+            DataInputStream data = new DataInputStream(compressed ? new GZIPInputStream(input, IO_BUFFER_BYTES) : input);
+            byte type = data.readByte();
+            return type == 0 ? new Node(0, null, -1, null, null) : parseNode(data, type, data.readUTF(), access);
         }
     }
 
@@ -833,15 +881,16 @@ public final class OtgSynchronousIoBridge {
         }
 
         @Override public boolean containsKey(Object rawKey) {
-            if (!enabled()) return original.containsKey(rawKey);
             LAST_PARSED_TAG.remove();
             pending.remove();
+            if (!enabled()) return original.containsKey(rawKey);
             if (original.containsKey(rawKey)) return true;
             if (!(rawKey instanceof String)) return false;
             String key = (String) rawKey;
             try {
                 Path logicalPath = FileProbe.logicalPath(new File(key));
                 MetadataEntry entry = safe.getIfPresent(logicalPath);
+                if (entry == null) entry = PREPARED_METADATA.getIfPresent(logicalPath);
                 if (entry != null && entry.stamp.reusableNow()) {
                     pending.set(new PendingMetadata(key, logicalPath, null, entry));
                     return true;
@@ -863,15 +912,18 @@ public final class OtgSynchronousIoBridge {
         }
 
         @Override public Object get(Object rawKey) {
-            if (!enabled()) return original.get(rawKey);
-            if (original.containsKey(rawKey)) return original.get(rawKey);
             PendingMetadata observed = pending.get();
             pending.remove();
+            boolean pairedHit = observed != null && observed.hit != null
+                && observed.requestedPath.equals(rawKey);
+            // A runtime pause must not split a successful containsKey/get
+            // pair into a spurious null. Only that one accepted hit completes;
+            // subsequent lookups use the original map until resumed.
+            if (!enabled() && !pairedHit) return original.get(rawKey);
+            if (original.containsKey(rawKey)) return original.get(rawKey);
             if (!(rawKey instanceof String)) return null;
             String key = (String) rawKey;
             try {
-                boolean pairedHit = observed != null
-                    && key.equals(observed.requestedPath) && observed.hit != null;
                 Path logicalPath = pairedHit
                     ? observed.logicalPath : FileProbe.logicalPath(new File(key));
                 MetadataEntry entry = pairedHit ? observed.hit : currentEntry(logicalPath);
@@ -910,11 +962,11 @@ public final class OtgSynchronousIoBridge {
         }
 
         @Override public Object put(String key, Object value) {
-            if (!enabled()) return original.put(key, value);
             PendingMetadata before = pending.get();
             pending.remove();
             ParsedTag parsed = LAST_PARSED_TAG.get();
             LAST_PARSED_TAG.remove();
+            if (!enabled()) return original.put(key, value);
             if (key == null || before == null
                 || before.probe == null || !key.equals(before.requestedPath)) {
                 return original.put(key, value);
@@ -958,6 +1010,7 @@ public final class OtgSynchronousIoBridge {
         @Override public void clear() {
             original.clear();
             safe.invalidateAll();
+            PREPARED_METADATA.invalidateAll();
             pending.remove();
             LAST_PARSED_TAG.remove();
         }
@@ -969,6 +1022,7 @@ public final class OtgSynchronousIoBridge {
         private MetadataEntry currentEntry(Path logicalPath) {
             try {
                 MetadataEntry entry = safe.getIfPresent(logicalPath);
+                if (entry == null) entry = PREPARED_METADATA.getIfPresent(logicalPath);
                 if (entry == null) return null;
                 if (entry.stamp.reusableNow()) return entry;
                 safe.asMap().remove(logicalPath, entry);

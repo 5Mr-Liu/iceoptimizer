@@ -19,6 +19,7 @@ import dev.rlcraft.ice.profiler.sampling.ThreadRole;
 import dev.rlcraft.ice.profiler.sampling.ThreadSampler;
 import dev.rlcraft.ice.profiler.session.RecordingSession;
 import dev.rlcraft.ice.profiler.session.SessionManager;
+import dev.rlcraft.ice.profiler.session.SessionMarker;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 public final class ProfilerRuntime implements SampleListener, SamplingMode, TriggerEngine.Sink {
     public static final ProfilerRuntime INSTANCE = new ProfilerRuntime();
@@ -34,6 +36,8 @@ public final class ProfilerRuntime implements SampleListener, SamplingMode, Trig
     private final MetricRegistry metrics = new MetricRegistry();
     private final TriggerEngine triggers = new TriggerEngine(this);
     private final FixedRingBuffer<TimelinePoint> passiveTimeline = new FixedRingBuffer<TimelinePoint>(120);
+    private final FixedRingBuffer<SessionMarker> optimizerMarkers = new FixedRingBuffer<SessionMarker>(256);
+    private final OptimizerPauseObservation optimizerObservation = new OptimizerPauseObservation();
     private final FixedRingBuffer<String> recentDiagnoses = new FixedRingBuffer<String>(10);
     private volatile boolean initialized;
     private volatile boolean deepMode;
@@ -63,6 +67,11 @@ public final class ProfilerRuntime implements SampleListener, SamplingMode, Trig
         metrics.start();
         deepMode = IceConfig.probes.deepProfiling;
         initialized = true;
+        try {
+            optimizerObservation.connect(new Consumer<Boolean>() {
+                @Override public void accept(Boolean paused) { recordOptimizerPause(paused.booleanValue()); }
+            });
+        } catch (Throwable error) { collectorFailure("optimizer-observer", error); }
         ProbeBridge.setEnabled(true);
         if (IceConfig.general.passiveMonitoring) sampler.start();
         IceProfilerMod.LOGGER.info("ICE Recorder 已初始化；报告目录 {}，内存上限 {} MiB", reports.getReportsRoot(), IceConfig.general.maxProfilerMemoryMiB);
@@ -122,6 +131,18 @@ public final class ProfilerRuntime implements SampleListener, SamplingMode, Trig
         } catch (Throwable error) {
             collectorFailure("marker", error);
         }
+    }
+
+    /** State-change event only: does not trigger captures or gate optimizations. */
+    private synchronized void recordOptimizerPause(boolean paused) {
+        if (!initialized) return;
+        try {
+            metrics.optimizerPauseChanged(paused);
+            long now = System.currentTimeMillis();
+            String text = paused ? "ICE runtime optimizations OFF" : "ICE runtime optimizations ON";
+            optimizerMarkers.add(new SessionMarker(now, 0L, text));
+            sessions.addMarker(now, text);
+        } catch (Throwable error) { collectorFailure("optimizer-marker", error); }
     }
 
     public void recordClientFrame(long nanos) {
@@ -189,6 +210,11 @@ public final class ProfilerRuntime implements SampleListener, SamplingMode, Trig
                 sessions.startAt(false, "自动卡顿事件", incidentStartedEpoch, trigger.getTimestampNanos() - preNanos);
                 for (TimelinePoint point : passiveTimeline.snapshot()) {
                     if (point.getEpochMillis() >= incidentStartedEpoch) sessions.addTimeline(point.rebase(incidentStartedEpoch));
+                }
+                for (SessionMarker marker : optimizerMarkers.snapshot()) {
+                    if (marker.getEpochMillis() >= incidentStartedEpoch) {
+                        sessions.addMarker(marker.getEpochMillis(), marker.getText());
+                    }
                 }
             }
             if (!sessions.isRecording()) return;
@@ -279,6 +305,8 @@ public final class ProfilerRuntime implements SampleListener, SamplingMode, Trig
 
     public synchronized void shutdown() {
         if (!initialized) return;
+        try { optimizerObservation.disconnect(); }
+        catch (Throwable error) { collectorFailure("optimizer-unsubscribe", error); }
         sessions.shutdown();
         sampler.stop();
         metrics.stop();

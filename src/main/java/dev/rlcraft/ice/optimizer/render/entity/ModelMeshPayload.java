@@ -53,6 +53,7 @@ public final class ModelMeshPayload {
     public int getByteLength() { return vertices.length; }
     public byte[] getDigest() { return digest.clone(); }
     public VertexFormat getFormat() { return new VertexFormat(format); }
+    boolean matchesFormat(VertexFormat expected) { return format.equals(expected); }
     public int getDrawMode() { return drawMode; }
     public int getVertexCount() { return vertexCount; }
     public long getResourceGeneration() { return resourceGeneration; }

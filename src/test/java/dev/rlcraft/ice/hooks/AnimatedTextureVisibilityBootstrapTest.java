@@ -2,6 +2,9 @@ package dev.rlcraft.ice.hooks;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -41,6 +44,41 @@ public final class AnimatedTextureVisibilityBootstrapTest {
         AnimatedTextureVisibilityBootstrap.terrainChunk(new Object(), new Object());
         AnimatedTextureVisibilityBootstrap.terrainDraw(new Object(), new Object());
         AnimatedTextureVisibilityBootstrap.bufferDraw(new Object());
+    }
+
+    @Test public void inlineableCallbacksWorkAcrossAnIsolatedCoreLoader() throws Exception {
+        URL output = AnimatedTextureVisibilityBootstrap.class.getProtectionDomain().getCodeSource().getLocation();
+        try (URLClassLoader isolated = new URLClassLoader(new URL[] {output}, null)) {
+            Class<?> type = Class.forName(AnimatedTextureVisibilityBootstrap.class.getName(), true, isolated);
+            CallbackBridge.count = 0;
+            assertEquals(Boolean.TRUE, type.getMethod("install", Class.class).invoke(null, CallbackBridge.class));
+            type.getMethod("terrainChunk", Object.class, Object.class).invoke(null, "chunk", "layer");
+            type.getMethod("terrainDraw", Object.class, Object.class).invoke(null, "container", "layer");
+            type.getMethod("bufferDraw", Object.class).invoke(null, "buffer");
+            assertEquals(7, CallbackBridge.count);
+        }
+    }
+
+    @Test public void incompatibleCallbacksClearAPreviousInstallation() {
+        CallbackBridge.count = 0;
+        assertTrue(AnimatedTextureVisibilityBootstrap.install(CallbackBridge.class));
+        assertFalse(AnimatedTextureVisibilityBootstrap.install(BrokenCallbacks.class));
+        AnimatedTextureVisibilityBootstrap.terrainChunk("chunk", "layer");
+        assertEquals(0, CallbackBridge.count);
+    }
+
+    public static final class CallbackBridge {
+        static int count;
+        public static Object[] visibilityCallbacks() {
+            return new Object[] {
+                (BiConsumer<Object, Object>) (a, b) -> count += 1,
+                (BiConsumer<Object, Object>) (a, b) -> count += 2,
+                (Consumer<Object>) a -> count += 4
+            };
+        }
+    }
+    public static final class BrokenCallbacks {
+        public static Object[] visibilityCallbacks() { return new Object[] {"not a callback"}; }
     }
 
     @Test

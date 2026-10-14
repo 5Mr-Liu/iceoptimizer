@@ -17,8 +17,10 @@ import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
+import dev.rlcraft.ice.early.EarlyRendererOwnership;
 
 /** Structurally installs the generic vanilla chunk worker, sort and VBO paths. */
 final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
@@ -165,6 +167,20 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     }
 
     private static void wrapDispatcherUpload(ClassNode node, MethodNode original) {
+        if (EarlyRendererOwnership.hasNativeTerrainRenderer()) {
+            MethodNode incoming = NativeTerrainPauseAdapter.copy(original);
+            original.instructions.clear();
+            original.tryCatchBlocks.clear();
+            if (original.localVariables != null) original.localVariables.clear();
+            original.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            original.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
+            original.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainRenderer", "upload",
+                UPLOAD_DESCRIPTOR, false));
+            original.instructions.add(new InsnNode(Opcodes.RETURN));
+            NativeTerrainPauseAdapter.install(node, original, incoming);
+            return;
+        }
         int access = original.access;
         String signature = original.signature;
         String[] exceptions = exceptions(original);
@@ -174,19 +190,35 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         MethodNode wrapper = new MethodNode(Opcodes.ASM5, access, UPLOAD_METHOD,
             UPLOAD_DESCRIPTOR, signature, exceptions);
         LabelNode fallback = new LabelNode();
+        LabelNode start = new LabelNode();
+        LabelNode success = new LabelNode();
+        LabelNode handler = new LabelNode();
+        wrapper.instructions.add(start);
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
         wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, UPLOAD_BRIDGE,
             "tryUpload", UPLOAD_DESCRIPTOR.substring(0, UPLOAD_DESCRIPTOR.length() - 1) + "Z", false));
         wrapper.instructions.add(new JumpInsnNode(Opcodes.IFEQ, fallback));
-        wrapper.instructions.add(new InsnNode(Opcodes.RETURN));
+        wrapper.instructions.add(new JumpInsnNode(Opcodes.GOTO, success));
         wrapper.instructions.add(fallback);
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
         wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, DISPATCHER,
             ORIGINAL_UPLOAD, UPLOAD_DESCRIPTOR, false));
+        wrapper.instructions.add(success);
+        wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+            ModernTerrainAdapter.RENDER_BRIDGE, "afterUpload", "(L" + VERTEX_BUFFER + ";)V", false));
         wrapper.instructions.add(new InsnNode(Opcodes.RETURN));
+        wrapper.instructions.add(handler);
+        wrapper.instructions.add(new VarInsnNode(Opcodes.ASTORE, 3));
+        wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+            ModernTerrainAdapter.RENDER_BRIDGE, "failedUpload", "(L" + VERTEX_BUFFER + ";)V", false));
+        wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        wrapper.instructions.add(new InsnNode(Opcodes.ATHROW));
+        wrapper.tryCatchBlocks.add(new TryCatchBlockNode(start, success, handler, "java/lang/Throwable"));
         node.methods.add(wrapper);
     }
 
@@ -271,6 +303,13 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
             | Opcodes.ACC_PRIVATE | Opcodes.ACC_SYNTHETIC;
         MethodNode wrapper = new MethodNode(Opcodes.ASM5, access, BUFFER_DATA_METHOD,
             BUFFER_DATA_DESCRIPTOR, signature, exceptions);
+        boolean nativeTerrain = EarlyRendererOwnership.hasNativeTerrainRenderer();
+        String lifecycleOwner = nativeTerrain
+            ? "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainRenderer" : ModernTerrainAdapter.RENDER_BRIDGE;
+        wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+            lifecycleOwner, nativeTerrain ? "release" : "beforeVertexBufferUpload",
+            "(L" + VERTEX_BUFFER + ";)V", false));
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
         wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, VERTEX_BUFFER,
@@ -287,12 +326,17 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         MethodNode delete = requireMethod(node, "func_177362_c", "()V");
         InsnList resetCapacity = new InsnList();
         resetCapacity.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        resetCapacity.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+            lifecycleOwner, nativeTerrain ? "release" : "releaseVertexBuffer",
+            "(L" + VERTEX_BUFFER + ";)V", false));
+        resetCapacity.add(new VarInsnNode(Opcodes.ALOAD, 0));
         resetCapacity.add(new InsnNode(Opcodes.ICONST_0));
         resetCapacity.add(new FieldInsnNode(Opcodes.PUTFIELD, VERTEX_BUFFER,
             CAPACITY_FIELD, "I"));
         delete.instructions.insert(resetCapacity);
 
         addIntFieldAccessor(node, "ice$glBufferId", GL_BUFFER_ID);
+        addIntFieldAccessor(node, "ice$vertexCount", VBO_COUNT);
         addIntFieldAccessor(node, "ice$capacityBytes", CAPACITY_FIELD);
         addIntFieldSetter(node, "ice$setCapacityBytes", CAPACITY_FIELD);
         addIntFieldSetter(node, "ice$setVertexCount", VBO_COUNT);

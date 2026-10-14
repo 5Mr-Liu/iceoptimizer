@@ -16,6 +16,8 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.tree.IincInsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
 
 /** Surgical, call-scoped optimization for the reviewed Lycanites block spawn scan. */
 final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
@@ -30,6 +32,10 @@ final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
         "(Lnet/minecraft/world/World;Lnet/minecraft/entity/player/EntityPlayer;"
             + "Lnet/minecraft/util/math/BlockPos;)Ljava/util/List;";
     static final String BACKUP_METHOD = "ice$scan$getSpawnPositions";
+    static final String FAST_SCAN = "ice$fast$getSpawnPositions";
+    static final String FAST_VALID = "ice$fast$isValidBlock";
+    static final String FAST_SCAN_DESCRIPTOR = SCAN_DESCRIPTOR.replace(")Ljava/util/List;", "Ljava/lang/Object;)Ljava/util/List;");
+    static final String FAST_VALID_DESCRIPTOR = "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;Ljava/lang/Object;)Z";
     static final String VALID_METHOD = "isValidBlock";
     static final String VALID_DESCRIPTOR =
         "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;)Z";
@@ -58,9 +64,26 @@ final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
         validateScan(scan);
         validateValid(valid);
 
-        replaceCounterAllocation(scan);
-        replaceStateCall(scan, 0, "scanState");
-        replaceStateCall(valid, 0, "validationState");
+        MethodNode fastScan = ServerModAdapterSupport.copy(scan, FAST_SCAN);
+        MethodNode fastValid = ServerModAdapterSupport.copy(valid, FAST_VALID);
+        appendContext(fastScan, 4, FAST_SCAN_DESCRIPTOR);
+        appendContext(fastValid, 3, FAST_VALID_DESCRIPTOR);
+        replaceCounterAllocation(fastScan);
+        replaceStateCall(fastScan, 0, "scanState", 4);
+        replaceStateCall(fastValid, 0, "validationState", 3);
+        for (AbstractInsnNode instruction : fastScan.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) instruction;
+            if (TARGET.equals(call.owner) && VALID_METHOD.equals(call.name)) {
+                fastScan.instructions.insertBefore(call, new VarInsnNode(Opcodes.ALOAD, 4));
+                call.setOpcode(Opcodes.INVOKESPECIAL);
+                call.name = FAST_VALID;
+                call.desc = FAST_VALID_DESCRIPTOR;
+            }
+        }
+        replaceBlockMembership(fastValid);
+        node.methods.add(fastScan);
+        node.methods.add(fastValid);
 
         node.interfaces.add(ACCESSOR);
         int wrapperAccess = scan.access;
@@ -79,6 +102,38 @@ final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static void appendContext(MethodNode method, int argument, String descriptor) {
+        method.desc = descriptor;
+        method.signature = null;
+        method.localVariables = null;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (instruction instanceof VarInsnNode && ((VarInsnNode) instruction).var >= argument)
+                ((VarInsnNode) instruction).var++;
+            if (instruction instanceof IincInsnNode && ((IincInsnNode) instruction).var >= argument)
+                ((IincInsnNode) instruction).var++;
+        }
+        method.maxLocals++;
+    }
+
+    private static void replaceBlockMembership(MethodNode method) {
+        int changed = 0;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode)) continue;
+            MethodInsnNode name = (MethodInsnNode) instruction;
+            if (!"net/minecraft/block/Block".equals(name.owner) || !"getRegistryName".equals(name.name)) continue;
+            AbstractInsnNode next = name.getNext();
+            while (next != null && next.getOpcode() < 0) next = next.getNext();
+            if (!(next instanceof MethodInsnNode) || !"contains".equals(((MethodInsnNode) next).name))
+                throw new IllegalStateException("Lycanites block membership graph changed");
+            method.instructions.remove(name);
+            method.instructions.set(next, new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/rlcraft/ice/optimizer/compat/lycanites/LycanitesBlockMembershipBridge", "containsBlock",
+                "(Ljava/util/List;Lnet/minecraft/block/Block;)Z", false));
+            changed++;
+        }
+        if (changed != 2) throw new IllegalStateException("Lycanites block membership count changed: " + changed);
     }
 
     private static void validateScan(MethodNode method) {
@@ -168,15 +223,16 @@ final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
         }
         InsnList replacement = new InsnList();
         replacement.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        replacement.add(new VarInsnNode(Opcodes.ALOAD, 4));
         replacement.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE,
-            "newBlockCounter", "(Ljava/lang/Object;)Ljava/util/Map;", false));
+            "newBlockCounter", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;", false));
         method.instructions.insertBefore(allocation, replacement);
         method.instructions.remove(allocation);
         method.instructions.remove(duplicate);
         method.instructions.remove(constructor);
     }
 
-    private static void replaceStateCall(MethodNode method, int selectedIndex, String bridgeMethod) {
+    private static void replaceStateCall(MethodNode method, int selectedIndex, String bridgeMethod, int context) {
         int index = 0;
         MethodInsnNode selected = null;
         for (AbstractInsnNode instruction = method.instructions.getFirst(); instruction != null;
@@ -192,10 +248,11 @@ final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
             }
         }
         if (selected == null) throw new IllegalStateException("Lycanites 方块状态调用点缺失：" + bridgeMethod);
+        method.instructions.insertBefore(selected, new VarInsnNode(Opcodes.ALOAD, context));
         selected.setOpcode(Opcodes.INVOKESTATIC);
         selected.owner = BRIDGE;
         selected.name = bridgeMethod;
-        selected.desc = "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;)"
+        selected.desc = "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;Ljava/lang/Object;)"
             + "Lnet/minecraft/block/state/IBlockState;";
         selected.itf = false;
     }
@@ -212,12 +269,27 @@ final class LycanitesSpawnScanAdapter implements OptimizerBytecodeAdapter {
         LabelNode end = new LabelNode();
         LabelNode handler = new LabelNode();
         code.add(start);
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "currentContext", "()Ljava/lang/Object;", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 6));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 6));
+        code.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "activeContext", "(Ljava/lang/Object;)Z", false));
+        LabelNode original = new LabelNode(), selected = new LabelNode();
+        code.add(new JumpInsnNode(Opcodes.IFEQ, original));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 6));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, TARGET, FAST_SCAN, FAST_SCAN_DESCRIPTOR, false));
+        code.add(new JumpInsnNode(Opcodes.GOTO, selected));
+        code.add(original);
         code.add(new VarInsnNode(Opcodes.ALOAD, 0));
         code.add(new VarInsnNode(Opcodes.ALOAD, 1));
         code.add(new VarInsnNode(Opcodes.ALOAD, 2));
         code.add(new VarInsnNode(Opcodes.ALOAD, 3));
         code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, TARGET,
             BACKUP_METHOD, SCAN_DESCRIPTOR, false));
+        code.add(selected);
         code.add(new VarInsnNode(Opcodes.ASTORE, 6));
         code.add(end);
         code.add(new VarInsnNode(Opcodes.LLOAD, 4));

@@ -117,9 +117,9 @@ final class RenderMeasurementRuntime {
             && !runtime.shaderRuntime.isShaderPackSafeForNativeVertexFormats()) return null;
         AdaptiveBackendController backend = runtime.components.backends.get(module);
         if (backend == null) return null;
-        boolean profiledModelWorkload =
-            module == OptimizationModule.MODERN_ENTITY_BACKEND
-                || module == OptimizationModule.MODERN_TESR_BACKEND;
+        boolean profiledModelWorkload = !backend.isDirectActivation()
+            && (module == OptimizationModule.MODERN_ENTITY_BACKEND
+                || module == OptimizationModule.MODERN_TESR_BACKEND);
         if (!profiledModelWorkload && !backend.shouldInspectCandidate()) {
             return null;
         }

@@ -10,7 +10,10 @@ public interface SrpSpawnFilterCallbacks {
 
     boolean ice$spawnCheckParasiteId(Object saveData, int parasiteId);
 
-    boolean ice$spawnColonyLocked(int parasiteId, Object worldData, boolean parasiteBiome);
+    boolean ice$spawnColonyLocked(int parasiteId, Object worldData, boolean parasiteBiome,
+                                 Object invocation);
+
+    int ice$spawnColonyPoints(Object worldData, int age);
 
     boolean ice$spawnSubCapLocked(Class<?> entityClass, int dimensionId);
 }

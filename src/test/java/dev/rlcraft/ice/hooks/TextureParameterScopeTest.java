@@ -26,7 +26,7 @@ public final class TextureParameterScopeTest {
         assertTrue(TextureUploadBootstrap.skipParameters(5, true, false, true));
     }
 
-    @Test public void clearsAtEverySpriteAndBindingBoundary() {
+    @Test public void bindingBoundaryPreventsCarryingParametersToTheNextSprite() {
         TextureParameterScope.beginVerifiedForTest();
         assertFalse(skip(0));
         AnimatedTextureBootstrap.textureBarrier();
@@ -36,6 +36,39 @@ public final class TextureParameterScopeTest {
         assertFalse(skip(0));
         AnimatedTextureBootstrap.afterSprite();
         assertFalse(skip(1));
+    }
+
+    @Test public void continuousReviewedSpritesReuseOnlyTheirFirstHelper() {
+        TextureParameterScope.beginVerifiedForTest();
+        assertFalse(skip(0));assertTrue(skip(1));
+        TextureParameterScope.afterSprite();
+        TextureParameterScope.beginVerifiedForTest();
+        assertTrue("same atlas and parameters across sprites",skip(0));
+        assertTrue(skip(1));
+        assertFalse("another helper in the same sprite must reapply",skip(0));
+        assertTrue(skip(1));
+        TextureParameterScope.afterSprite();
+        TextureParameterScope.beginVerifiedForTest();
+        assertFalse("changed flags require setup",TextureUploadBootstrap.skipParameters(0,true,true,false));
+        assertTrue(TextureUploadBootstrap.skipParameters(1,true,true,false));
+    }
+
+    @Test public void unknownOrOutOfScopeUploadDiscardsTheCompletedSpriteState() {
+        TextureParameterScope.beginVerifiedForTest();assertFalse(skip(0));
+        TextureParameterScope.afterSprite();
+        AnimatedTextureBootstrap.beforeSprite(new Object());
+        AnimatedTextureBootstrap.afterSprite();
+        TextureParameterScope.beginVerifiedForTest();assertFalse(skip(0));
+        TextureParameterScope.afterSprite();
+        assertFalse("out-of-scope upload changes parameters",skip(0));
+        TextureParameterScope.beginVerifiedForTest();assertFalse(skip(0));
+    }
+
+    @Test public void reviewedSpriteWithoutUploadsKeepsTheSameAtlasParameters() {
+        TextureParameterScope.beginVerifiedForTest();assertFalse(skip(0));
+        TextureParameterScope.afterSprite();
+        TextureParameterScope.beginVerifiedForTest();TextureParameterScope.afterSprite();
+        TextureParameterScope.beginVerifiedForTest();assertTrue(skip(0));
     }
 
     @Test public void nestedSpritesDisableReuseWithoutResumingTheOuterCache() {
@@ -114,6 +147,9 @@ public final class TextureParameterScopeTest {
             AnimatedTextureBootstrap.beforeSprite(sprite);
             assertFalse(skip(0));
             assertTrue("a real reviewed sprite scope must reach the parameter guard", skip(1));
+            AnimatedTextureBootstrap.afterSprite();
+            AnimatedTextureBootstrap.beforeSprite(sprite);
+            assertTrue("next reviewed sprite retains atlas parameters",skip(0));
             AnimatedTextureBootstrap.afterSprite();
             ConfigurationBridge.enabled = false;
             AnimatedTextureBootstrap.beforeSprite(sprite);

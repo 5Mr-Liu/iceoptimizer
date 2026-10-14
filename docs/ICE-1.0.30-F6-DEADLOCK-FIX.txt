@@ -1,0 +1,114 @@
+ICE 1.0.30 Build16 — F6 chunk-upload deadlock fix
+2026-10-13
+
+Build15 is superseded. A user reported an indefinite freeze when pressing F6.
+The original game was inspected read-only: the installed optimizer hash matched
+the released Build15. Its client stopped before the switch-completed log; the
+integrated server continued and client network actions eventually overflowed.
+No surviving user JVM was available for a live thread dump.
+
+Reproduction and cause
+----------------------
+The Build15 release smoke called setRuntimePaused directly at ClientTick.END,
+after a 60-second warmup. It did not validate the actual key handler while
+chunks were being rebuilt. A new test fixture sends KeyBinding.onTick(F6),
+letting the production ClientOptimizerController process the request normally
+at ClientTick.START. A first ordinary key test completed; tick phase alone is
+not the cause.
+
+The stress fixture marks the 15376 render sections dirty, allows three client
+ticks to start asynchronous builds, then sends F6. Six alternating switches are
+requested, using 2-second scenes and the existing 5-second settling interval.
+These measurements are diagnostic only, not an FPS comparison or performance
+acceptance test. No test-specific delay or bytecode instrumentation is used.
+
+Build15 stress run reproduced the indefinite wait on the fourth switch, from
+paused to enabled, at 20:20:37 local time. At 20:21 the Client thread was still
+parked in ArrayBlockingQueue.take -> ChunkRenderDispatcher.allocateRenderBuilder
+-> stopChunkUpdates -> RenderGlobal.ice$stopChunkUpdates ->
+NativeTerrainPauseLifecycle.beforeChange -> setRuntimePaused -> F6 handler.
+Stack: build/fps-target/130-build15-f6-key-stress-hang-jstack.txt.
+Snapshot: C:/Users/32884/.codex/scratch/ice-fps-target/live-130-build15-f6-key-stress
+Only this identified isolated JVM was terminated after collecting the dump.
+
+stopChunkUpdates clears queued builds, drains the currently queued uploads,
+then blocks until it can take every render builder. A task still compiling can
+queue its upload AFTER that drain. Its builder is returned by the upload
+completion callback, which needs the now-blocked client thread. The worker
+itself can already be idle waiting for a new build; the outstanding upload
+future retains the missing builder. This is an unbounded wait, not slow GL
+resource deletion and not a request to wait longer.
+
+Fix
+---
+Cancel every RenderChunk's existing compile task before calling the blocking
+dispatcher drain. This mirrors the ordering of the incoming loadRenderers,
+which cancels tasks through ViewFrustum.deleteGlResources before draining.
+Cancellation marks compiling tasks finished and cancels pending upload futures,
+so their completion callbacks return builders without requiring client uploads.
+GPU geometry is still released/rebuilt only after draining and switching mode.
+No configuration, quality or selected optimization is silently changed.
+Add one switch-request log before handoff, so future incomplete requests can
+be distinguished from completed switches without a permanent HUD.
+
+Regression verification
+-----------------------
+NativeTerrainPauseLifecycleTest uses a real ChunkCompileTaskGenerator and Guava
+upload future, with a GL-free RenderChunk test double. It verifies cancellation
+returns the held builder before the drain attempts its blocking take.
+Complete build, optimizerBundleZip and verifyArtifactStartup passed:
+1294 cases, 1164 passed, 130 optional skipped, 0 failures/errors;
+10 final artifact/startup discovery tests passed separately.
+Build log: build/fps-target/130-native-build16-f6-deadlock-build.log.
+JAR SHA256: FCBDCB6D6838ADF544DA54B68FC0535344540C829654D32A2D7C8A6A6ADC6FFB
+
+Live stress result and release version
+-------------------------------------
+Fixed Build16 completed all six real F6 switches in the same rebuilding stress
+scenario: 20:24:33 off, 20:24:40 on, 20:24:47 off, 20:24:54 on, 20:25:02 off,
+20:25:09 on. ICE_BENCH COMPLETE at 20:25:16; the isolated JVM exited normally.
+Snapshot: C:/Users/32884/.codex/scratch/ice-fps-target/live-130-build16-f6-key-stress
+Native active was logged four times (initial startup and three resumptions).
+Seven scene screenshots were produced; OFF and final ON were visually checked.
+Terrain is visible, but the short OFF scene still contains distant rebuilding
+patches. This is not proof of fully loaded terrain or pixel equivalence.
+
+The two stress runs used matching initial world/options hashes, fixture hash,
+renderer config contents/hashes, camera and test flags. The input mod manifests
+differ only in the optimizer JAR. The renderer-config JSON files have different
+serialization order, so their raw manifest hashes differ; individual config
+names, contents and hashes are identical. Natural entity state remains variable.
+Both games ran serially, without a diagnostic agent or concurrent compilation.
+
+The user subsequently requested exact release version 1.20. Minecraft remains
+1.12.2. The Gradle version, optimizer annotation/constants, exact remote range,
+shared profiler version constant and existing linkage assertions were updated.
+The profiler HUD and behavior remain unchanged; it is excluded from the user
+package. The live-tested internal Build16 JAR and source/build snapshot are
+preserved in build/fps-target/130-native-build16-f6-tested before rebuilding.
+
+Limits
+------
+Switching still rebuilds terrain and can cause a finite loading hitch. This fix
+removes the demonstrated circular wait; it is not a promise of zero pause or
+zero chunk-loading time. Default-on, all configured runtime modules including
+native terrain, and restore-previous-configuration behavior remain intact.
+The separate profiler and the original game files have not been changed.
+Build12/Build13 experiments remain rejected; formal performance status is unchanged.
+
+1.20 final release verification (2026-10-13)
+------------------------------------------
+build + optimizerBundleZip + verifyArtifactStartup passed in 1m 3s.
+1294 tests: 1164 passed, 130 optional skipped, 0 failures/errors.
+10 final artifact/startup checks passed separately.
+Only MANIFEST.MF, mcmod.info and IceMod.class differ from the live-tested
+internal Build16 JAR. IceMod.class is byte-identical after replacing its two
+UTF-8 version constants; every other JAR entry is identical. No second live
+run was performed solely for this version change. The tested F6/renderer code
+is therefore unchanged. Metadata confirms mod 1.20 and Minecraft 1.12.2.
+Build log: build/fps-target/120-release-f6-fix-build.log
+JAR SHA256: 9E7D0342D970E8F03115C1F3D47D12FE5812E57DB360F1BEF9D8D26B93A36200
+Package: build/playtest/ice-rlcraft-optimizer-1.20-playtest.zip
+ZIP SHA256: A2077DBC9F0F685808E3E5FBD286ECFC6E5F9FB7D375FBCF60E622FE5F0E9D30
+User package and standard bundle passed ZIP CRC, embedded JAR and INSTALL
+checks. Frozen release source/build inputs: build/fps-target/120-release-f6-fix/.

@@ -32,8 +32,18 @@ public final class MetricRegistry {
     private final Map<Integer, WorldGauge> worlds = new ConcurrentHashMap<Integer, WorldGauge>();
     private final JvmMonitor jvmMonitor = new JvmMonitor();
     private final ChunkChurnTracker chunkChurn = new ChunkChurnTracker();
+    private long lastSnapshotNanos = System.nanoTime();
+    private int optimizerRuntimeState = -1;
+    private boolean optimizerChanged;
 
-    public void start() { chunkChurn.clear(); jvmMonitor.start(); }
+    public void start() {
+        lastSnapshotNanos = System.nanoTime();
+        frames.set(0);
+        optimizerRuntimeState = -1;
+        optimizerChanged = false;
+        chunkChurn.clear();
+        jvmMonitor.start();
+    }
     public void stop() { jvmMonitor.stop(); chunkChurn.clear(); }
 
     public void recordClientFrame(long nanos) { clientFrames.record(nanos); frames.incrementAndGet(); }
@@ -92,6 +102,22 @@ public final class MetricRegistry {
     }
 
     public TimelinePoint snapshot(long sessionStartedMillis) {
+        return snapshot(sessionStartedMillis, System.currentTimeMillis(), System.nanoTime());
+    }
+
+    public synchronized void optimizerPauseChanged(boolean paused) {
+        int next = paused ? 0 : 1;
+        if (optimizerRuntimeState != -1 && optimizerRuntimeState != next) optimizerChanged = true;
+        optimizerRuntimeState = next;
+    }
+
+    private synchronized int drainOptimizerRuntimeState() {
+        int value = optimizerChanged ? 2 : optimizerRuntimeState;
+        optimizerChanged = false;
+        return value;
+    }
+
+    TimelinePoint snapshot(long sessionStartedMillis, long now, long nowNanos) {
         List<WorldGauge> worldSnapshot = new ArrayList<WorldGauge>(worlds.values());
         Collections.sort(worldSnapshot, new Comparator<WorldGauge>() {
             @Override
@@ -99,14 +125,18 @@ public final class MetricRegistry {
                 return Integer.compare(left.getDimension(), right.getDimension());
             }
         });
-        long now = System.currentTimeMillis();
+        long intervalNanos = Math.max(1L, nowNanos - lastSnapshotNanos);
+        lastSnapshotNanos = nowNanos;
+        int frameCount = frames.getAndSet(0);
+        int fps = (int) Math.min(Integer.MAX_VALUE,
+            Math.round(frameCount * 1000000000.0D / intervalNanos));
         return new TimelinePoint(
             now,
             Math.max(0L, now - sessionStartedMillis),
             clientFrames.drain(),
             clientTicks.drain(),
             serverTicks.drain(),
-            frames.getAndSet(0),
+            fps,
             renderQueueSize.get(),
             chunkUploadQueueSize.get(),
             gpuFrameMillis.get().doubleValue(),
@@ -121,7 +151,10 @@ public final class MetricRegistry {
             worldSnapshot,
             jvmMonitor.snapshot(),
             ProbeBridge.drain(),
-            chunkChurn.drain()
+            chunkChurn.drain(),
+            frameCount,
+            intervalNanos,
+            drainOptimizerRuntimeState()
         );
     }
 }

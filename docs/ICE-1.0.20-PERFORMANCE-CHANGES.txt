@@ -1,0 +1,101 @@
+ICE 1.0.20 — 本轮性能改进与离线对照
+======================================
+
+本版本继续基于 1.0.19。目标是直接减少已存在的重复工作，保持原画面、
+模型绘制顺序和世界生成计算结果。本轮未新增静止条件、移动条件、运行时
+收益检测、冷却期或自动停用策略。F6 仍控制可即时关闭的 ICE 优化。
+
+已保留的实现
+------------
+1. 地形提交
+   构建命令时同时记录连续显存页批次的终点，提交时直接跳到下一批次，
+   不再重复逐网格扫描、计算页号。移除没有任何读取方的 lastDrawFrame
+   字段及提交后的整段写回遍历。沿用现有每网格 16 字节规划预算，没有
+   增加每帧对象分配。保持原可见顺序、旧渲染路径穿插位置和动画位移。
+   上传流改为一次 glBufferData(payload)，替代空 glBufferData +
+   glBufferSubData；GL 对象不变，已排队绘制仍使用其原数据存储。
+   匹配容量历史的原生局部测试（300 command / 12 页 / 120 run，每层
+   包含 upload、submit 和 GLfinish）：纯现代路径中位约 28.245 →
+   26.226 微秒；每 8 run 穿插原路径约 54.460 → 52.909 微秒；每 run
+   穿插原路径约 257.658 → 257.225 微秒，基本持平。计时范围有重叠。
+   真实调用计数确认每层少一次 glBufferSubData，其余 draw 数量不变。
+   这没有解决跨页布局本身的批次碎片，不能据此宣称全游戏提升 7%。
+
+2. 模型参数
+   私有着色器程序记录 19 个整数 uniform 的最后已提交值，仅值变化时
+   提交；程序重建后清空已知值。矩阵、浮点光照、绘制顺序保持原实现。
+   原生对照：24 个变化状态 scope 的 glUniform1i 为 456 → 29；随后
+   100 个状态不变 scope 为 1900 → 0。分段 palette 起点变化仍照常更新。
+
+3. 组合模型
+   模型缓存保留已捕获的不可变顶点，构建组合模型时直接拷贝这些顶点，
+   取消逐部件 glGetBufferSubData。没有再复制一份捕获数组。
+   原生八部件用例：首次组合 GPU 回读 8 次 / 768 字节 → 0。
+   代价是保留 768 字节 CPU 顶点，按真实 HEAP 用量记账；原有 4096 字节
+   元数据预算不变。替换、失败、失效、资源重建和关闭时释放引用和预算。
+   容量不足只等待实际空间释放，不新增逐帧重试或性能收益判断。
+
+4. Recurrent Complex / IvToolkit 插值
+   Ruins 的两个实时字段和两个 NBT 加载构造引用使用 RecurrentValueField。
+   每线程复用候选列表和权重数组，嵌套查询单独借用工作区，finally 清除
+   候选引用。继续调用原候选树遍历，保留整数溢出、浮点运算、权重与值
+   回调的顺序；不缓存坐标结果，不改变随机数、方块放置或 NBT 数据。
+   新模块 recurrent-value-workspace / recurrentValueWorkspace 默认开启，
+   关闭后调用原 getValue 实现。
+   两组独立 JVM、双向执行顺序的局部基准：32/128/512 pivot 用例分配从
+   约 221/290/370 字节每查询降至 20/14/25 字节；CPU 用时总体小幅下降。
+   8 pivot 用例有一组慢约 3 ns，未据此增加尺寸门槛。减少分配是较稳定
+   的结果；此项针对探索/生成卡顿，不能等同于客户端 FPS 提升。
+
+实测后没有进入生产的候选
+------------------------
+A. 地形原页/区域亲和分配
+   四网格例子能减少 draw，但移动相机与随机重建轨迹收益不稳定。
+   1000 网格、20000 次重建、10% 新 VBO 的对照里，原页亲和在空间初始
+   布局下约少 0.96% run，随机初始布局反而增加约 0.66%~0.9%；平均物理
+   容量约 159.7 → 166.0 MiB，碎片约 415 → 463。加入区域 hint 更占空间。
+   因此撤掉此候选，保留上一版布局，转而消除确定的重复扫描和上传调用。
+
+B. FoamFix 即时持久 PBO 流
+   用未修改的实际 FoamFix 0.10.15 类及实际 OptiFine G5 TextureUtil 闭包，
+   保留每 mip 的 GL 错误观察，在完整 helper 路径比较。32 sprite、32×32、
+   两 mip 的暖机后原生局部测试：直接上传约 129~138 微秒每 atlas，PBO
+   约 240~243 微秒，且高负载时存在忙 slot。像素正确不代表性能更好。
+   G5 本身已复用一个 direct IntBuffer；PBO 没少掉 int[] 拷贝，反而增加
+   绑定及同步生命周期成本。因此完整撤回，不增加尺寸/收益门槛保留它。
+   本版 FoamFix 上传保持 1.0.19 实现；原先已减少的纹理参数提交继续保留。
+
+验证与边界
+----------
+所有时间和调用次数均来自局部测试，不是 Minecraft 内帧率测试。
+真实 Forge / OptiFine G5 / MoBends 模型边界、display-list 像素对照中，
+模型最大像素误差为 0；覆盖替换失败、失效、资源重建、context 丢失等。
+RC 对真实库做 6000 次随机查询与原结果逐 double 位比较，覆盖嵌套、并发、
+异常和 F6 切换；真实 RC 字节码及 NBT supplier bootstrap 已验证。
+完整 Java 8 / Gradle 离线构建成功：1101 项普通测试通过、20 项跳过；
+10 项安装包启动检查通过，artifact 检查通过。
+13 项原生回归全部通过（原有 11 项 + 模型实际调用对照 + 地形有序提交）。
+新增地形工具在 mutable/persistent 两路径各验证 64 组混合旧渲染、跨页
+及随机顺序，像素和实际批次计数相同，覆盖 stream 扩容和最终预算归零。
+没有启动游戏、没有修改游戏实例，也没有宣称固定百分比的 FPS 提升。
+
+源码与本地证据
+--------------
+上游源码与实际安装的旧版字节码交叉对照：
+https://github.com/Ivorforce/IvToolkit/blob/master/src/main/java/ivorius/ivtoolkit/random/BlurredValueField.java
+https://github.com/Ivorforce/RecurrentComplex/blob/master/src/main/java/ivorius/reccomplex/world/gen/feature/structure/generic/transformers/TransformerRuins.java
+OpenGL buffer store 语义：
+https://registry.khronos.org/OpenGL-Refpages/gl4/html/glBufferData.xhtml
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_buffer_storage.txt
+
+局部证据保存在 .refactor-backups/1.0.20-model、1.0.20-rc、1.0.20-terrain
+和 1.0.20-texture；未采纳候选仅留在备份目录，不随安装包发布。
+
+安装产物（build/libs）与 SHA-256
+------------------------------
+ice-rlcraft-optimizer-1.0.20.jar
+9167C3C909D0A2AA4D9BDBCD0604B683A468DEB5AE3F394E4A7DD06436DAB3FF
+ice-rlcraft-profiler-1.0.20.jar
+27511BF521F3D5E34AD4EE2860A407885660DDAA1604D60E8D9459386F40645C
+ice-rlcraft-optimizer-bundle-1.0.20.zip
+54ACBF5AFBF8FF16CCF84825529E5AD2E291BE503A5C71C25C038B3AFDDB2C23

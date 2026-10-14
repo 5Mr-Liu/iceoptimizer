@@ -14,6 +14,9 @@ public final class TimelinePoint {
     private final DistributionSnapshot clientTicks;
     private final DistributionSnapshot serverTicks;
     private final int framesPerSecond;
+    private final int frameCount;
+    private final long sampleIntervalNanos;
+    private final int optimizerRuntimeState;
     private final int renderQueueSize;
     private final int chunkUploadQueueSize;
     private final double gpuFrameMillis;
@@ -82,12 +85,31 @@ public final class TimelinePoint {
         List<ProbeMetric> probes,
         ChunkChurnSnapshot chunkChurn
     ) {
+        this(epochMillis, elapsedMillis, clientFrames, clientTicks, serverTicks,
+            framesPerSecond, renderQueueSize, chunkUploadQueueSize, gpuFrameMillis,
+            chunkLoads, chunkUnloads, chunkDataLoads, chunkDataSaves,
+            inboundPackets, outboundPackets, inboundBytes, outboundBytes,
+            worlds, jvm, probes, chunkChurn, framesPerSecond, 1000000000L, -1);
+    }
+
+    public TimelinePoint(long epochMillis, long elapsedMillis,
+        DistributionSnapshot clientFrames, DistributionSnapshot clientTicks,
+        DistributionSnapshot serverTicks, int framesPerSecond, int renderQueueSize,
+        int chunkUploadQueueSize, double gpuFrameMillis, long chunkLoads,
+        long chunkUnloads, long chunkDataLoads, long chunkDataSaves,
+        long inboundPackets, long outboundPackets, long inboundBytes,
+        long outboundBytes, List<WorldGauge> worlds, JvmSnapshot jvm,
+        List<ProbeMetric> probes, ChunkChurnSnapshot chunkChurn,
+        int frameCount, long sampleIntervalNanos, int optimizerRuntimeState) {
         this.epochMillis = epochMillis;
         this.elapsedMillis = Math.max(0L, elapsedMillis);
         this.clientFrames = clientFrames;
         this.clientTicks = clientTicks;
         this.serverTicks = serverTicks;
         this.framesPerSecond = Math.max(0, framesPerSecond);
+        this.frameCount = frameCount;
+        this.sampleIntervalNanos = sampleIntervalNanos;
+        this.optimizerRuntimeState = optimizerRuntimeState;
         this.renderQueueSize = renderQueueSize;
         this.chunkUploadQueueSize = chunkUploadQueueSize;
         this.gpuFrameMillis = gpuFrameMillis;
@@ -111,6 +133,10 @@ public final class TimelinePoint {
     public DistributionSnapshot getClientTicks() { return clientTicks; }
     public DistributionSnapshot getServerTicks() { return serverTicks; }
     public int getFramesPerSecond() { return framesPerSecond; }
+    public int getFrameCount() { return frameCount; }
+    public long getSampleIntervalNanos() { return sampleIntervalNanos; }
+    /** -1 unavailable; 0 paused; 1 enabled; 2 changed inside this interval. */
+    public int getOptimizerRuntimeState() { return optimizerRuntimeState; }
     public int getRenderQueueSize() { return renderQueueSize; }
     public int getChunkUploadQueueSize() { return chunkUploadQueueSize; }
     public double getGpuFrameMillis() { return gpuFrameMillis; }
@@ -149,7 +175,10 @@ public final class TimelinePoint {
             worlds,
             jvm,
             probes,
-            chunkChurn
+            chunkChurn,
+            frameCount,
+            sampleIntervalNanos,
+            optimizerRuntimeState
         );
     }
 

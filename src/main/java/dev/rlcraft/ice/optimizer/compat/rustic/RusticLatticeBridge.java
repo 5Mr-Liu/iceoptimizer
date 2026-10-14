@@ -1,5 +1,6 @@
 package dev.rlcraft.ice.optimizer.compat.rustic;
 
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import net.minecraft.util.math.AxisAlignedBB;
@@ -8,7 +9,7 @@ import net.minecraftforge.common.property.IUnlistedProperty;
 
 /** Canonicalizes Rustic lattice connection states and their 64 bounding boxes. */
 public final class RusticLatticeBridge {
-    private static final String MODULE = "rustic-lattice-state";
+    private static final int MODULE = OptimizationModule.RUSTIC_LATTICE_STATE.ordinal();
     private static final int TABLE_SIZE = 2048;
     private static final int TABLE_MASK = TABLE_SIZE - 1;
     private static final int MAX_PROBES = 16;

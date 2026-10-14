@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer;
 
 import java.util.EnumSet;
+import dev.rlcraft.ice.early.EarlyRendererOwnership;
 
 /** Immutable runtime copy of Forge's mutable configuration object. */
 public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
@@ -22,6 +23,8 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
     private final int skullProfileNegativeTtlSeconds;
     private final int skullProfileQueueCapacity;
     private final EnumSet<OptimizationModule> enabledModules;
+    private final boolean externalTerrainRenderer;
+    private final boolean nativeTerrainRenderer;
 
     private ClientOptimizerConfig(OptimizerConfig.Settings source) {
         enabled = source.enabled;
@@ -42,6 +45,12 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
         skullProfileNegativeTtlSeconds = Math.max(10, Math.min(3600, source.skullProfileNegativeTtlSeconds));
         skullProfileQueueCapacity = Math.max(16, Math.min(1024, source.skullProfileQueueCapacity));
         enabledModules = OptimizerModuleSelection.capture(source, OptimizerRuntimeSide.CLIENT);
+        externalTerrainRenderer = EarlyRendererOwnership.hasExternalTerrainRenderer();
+        nativeTerrainRenderer = EarlyRendererOwnership.hasNativeTerrainRenderer();
+        if (externalTerrainRenderer || nativeTerrainRenderer) {
+            enabledModules.removeIf(module -> module.isRuntimeManagedRenderer()
+                || EarlyRendererOwnership.isRendererModule(module.getId()));
+        }
     }
 
     public static ClientOptimizerConfig capture() {
@@ -50,6 +59,8 @@ public final class ClientOptimizerConfig implements OptimizerRuntimeConfig {
 
     @Override public OptimizerRuntimeSide getRuntimeSide() { return OptimizerRuntimeSide.CLIENT; }
     @Override public boolean isEnabled() { return enabled; }
+    public boolean usesExternalTerrainRenderer() { return externalTerrainRenderer; }
+    public boolean usesNativeTerrainRenderer() { return nativeTerrainRenderer; }
     @Override public boolean isStrictPackLock() { return strictPackLock; }
     @Override public boolean isDevelopmentDiskOutput() { return developmentDiskOutput; }
     public int getWorkerThreads() { return workerThreads; }

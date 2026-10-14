@@ -44,7 +44,7 @@ public final class LwjglFbpPacketRendererDataTest {
     }
 
     @Test
-    public void fenceFailureStopsBeforeAnotherPacketSlotCanDraw()
+    public void uncertainPacketSlotIsSkippedWithoutPollingItsFence()
         throws Exception {
         RenderThreadGuard guard = RenderThreadGuard.captureCurrent();
         ResourceLedger ledger = new ResourceLedger(guard,
@@ -60,24 +60,47 @@ public final class LwjglFbpPacketRendererDataTest {
             Object[] slots = (Object[]) slotsField.get(renderer);
             Field bufferField = slots[0].getClass().getDeclaredField("bufferId");
             bufferField.setAccessible(true);
-            bufferField.setInt(slots[0], 9);
+            bufferField.setInt(slots[1], 9);
             Field fenceField = slots[0].getClass().getDeclaredField("fence");
             fenceField.setAccessible(true);
-            final IllegalStateException injected =
-                new IllegalStateException("injected FBP Fence failure");
+            Field poisoned = slots[0].getClass().getDeclaredField("poisoned");
+            poisoned.setAccessible(true);
+            poisoned.setBoolean(slots[0],true);
             fenceField.set(slots[0], new ResourceLedger.RetirementFence() {
-                @Override public boolean isSignaled() { throw injected; }
-                @Override public void destroy() { }
+                @Override public boolean isSignaled() { throw new AssertionError("uncertain fence polled"); }
+                @Override public void destroy() { throw new AssertionError("uncertain fence destroyed"); }
             });
 
             Method acquire = LwjglFbpPacketRenderer.class.getDeclaredMethod(
-                "acquireSlot");
+                "acquireSlot", int.class);
             acquire.setAccessible(true);
-            assertEquals(null, acquire.invoke(renderer));
-            assertSame(injected, renderer.getLastError());
+            assertSame(slots[1], acquire.invoke(renderer,112));
+            assertTrue(poisoned.getBoolean(slots[0]));
+            assertEquals(null, renderer.getLastError());
         } finally {
             renderer.close(false);
         }
+    }
+
+    @Test public void ordinaryPayloadBudgetMissDoesNotPoisonPacketSlots() throws Exception {
+        RenderThreadGuard guard = RenderThreadGuard.captureCurrent();
+        ResourceLedger ledger = new ResourceLedger(guard,new CacheBudget(1,1,0),
+            new ResourceLedger.Destroyer() {
+                @Override public void destroy(RenderResourceKind kind,int id) { }
+            },16);
+        LwjglFbpPacketRenderer renderer = new LwjglFbpPacketRenderer(guard,ledger,1<<20);
+        renderer.prepare(1,1);
+        try {
+            Method acquire = LwjglFbpPacketRenderer.class.getDeclaredMethod("acquireSlot",int.class);
+            acquire.setAccessible(true);
+            for(int attempt=0;attempt<4;attempt++) assertEquals(null,acquire.invoke(renderer,112));
+            assertEquals(null,renderer.getLastError());
+            Field slotsField = LwjglFbpPacketRenderer.class.getDeclaredField("slots"); slotsField.setAccessible(true);
+            for(Object slot:(Object[])slotsField.get(renderer)) {
+                Field poisoned = slot.getClass().getDeclaredField("poisoned"); poisoned.setAccessible(true);
+                assertFalse(poisoned.getBoolean(slot));
+            }
+        } finally { renderer.close(false); }
     }
 
     @Test

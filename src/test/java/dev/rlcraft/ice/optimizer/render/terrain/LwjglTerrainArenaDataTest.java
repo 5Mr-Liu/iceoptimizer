@@ -9,6 +9,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import dev.rlcraft.ice.optimizer.render.frame.FrameStamp;
+import dev.rlcraft.ice.optimizer.compat.chunk.TerrainRenderListAccessor;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import dev.rlcraft.ice.optimizer.render.arena.ArenaRange;
 import dev.rlcraft.ice.optimizer.render.arena.GpuArenaAllocator;
@@ -23,12 +24,85 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.client.renderer.chunk.RenderChunk;
 import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.client.renderer.vertex.VertexFormat;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.BlockRenderLayer;
 import org.junit.Test;
 
 public final class LwjglTerrainArenaDataTest {
+    @Test public void pressureCapacityUsesAvailableSpaceWithoutReleasingTheOldPageEarly() {
+        long mib = 1024L * 1024L;
+        assertEquals(13L * mib,
+            LwjglTerrainArena.physicalPageCapacityUnderBudget(9L * mib, 16L * mib, 13L * mib));
+        assertEquals(13L * mib,
+            LwjglTerrainArena.physicalPageCapacityUnderBudget(9L * mib, 16L * mib, 13L * mib + 112L));
+        assertEquals(9L * mib + 112L,
+            LwjglTerrainArena.physicalPageCapacityUnderBudget(9L * mib + 112L, 16L * mib, 9L * mib + 224L));
+        assertEquals(0L,
+            LwjglTerrainArena.physicalPageCapacityUnderBudget(9L * mib, 16L * mib, 9L * mib - 1L));
+    }
+
+    @Test public void physicalPageGrowthTracksExtentWithoutAllocatingTheLogicalMaximum() {
+        long maximum = 16L * 1024L * 1024L - 16L * 1024L * 1024L % 112L;
+        assertEquals(256L * 1024L, LwjglTerrainArena.physicalPageCapacity(112L, maximum));
+        assertEquals(256L * 1024L, LwjglTerrainArena.physicalPageCapacity(256L * 1024L, maximum));
+        assertEquals(512L * 1024L, LwjglTerrainArena.physicalPageCapacity(256L * 1024L + 112L, maximum));
+        assertEquals(maximum, LwjglTerrainArena.physicalPageCapacity(maximum, maximum));
+        assertEquals(maximum, LwjglTerrainArena.physicalPageCapacity(112L, maximum, false));
+        assertEquals(maximum, LwjglTerrainArena.physicalPageCapacity(maximum, maximum, false));
+        try {
+            LwjglTerrainArena.physicalPageCapacity(maximum + 1L, maximum);
+            fail("physical storage must not cross a logical page boundary");
+        } catch (IllegalArgumentException expected) { }
+    }
+
+    @Test public void whollyUnownedNativeListStaysUntouchedWithoutGlContext() throws Exception {
+        LwjglTerrainArena arena = arena(1024L * 1024L);
+        Field buffer = LwjglTerrainArena.class.getDeclaredField("bufferId");
+        buffer.setAccessible(true);
+        buffer.setInt(arena, 1);
+        arena.configureNativeBatching(true, true);
+        final List<RenderChunk> visible = new ArrayList<RenderChunk>();
+        visible.add(null);
+        visible.add(null);
+        TerrainRenderListAccessor container = new TerrainRenderListAccessor() {
+            public List<RenderChunk> ice$renderChunks() { return visible; }
+            public boolean ice$initialized() { return true; }
+            public double ice$viewEntityX() { throw new AssertionError("camera queried without owned mesh"); }
+            public double ice$viewEntityY() { throw new AssertionError("camera queried without owned mesh"); }
+            public double ice$viewEntityZ() { throw new AssertionError("camera queried without owned mesh"); }
+        };
+        assertFalse(arena.render(container, BlockRenderLayer.SOLID, true, true, 1L));
+        assertEquals(2, visible.size());
+        assertEquals("not-initialized", arena.getShaderBatchDetail());
+        assertEquals(0L, arena.getDrawCalls());
+        assertEquals(0L, arena.getShaderBatchFallbacks());
+        assertFalse(arena.wasLastSubmissionStarted());
+        assertNull(arena.consumeShaderBatchFailure());
+        // No context exists: even an attempted state query would fail here.
+        // Also exercise the ordinary arena route used after native fallback.
+        assertFalse(arena.render(container, BlockRenderLayer.SOLID, false, false, 2L));
+        assertEquals(2, visible.size());
+    }
+
+    @Test public void renderRegionsNormalizationDoesNotExpandOrAddChunkOriginTwice() {
+        ByteBuffer source = ByteBuffer.allocate(28).order(ByteOrder.nativeOrder());
+        source.putFloat(0, 241.25F).putFloat(4, 67.5F).putFloat(8, 31.75F);
+        for (int index = 12; index < 28; index++) source.put(index, (byte) (index * 7));
+        ByteBuffer result = ByteBuffer.allocate(28).order(ByteOrder.nativeOrder());
+        LwjglTerrainArena.normalizeIntoStaging(source, 28, 28, 28,
+            -256, 0, 512, 1F, 0F, -256, 0, 512, result);
+        assertArrayEquals(source.array(), result.array());
+        // Region drawing uses Y=0 even when the arena owns a different Y page.
+        LwjglTerrainArena.normalizeIntoStaging(source, 28, 28, 28,
+            -256, 0, 512, 1F, 0F, -256, 256, 512, result);
+        assertEquals(67.5F - 256F, result.getFloat(4), 0F);
+        assertEquals(241.25F, result.getFloat(0), 0F);
+    }
     @Test
     public void coveragePackingBoundsCountsWithoutAllocatingSnapshots() {
         long packed = LwjglTerrainArena.packCoverage(100, 75, 12);
@@ -302,7 +376,11 @@ public final class LwjglTerrainArenaDataTest {
     }
 
     private static LwjglTerrainArena arena() {
-        CacheBudget budget = new CacheBudget(1024L, 1024L * 1024L,
+        return arena(1024L);
+    }
+
+    private static LwjglTerrainArena arena(long heapBudget) {
+        CacheBudget budget = new CacheBudget(heapBudget, 1024L * 1024L,
             32L * 1024L * 1024L);
         RenderThreadGuard guard = RenderThreadGuard.captureCurrent();
         ResourceLedger ledger = new ResourceLedger(guard, budget,

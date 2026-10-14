@@ -101,11 +101,9 @@ final class ChunkSaveCompressionAdapter implements OptimizerBytecodeAdapter {
         if (discard == null || discard.getOpcode() != Opcodes.POP) {
             throw new IllegalStateException("AnvilChunkLoader pending map put 结果处理变化");
         }
-        InsnList schedule = new InsnList();
-        schedule.add(new VarInsnNode(Opcodes.ALOAD, 2));
-        schedule.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE,
-            "schedule", "(L" + NBT + ";)V", false));
-        pending.instructions.insert(discard, schedule);
+        pending.instructions.set(put, new MethodInsnNode(Opcodes.INVOKESTATIC,
+            BRIDGE, "publish", "(Ljava/util/Map;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            false));
 
         MethodNode write = requireMethod(node, WRITE_DATA, WRITE_DATA_DESC);
         if (countCalls(write, Opcodes.INVOKESTATIC,

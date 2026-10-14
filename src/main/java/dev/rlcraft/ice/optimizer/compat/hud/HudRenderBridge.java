@@ -8,16 +8,12 @@ import dev.rlcraft.ice.optimizer.client.ModernRendererRuntime;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker;
 import dev.rlcraft.ice.optimizer.compat.texture.AnimatedTextureVisibilityBridge;
-import dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState;
 import dev.rlcraft.ice.optimizer.render.frame.RenderPass;
 import dev.rlcraft.ice.optimizer.render.hud.FontLayoutCache;
-import dev.rlcraft.ice.optimizer.render.hud.HudOutputValidator;
-import dev.rlcraft.ice.optimizer.render.hud.LwjglHudOutputSelfTest;
 import dev.rlcraft.ice.optimizer.render.hud.LwjglHudRenderer;
 import dev.rlcraft.ice.optimizer.runtime.MonotonicTokenCounter;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Arrays;
-import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
@@ -111,14 +107,6 @@ public final class HudRenderBridge {
             renderer.prepare(scope.resourceGeneration, scope.contextGeneration);
             scope.sample = runtime.beginRenderBackendSample(
                 OptimizationModule.MODERN_HUD_STREAM, RenderPass.HUD_GUI);
-            BackendLifecycleState lifecycle = runtime.backendLifecycleState(
-                OptimizationModule.MODERN_HUD_STREAM);
-            if (lifecycle == BackendLifecycleState.OUTPUT_VALIDATE) {
-                LwjglHudOutputSelfTest.Result result = HudOutputValidator.validate(
-                    scope.contextGeneration, runtime.cacheBudget());
-                runtime.recordValidation(OptimizationModule.MODERN_HUD_STREAM,
-                    result.isEquivalent(), result.getDetail());
-            }
             scope.modern = scope.sample != null && scope.sample.usesModernArm();
             scope.passToken = runtime.beginObservedPass(RenderPass.HUD_GUI,
                 scope.sample == null
@@ -147,7 +135,16 @@ public final class HudRenderBridge {
 
     /** Hard barrier inserted before every unclassified Tessellator draw. */
     public static void barrier() {
-        State state = STATE.get();
+        barrier(STATE.get());
+    }
+
+    /** Inlineable Java callbacks keep no-op world-render barriers inexpensive. */
+    public static Object[] barrierCallbacks() {
+        return new Object[] { (Runnable) HudRenderBridge::barrier,
+            (java.util.function.IntConsumer) HudRenderBridge::textureBarrier };
+    }
+
+    private static void barrier(State state) {
         HudScope scope = state.currentHud();
         if (scope == null) return;
         FontScope font = state.currentFont();
@@ -163,61 +160,18 @@ public final class HudRenderBridge {
         State state = STATE.get();
         HudScope scope = state.currentHud();
         if (scope == null) return ((EventBus) bus).post((Event) event);
-        if (scope != null) barrier();
-        boolean legacyBoundary = scope != null && scope.runtime != null
-            && scope.requiresLegacyBoundary;
-        boolean resynchronize = scope != null && scope.modern
-            && scope.runtime != null;
+        barrier();
         state.legacyDepth++;
         try {
-            final ModernRendererRuntime runtime = scope == null
-                ? null : scope.runtime;
-            return dispatchEvent(legacyBoundary, new EventInvocation() {
-                @Override public boolean invoke() {
-                    return ((EventBus) bus).post((Event) event);
-                }
-            }, new LegacyEventInvocation() {
-                @Override public boolean invoke(final EventInvocation invocation)
-                    throws Exception {
-                    return runtime.callLegacy("Forge HUD event",
-                        new Callable<Boolean>() {
-                            @Override public Boolean call() {
-                                return Boolean.valueOf(invocation.invoke());
-                            }
-                        }).booleanValue();
-                }
-            });
+            // flush restores the actual VAO/VBO itself. Entering a second,
+            // generic legacy island would restore unrelated state from a
+            // mirror invalidated by the previous listener.
+            return ((EventBus) bus).post((Event) event);
         } finally {
             state.legacyDepth--;
-            if (legacyBoundary) scope.requiresLegacyBoundary = false;
             EarlyGlStateTracker.invalidate();
             EarlyMatrixStateTracker.invalidate();
-            if (resynchronize) {
-                try {
-                    if (!scope.runtime.resynchronizeHudState()) scope.modern = false;
-                    else scope.requiresLegacyBoundary = false;
-                } catch (Throwable bridgeFailure) {
-                    scope.modern = false;
-                    safeFail(scope, bridgeFailure);
-                }
-            }
-        }
-    }
-
-    static boolean dispatchEvent(boolean legacyBoundary,
-                                 EventInvocation invocation,
-                                 LegacyEventInvocation legacy) {
-        if (invocation == null) throw new IllegalArgumentException("event invocation");
-        if (!legacyBoundary) return invocation.invoke();
-        if (legacy == null) throw new IllegalArgumentException("legacy invocation");
-        try {
-            return legacy.invoke(invocation);
-        } catch (RuntimeException error) {
-            throw error;
-        } catch (Error error) {
-            throw error;
-        } catch (Exception impossible) {
-            throw new IllegalStateException(impossible);
+            scope.stateNeedsSync = true;
         }
     }
 
@@ -305,9 +259,11 @@ public final class HudRenderBridge {
         try {
             if (cacheableFont(font, text)) {
                 scope.cacheEligible = true;
+                scope.cacheFlags = (shadow ? 1 : 0)
+                    | (((FontRenderer) font).getUnicodeFlag() ? 2 : 0);
                 FontLayoutCache cache = hud.runtime.fonts();
                 if (cache != null) {
-                    scope.cached = cache.get(font, text, shadow ? 1 : 0, false,
+                    scope.cached = cache.get(font, text, scope.cacheFlags, false,
                         hud.resourceGeneration);
                 }
             }
@@ -351,11 +307,6 @@ public final class HudRenderBridge {
         int page = 0;
         if (layout.glyphCount() != 0) {
             page = layout.texturePage(0);
-            for (int glyph = 1; glyph < layout.glyphCount(); glyph++) {
-                if (layout.texturePage(glyph) != page) {
-                    return Integer.MIN_VALUE;
-                }
-            }
             if (!hud.renderer.canRecordGlyphRun(layout.glyphCount())) {
                 flush(hud);
                 if (!eligible(hud)
@@ -374,6 +325,9 @@ public final class HudRenderBridge {
             disableFontCache(hud, failure);
             return Integer.MIN_VALUE;
         }
+        if (layout.runCount() > 1) {
+            return replayPagedFont(scope, hud, layout, x, y, finalX);
+        }
         if (layout.glyphCount() != 0 && !layout.record(hud.renderer, x, y)) {
             // The preflight and record occur on the same render thread with no
             // intervening stream mutation. Treat any mismatch as a cache fuse;
@@ -391,6 +345,34 @@ public final class HudRenderBridge {
                 // miss would execute the whole original string again and can
                 // duplicate transparent glyphs, so this call is handled even
                 // though the HUD backend is now quarantined.
+                scope.cachedReplay = true;
+                return (int) finalX;
+            }
+        }
+        scope.cachedReplay = true;
+        hud.fontCacheHits++;
+        return (int) finalX;
+    }
+
+    private static int replayPagedFont(FontScope scope, HudScope hud,
+                                        FontLayoutCache.GlyphLayout layout,
+                                        float x, float y, float finalX) {
+        // Keep the common single-page hot method small. Repeated pages remain
+        // in painter order; a submitted prefix is never replayed on failure.
+        for (int run = 0; run < layout.runCount(); run++) {
+            try {
+                if (run != 0) {
+                    flush(hud);
+                    GlStateManager.bindTexture(layout.runTexturePage(run));
+                }
+                if (!eligible(hud) || !layout.recordRun(hud.renderer, run, x, y)) {
+                    flush(hud);
+                    layout.replayLegacyRun(run, x, y);
+                }
+            } catch (Throwable failure) {
+                FatalErrors.rethrowIfFatal(failure);
+                disableFontCache(hud, failure);
+                safeFail(hud, failure);
                 scope.cachedReplay = true;
                 return (int) finalX;
             }
@@ -528,7 +510,9 @@ public final class HudRenderBridge {
 
     /** Avoids a barrier only when the tracked active-unit binding is unchanged. */
     public static void textureBarrier(int texture) {
-        if (EarlyGlStateTracker.boundTextureForActiveUnit() != texture) barrier();
+        State state = STATE.get();
+        if (state.currentHud() == null) return;
+        if (EarlyGlStateTracker.boundTextureForActiveUnit() != texture) barrier(state);
     }
 
     private static boolean recordQuad(float x0, float y0, float z, float u0,
@@ -558,7 +542,12 @@ public final class HudRenderBridge {
             scope.modern = false;
             return false;
         }
-        return LwjglHudRenderer.isSafeState(EarlyGlStateTracker.snapshot());
+        if (scope.stateNeedsSync
+            || EarlyGlStateTracker.vertexArrayBinding() == Integer.MIN_VALUE) {
+            scope.stateNeedsSync = false;
+            if (!scope.runtime.resynchronizeHudState()) return false;
+        }
+        return EarlyGlStateTracker.isHudStreamStateSafe();
     }
 
     private static void flush(HudScope scope) {
@@ -581,14 +570,7 @@ public final class HudRenderBridge {
                 EarlyGlStateTracker.invalidate();
                 EarlyMatrixStateTracker.invalidate();
             }
-            // A thrown flush may have crossed a native draw boundary.  The
-            // concrete result below clears that uncertainty only when it
-            // proves no modern submission occurred.
-            boolean boundaryBeforeFlush = scope.requiresLegacyBoundary;
-            scope.requiresLegacyBoundary = true;
             LwjglHudRenderer.FlushResult result = scope.runtime.flushHudStream();
-            scope.requiresLegacyBoundary = boundaryAfterFlush(
-                boundaryBeforeFlush, result);
             if (result.submittedModern()) {
                 scope.modernWork = true;
             }
@@ -613,11 +595,6 @@ public final class HudRenderBridge {
             }
             fail(scope, failure);
         }
-    }
-
-    static boolean boundaryAfterFlush(boolean prior,
-                                      LwjglHudRenderer.FlushResult result) {
-        return prior || result != null && result.submittedModern();
     }
 
     static boolean hudGenerationCurrent(long queuedResources,
@@ -919,13 +896,15 @@ public final class HudRenderBridge {
             || text.length() > MAX_CACHED_FONT_CHARS) return false;
         try {
             FontRenderer renderer = (FontRenderer) font;
-            if (renderer.getUnicodeFlag() || renderer.getBidiFlag()
+            if (renderer.getBidiFlag()
                 || !((FontRenderCacheAccess) font).ice$fontStylesClear()) {
                 return false;
             }
             for (int index = 0; index < text.length(); index++) {
                 char value = text.charAt(index);
-                if (value < 32 || value > 126) return false;
+                // Formatting can change color/style or choose random glyphs.
+                // Plain Unicode still has deterministic geometry and pages.
+                if (value < 32 || value == '\u00a7') return false;
             }
             return true;
         } catch (Throwable unavailable) {
@@ -951,7 +930,7 @@ public final class HudRenderBridge {
         try {
             FontLayoutCache cache = hud.runtime.fonts();
             if (cache != null && cache.put(scope.font, scope.text,
-                scope.shadow ? 1 : 0, false, scope.fontGeneration,
+                scope.cacheFlags, false, scope.fontGeneration,
                 new FontLayoutCache.GlyphLayout(
                     scope.geometry == null ? new float[0] : scope.geometry,
                     scope.pages == null ? new int[0] : scope.pages,
@@ -1021,7 +1000,7 @@ public final class HudRenderBridge {
         private int fontCacheMisses;
         private boolean modern;
         private boolean modernWork;
-        private boolean requiresLegacyBoundary;
+        private boolean stateNeedsSync;
         private boolean failed;
         private boolean stale;
         private long passToken;
@@ -1039,7 +1018,7 @@ public final class HudRenderBridge {
             fontCacheMisses = 0;
             modern = false;
             modernWork = false;
-            requiresLegacyBoundary = false;
+            stateNeedsSync = false;
             failed = false;
             stale = false;
             passToken = 0L;
@@ -1063,12 +1042,6 @@ public final class HudRenderBridge {
         }
     }
 
-    interface EventInvocation { boolean invoke(); }
-
-    interface LegacyEventInvocation {
-        boolean invoke(EventInvocation invocation) throws Exception;
-    }
-
     private static final class FontScope {
         private long token;
         private long hudToken;
@@ -1079,6 +1052,7 @@ public final class HudRenderBridge {
         private float originY;
         private long fontGeneration;
         private boolean cacheEligible;
+        private int cacheFlags;
         private boolean cachedReplay;
         private boolean captureFailed;
         private FontLayoutCache.GlyphLayout cached;
@@ -1099,6 +1073,7 @@ public final class HudRenderBridge {
             originY = y;
             fontGeneration = generation;
             cacheEligible = false;
+            cacheFlags = 0;
             cachedReplay = false;
             captureFailed = false;
             cached = null;
@@ -1114,10 +1089,6 @@ public final class HudRenderBridge {
             }
             if (vertices == null || vertices.length < 20 || page <= 0
                 || text == null || glyphCount >= text.length()) {
-                captureFailed = true;
-                return;
-            }
-            if (glyphCount != 0 && pages[0] != page) {
                 captureFailed = true;
                 return;
             }
@@ -1166,6 +1137,7 @@ public final class HudRenderBridge {
             originY = 0.0F;
             fontGeneration = 0L;
             cacheEligible = false;
+            cacheFlags = 0;
             cachedReplay = false;
             captureFailed = false;
             cached = null;

@@ -76,10 +76,57 @@ final class QualityToolsAttributeAdapter implements OptimizerBytecodeAdapter {
         guard.add(refresh);
         method.instructions.insertBefore(create, guard);
 
+        replaceHorseArmorRoundTrip(method);
+
         ClassWriter writer = new SafeClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static void replaceHorseArmorRoundTrip(MethodNode method) {
+        MethodInsnNode serialize = null;
+        MethodInsnNode apply = null;
+        for (AbstractInsnNode instruction : method.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) instruction;
+            if ("net/minecraft/entity/passive/EntityHorse".equals(call.owner)
+                && "func_189511_e".equals(call.name)) serialize = call;
+            if (serialize != null && "com/tmtravlr/qualitytools/QualityToolsHelper".equals(call.owner)
+                && "applyAttributesForSlot".equals(call.name)) { apply = call; break; }
+        }
+        if (serialize == null || apply == null) throw new IllegalStateException("QualityTools horse armor NBT chain changed");
+        AbstractInsnNode allocation = previousOpcode(previousOpcode(previousOpcode(serialize)));
+        AbstractInsnNode horse = previousOpcode(allocation);
+        if (!(horse instanceof VarInsnNode) || horse.getOpcode() != Opcodes.ALOAD
+            || !(allocation instanceof org.objectweb.asm.tree.TypeInsnNode)
+            || !"net/minecraft/nbt/NBTTagCompound".equals(((org.objectweb.asm.tree.TypeInsnNode) allocation).desc)) {
+            throw new IllegalStateException("QualityTools horse armor constructor changed");
+        }
+        int horseLocal = ((VarInsnNode) horse).var;
+        AbstractInsnNode multimap = previousOpcode(apply);
+        if (!(multimap instanceof VarInsnNode) || multimap.getOpcode() != Opcodes.ALOAD) {
+            throw new IllegalStateException("QualityTools horse attributes local changed");
+        }
+        int mapLocal = ((VarInsnNode) multimap).var;
+        InsnList direct = new InsnList();
+        direct.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        direct.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, EVENT, "getEntityLiving", "()L" + ENTITY + ";", false));
+        direct.add(new VarInsnNode(Opcodes.ALOAD, horseLocal));
+        direct.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "horseArmor",
+            "(Lnet/minecraft/entity/passive/EntityHorse;)Lnet/minecraft/item/ItemStack;", false));
+        direct.add(new org.objectweb.asm.tree.LdcInsnNode("horse"));
+        direct.add(new VarInsnNode(Opcodes.ALOAD, mapLocal));
+        direct.add(new MethodInsnNode(apply.getOpcode(), apply.owner, apply.name, apply.desc, apply.itf));
+        method.instructions.insertBefore(horse, direct);
+        AbstractInsnNode end = apply.getNext();
+        for (AbstractInsnNode instruction = horse; instruction != end;) {
+            AbstractInsnNode next = instruction.getNext();
+            // Keep debug/exception boundary labels; only the obsolete executable
+            // instructions disappear from the existing try/catch region.
+            if (instruction.getOpcode() >= 0) method.instructions.remove(instruction);
+            instruction = next;
+        }
     }
 
     private static AbstractInsnNode previousOpcode(AbstractInsnNode instruction) {

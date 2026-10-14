@@ -15,6 +15,7 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.VarInsnNode;
+import dev.rlcraft.ice.early.EarlyRendererOwnership;
 
 /** Structural hooks for upload metadata and the final vanilla VBO draw emitter. */
 final class ModernTerrainAdapter implements OptimizerBytecodeAdapter {
@@ -75,6 +76,30 @@ final class ModernTerrainAdapter implements OptimizerBytecodeAdapter {
         requireClass(node, DISPATCHER);
         MethodNode upload = requireMethod(node, UPLOAD_CHUNK, UPLOAD_CHUNK_DESC);
         MethodInsnNode target = uniqueCall(upload, DISPATCHER, UPLOAD_VBO, UPLOAD_VBO_DESC);
+        if (EarlyRendererOwnership.hasNativeTerrainRenderer()) {
+            // The off-thread branch creates this future before acquiring the
+            // upload queue monitor. Prepare CPU metadata on that same worker,
+            // then retain the dispatcher's priority and cancellation lifecycle.
+            MethodInsnNode future = uniqueCall(upload,
+                "com/google/common/util/concurrent/ListenableFutureTask", "create",
+                "(Ljava/lang/Runnable;Ljava/lang/Object;)Lcom/google/common/util/concurrent/ListenableFutureTask;");
+            if (future.getOpcode() != Opcodes.INVOKESTATIC)
+                throw new IllegalStateException("native terrain upload future shape");
+            InsnList prepare = new InsnList();
+            for (int local = 1; local <= 4; local++) prepare.add(new VarInsnNode(Opcodes.ALOAD, local));
+            upload.instructions.insertBefore(future, prepare);
+            future.owner = "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainUploadTask";
+            future.desc = "(Ljava/lang/Runnable;Ljava/lang/Object;L" + LAYER
+                + ";Lnet/minecraft/client/renderer/BufferBuilder;L" + RENDER_CHUNK
+                + ";L" + COMPILED_CHUNK + ";)Lcom/google/common/util/concurrent/ListenableFutureTask;";
+        } else {
+            InsnList prepare = new InsnList();
+            for (int local = 1; local <= 4; local++) prepare.add(new VarInsnNode(Opcodes.ALOAD, local));
+            prepare.add(new MethodInsnNode(Opcodes.INVOKESTATIC, RENDER_BRIDGE, "prepareUpload",
+                "(L" + LAYER + ";Lnet/minecraft/client/renderer/BufferBuilder;L" + RENDER_CHUNK
+                    + ";L" + COMPILED_CHUNK + ";)V", false));
+            upload.instructions.insert(prepare);
+        }
         InsnList context = new InsnList();
         context.add(new VarInsnNode(Opcodes.ALOAD, 1));
         context.add(new VarInsnNode(Opcodes.ALOAD, 3));
@@ -171,6 +196,20 @@ final class ModernTerrainAdapter implements OptimizerBytecodeAdapter {
             throw new IllegalStateException("modern VBO wrapper duplicate");
         }
         MethodNode original = requireMethod(node, RENDER_LAYER, RENDER_LAYER_DESC);
+        if (EarlyRendererOwnership.hasNativeTerrainRenderer()) {
+            MethodNode incoming = NativeTerrainPauseAdapter.copy(original);
+            original.instructions.clear();
+            original.tryCatchBlocks.clear();
+            if (original.localVariables != null) original.localVariables.clear();
+            original.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            original.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            original.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainRenderer", "draw",
+                "(Ljava/lang/Object;L" + LAYER + ";)V", false));
+            original.instructions.add(new InsnNode(Opcodes.RETURN));
+            NativeTerrainPauseAdapter.install(node, original, incoming);
+            return;
+        }
         int access = original.access;
         String signature = original.signature;
         String[] exceptions = original.exceptions == null ? null
@@ -180,6 +219,7 @@ final class ModernTerrainAdapter implements OptimizerBytecodeAdapter {
             | Opcodes.ACC_PRIVATE | Opcodes.ACC_SYNTHETIC;
         MethodNode wrapper = new MethodNode(Opcodes.ASM5, access, RENDER_LAYER,
             RENDER_LAYER_DESC, signature, exceptions);
+        wrapper.instructions.add(AnimatedTextureVisibilityAdapter.detachFinalBoundaryPrefix(node, original));
         LabelNode fallback = new LabelNode();
         LabelNode start = new LabelNode();
         LabelNode end = new LabelNode();

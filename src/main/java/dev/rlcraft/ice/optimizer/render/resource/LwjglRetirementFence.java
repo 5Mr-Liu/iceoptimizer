@@ -2,7 +2,6 @@ package dev.rlcraft.ice.optimizer.render.resource;
 
 import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
-import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import org.lwjgl.opengl.ARBSync;
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL32;
@@ -19,24 +18,21 @@ public final class LwjglRetirementFence implements ResourceLedger.RetirementFenc
     }
 
     private final SyncDriver driver;
-    private CacheBudget.Reservation reservation;
     private Object sync;
 
-    private LwjglRetirementFence(SyncDriver driver, Object sync,
-                                 CacheBudget.Reservation reservation) {
+    private LwjglRetirementFence(SyncDriver driver, Object sync) {
         this.driver = driver;
         this.sync = sync;
-        this.reservation = reservation;
     }
 
     /**
      * Returns a real Fence, or a permanently-busy sentinel when the driver
-     * cannot create one.  The latter intentionally strands the resource under
-     * the ledger's hard budget instead of risking use-after-free.
+     * cannot create one. The latter retains submitted storage until context loss.
      */
     public static ResourceLedger.RetirementFence afterCurrentCommands() {
-        return new FailedFence(new IllegalStateException(
-            "resource retirement Fence GPU budget unavailable"));
+        LwjglRetirementFence fence = tryAfterCurrentCommands(productionDriver());
+        return fence == null ? new FailedFence(new IllegalStateException(
+            "resource retirement Fence creation failed")) : fence;
     }
 
     public static ResourceLedger.RetirementFence afterCurrentCommands(
@@ -46,57 +42,27 @@ public final class LwjglRetirementFence implements ResourceLedger.RetirementFenc
             "resource retirement Fence creation failed")) : fence;
     }
 
-    /** Returns null on a known failure; uncertain native outcomes stay charged. */
+    /** Cache payload capacity must never prevent completion of submitted work. */
     public static LwjglRetirementFence tryAfterCurrentCommands(
         ResourceLedger ledger) {
         if (ledger == null) return null;
-        CacheBudget.Reservation reservation = ledger.reserveSyncObject();
-        return tryAfterCurrentCommands(reservation, productionDriver());
+        return tryAfterCurrentCommands(productionDriver());
     }
 
     public static LwjglRetirementFence tryAfterCurrentCommands(
         CacheBudget budget) {
         if (budget == null) return null;
-        CacheBudget.Reservation reservation = budget.tryReserve(BudgetKind.GPU,
-            ResourceLedger.syncObjectCharge());
-        return tryAfterCurrentCommands(reservation, productionDriver());
+        return tryAfterCurrentCommands(productionDriver());
     }
 
     private static LwjglRetirementFence tryAfterCurrentCommands(
-        CacheBudget.Reservation reservation, SyncDriver driver) {
-        if (reservation == null) return null;
-        boolean allocationAttempted = false;
-        boolean allocationReturned = false;
-        Object value = null;
+        SyncDriver driver) {
         try {
-            if (driver == null || !driver.supported()) {
-                reservation.close();
-                return null;
-            }
-            allocationAttempted = true;
-            value = driver.create();
-            allocationReturned = true;
-            if (value == null) {
-                reservation.close();
-                return null;
-            }
-            return new LwjglRetirementFence(driver, value, reservation);
+            if (driver == null || !driver.supported()) return null;
+            Object value = driver.create();
+            return value == null ? null : new LwjglRetirementFence(driver, value);
         } catch (Throwable error) {
-            Throwable failure = error;
-            if (!allocationAttempted || allocationReturned && value == null) {
-                try { reservation.close(); }
-                catch (Throwable cleanup) {
-                    Throwable cleanupFatal = FatalErrors.findFatal(cleanup);
-                    if (cleanupFatal != null
-                        && FatalErrors.findFatal(failure) == null) {
-                        cleanupFatal.addSuppressed(failure);
-                        failure = cleanupFatal;
-                    } else if (cleanup != failure) {
-                        failure.addSuppressed(cleanup);
-                    }
-                }
-            }
-            FatalErrors.rethrowIfFatal(failure);
+            FatalErrors.rethrowIfFatal(error);
             return null;
         }
     }
@@ -104,9 +70,7 @@ public final class LwjglRetirementFence implements ResourceLedger.RetirementFenc
     static LwjglRetirementFence tryAfterCurrentCommands(
         CacheBudget budget, SyncDriver driver) {
         if (budget == null) return null;
-        CacheBudget.Reservation reservation = budget.tryReserve(BudgetKind.GPU,
-            ResourceLedger.syncObjectCharge());
-        return tryAfterCurrentCommands(reservation, driver);
+        return tryAfterCurrentCommands(driver);
     }
 
     private static SyncDriver productionDriver() {
@@ -136,17 +100,11 @@ public final class LwjglRetirementFence implements ResourceLedger.RetirementFenc
         sync = null;
         if (value == null) return;
         driver.delete(value);
-        CacheBudget.Reservation owned = reservation;
-        reservation = null;
-        if (owned != null) owned.close();
     }
 
-    /** Releases accounting after the owning GL context is known to be gone. */
+    /** Forgets a name after its owning GL context is gone. */
     public void abandon() {
         sync = null;
-        CacheBudget.Reservation owned = reservation;
-        reservation = null;
-        if (owned != null) owned.close();
     }
 
     public static void abandon(ResourceLedger.RetirementFence fence) {

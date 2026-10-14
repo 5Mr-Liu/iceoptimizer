@@ -1,10 +1,11 @@
 package dev.rlcraft.ice.optimizer.compat.model;
 
 import dev.rlcraft.ice.optimizer.FatalErrors;
+import dev.rlcraft.ice.optimizer.OptimizationModule;
+import dev.rlcraft.ice.optimizer.OptimizerRegistry;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.client.ModernRendererRuntime;
-import dev.rlcraft.ice.optimizer.compat.renderlib.RenderLibRenderBridge;
 import dev.rlcraft.ice.optimizer.render.entity.ModelMeshPayload;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -32,7 +33,6 @@ public final class ModelMeshCaptureBridge {
     private static final int MAX_MESH_BYTES = 16 * 1024 * 1024;
     private static final int MAX_PENDING_MESHES = 8192;
     private static final long MAX_PENDING_BYTES = 64L * 1024L * 1024L;
-    private static final int MAX_PUBLICATION_BACKOFF_SHIFT = 6;
     private static final ThreadLocal<CaptureState> CAPTURES =
         new ThreadLocal<CaptureState>() {
             @Override protected CaptureState initialValue() {
@@ -43,6 +43,8 @@ public final class ModelMeshCaptureBridge {
         new ConcurrentHashMap<Class<?>, Field>();
     private static final LinkedHashMap<Integer, PendingModelMesh> PENDING =
         new LinkedHashMap<Integer, PendingModelMesh>(64, 0.75F, true);
+    private static final ModelMeshAdmissionQueue<PendingModelMesh> ADMISSIONS =
+        new ModelMeshAdmissionQueue<PendingModelMesh>();
     private static volatile boolean hasPendingMeshes;
     private static long pendingBytes;
     private static boolean pendingPurgeInitialized;
@@ -74,17 +76,27 @@ public final class ModelMeshCaptureBridge {
 
     public static void begin(Object owner) {
         captureBegins = safeAdd(captureBegins, 1L);
-        ModernRendererRuntime runtime =
-            ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        boolean candidateCapture = runtime == null || runtime.mayCaptureModelMeshes();
         CaptureState state = CAPTURES.get();
         if (state.overflow != 0 || state.stack.size() >= MAX_CAPTURE_DEPTH) {
             state.overflow++;
             return;
         }
-        boolean configured = candidateCapture && (OptimizerBridge.isEnabled(ENTITY_MODULE)
-            || OptimizerBridge.isEnabled(TESR_MODULE));
-        boolean early = candidateCapture && !configured && earlyCaptureAvailable();
+        // Keep cold compile data across a session pause: vanilla will not
+        // compile the same display list again merely because rendering resumed.
+        boolean paused = OptimizerRegistry.isRuntimePaused();
+        boolean configured;
+        boolean early = false;
+        if (paused) {
+            configured = OptimizerRegistry.isConfiguredOperational(OptimizationModule.MODERN_ENTITY_BACKEND)
+                || OptimizerRegistry.isConfiguredOperational(OptimizationModule.MODERN_TESR_BACKEND);
+        } else {
+            ModernRendererRuntime runtime =
+                ClientOptimizerRuntime.INSTANCE.modernRenderer();
+            boolean candidateCapture = runtime == null || runtime.mayCaptureModelMeshes();
+            configured = candidateCapture && (OptimizerBridge.isEnabled(ENTITY_MODULE)
+                || OptimizerBridge.isEnabled(TESR_MODULE));
+            early = candidateCapture && !configured && earlyCaptureAvailable();
+        }
         boolean enabled = owner != null && (configured || early);
         if (enabled && early) earlyCaptures = safeAdd(earlyCaptures, 1L);
         if (enabled) enabledCaptures = safeAdd(enabledCaptures, 1L);
@@ -167,36 +179,33 @@ public final class ModelMeshCaptureBridge {
 
     /** Replacement for ModelRenderer's exact GlStateManager.callList sites. */
     public static void callList(int displayList) {
+        if (OptimizerRegistry.isRuntimePaused()) {
+            GlStateManager.callList(displayList);
+            return;
+        }
         if (ModelStateBatchBridge.draw(displayList)) return;
-        if (displayList <= 0) {
-            GlStateManager.callList(displayList);
-            return;
+        if (dev.rlcraft.ice.optimizer.compat.renderlib.RenderLibRenderBridge.observeOriginalModelDraw()) {
+            ModernRendererRuntime runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
+            if (runtime != null) runtime.validateModelMeshAtCallSite(displayList);
         }
-        ModernRendererRuntime runtime =
-            ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        PendingModelMesh pending = pending(displayList);
-        if (pending != null && runtime != null
-            && runtime.shouldDropDeferredModelMeshes()) {
-            removePending(displayList);
-            disabledPendingDrops = safeAdd(disabledPendingDrops, 1L);
-            pending = null;
-        }
-        if (pending != null) {
-            // A pending payload is newer than any already-cached VBO for this
-            // display-list name.  Never upload inside an entity timing scope
-            // and never draw the stale cache entry; the current vanilla list
-            // remains the exact fallback until the next bounded frame drain.
-            GlStateManager.callList(displayList);
-            return;
-        }
-        if (runtime != null
-            && RenderLibRenderBridge.candidateInspectionEnabled()
-            && runtime.tryDrawModelMesh(displayList)) return;
+        // A single part cannot amortize VAO bind/draw/restore. The current
+        // display list is authoritative, including while a new mesh is pending.
+        // Multi-part consumers still use the captured meshes and frame drain.
         GlStateManager.callList(displayList);
     }
 
     public static boolean hasPendingModelMeshes() {
         return hasPendingMeshes;
+    }
+
+    /** Called before native GL state authentication at the frame boundary. */
+    public static synchronized boolean hasReadyModelMeshes(long storageProgress) {
+        if (!hasPendingMeshes) return false;
+        purgeStalePending();
+        ADMISSIONS.storageProgress(storageProgress);
+        if (ADMISSIONS.readyCount() != 0) return true;
+        publicationRetrySuppressions = safeAdd(publicationRetrySuppressions, 1L);
+        return false;
     }
 
     static boolean isPending(int displayList) {
@@ -223,43 +232,49 @@ public final class ModelMeshCaptureBridge {
             disabledPendingDrops = safeAdd(disabledPendingDrops,
                 PENDING.size());
             PENDING.clear();
+            ADMISSIONS.clear();
             pendingBytes = 0L;
             hasPendingMeshes = false;
             return 0;
         }
 
+        if (ADMISSIONS.readyCount() == 0
+            && !hasReadyModelMeshes(runtime.modelMeshAdmissionProgress())) return 0;
+        // Count examined entries, including transient qualification failures.
+        // A failed item offered again below is never retried in this drain.
+        int remaining = Math.min(maximumMeshes, ADMISSIONS.readyCount());
         int attempted = 0;
         int published = 0;
         long attemptedBytes = 0L;
-        Iterator<Map.Entry<Integer, PendingModelMesh>> iterator =
-            PENDING.entrySet().iterator();
-        while (iterator.hasNext() && attempted < maximumMeshes) {
-            PendingModelMesh pending = iterator.next().getValue();
+        while (remaining-- > 0) {
+            PendingModelMesh pending = ADMISSIONS.poll();
             publicationDrainExamined = safeAdd(publicationDrainExamined, 1L);
             ModelMeshPayload payload = pending.qualify();
             if (payload == null) {
                 if (pending.isPermanentlyRejected()) {
                     pendingBytes -= pending.getByteLength();
                     stalePendingDrops = safeAdd(stalePendingDrops, 1L);
-                    iterator.remove();
-                }
-                continue;
-            }
-            if (!pending.shouldAttemptPublication(epoch)) {
-                publicationRetrySuppressions = safeAdd(
-                    publicationRetrySuppressions, 1L);
+                    PENDING.remove(Integer.valueOf(pending.getDisplayList()));
+                } else ADMISSIONS.offer(pending);
                 continue;
             }
             int bytes = pending.getByteLength();
-            if (attempted > 0 && bytes > maximumBytes - attemptedBytes) break;
+            if (attempted > 0 && bytes > maximumBytes - attemptedBytes) {
+                ADMISSIONS.offer(pending);
+                break;
+            }
             attempted++;
             attemptedBytes = safeAdd(attemptedBytes, bytes);
-            if (!attemptPublication(pending, payload, runtime, epoch)) continue;
+            if (!attemptPublication(payload, runtime)) {
+                if (runtime.modelMeshAdmissionBlockedByCapacity()) ADMISSIONS.awaitStorage(pending);
+                else ADMISSIONS.offer(pending);
+                continue;
+            }
             if (pending.consumeQualifiedLate()) {
                 lateQualifications = safeAdd(lateQualifications, 1L);
             }
             pendingBytes -= bytes;
-            iterator.remove();
+            PENDING.remove(Integer.valueOf(pending.getDisplayList()));
             published++;
             drainedPublications = safeAdd(drainedPublications, 1L);
         }
@@ -267,15 +282,12 @@ public final class ModelMeshCaptureBridge {
         return published;
     }
 
-    private static boolean attemptPublication(PendingModelMesh pending,
-                                              ModelMeshPayload payload,
-                                              ModernRendererRuntime runtime,
-                                              long epoch) {
+    private static boolean attemptPublication(ModelMeshPayload payload,
+                                              ModernRendererRuntime runtime) {
         publicationAttempts = safeAdd(publicationAttempts, 1L);
         boolean accepted = publish(payload, runtime);
         if (!accepted) {
             publicationFailures = safeAdd(publicationFailures, 1L);
-            pending.recordPublicationFailure(epoch);
         }
         return accepted;
     }
@@ -313,6 +325,7 @@ public final class ModelMeshCaptureBridge {
     public static synchronized void reset() {
         CAPTURES.remove();
         PENDING.clear();
+        ADMISSIONS.clear();
         hasPendingMeshes = false;
         pendingBytes = 0L;
         pendingPurgeInitialized = false;
@@ -373,7 +386,11 @@ public final class ModelMeshCaptureBridge {
         hasPendingMeshes = true;
         PendingModelMesh old = PENDING.put(
             Integer.valueOf(payload.getDisplayList()), payload);
-        if (old != null) pendingBytes -= old.getByteLength();
+        if (old != null) {
+            pendingBytes -= old.getByteLength();
+            ADMISSIONS.remove(old);
+        }
+        ADMISSIONS.offer(payload);
         pendingBytes = safeAdd(pendingBytes, payload.getByteLength());
         Iterator<Map.Entry<Integer, PendingModelMesh>> iterator =
             PENDING.entrySet().iterator();
@@ -382,6 +399,7 @@ public final class ModelMeshCaptureBridge {
             PendingModelMesh evicted = iterator.next().getValue();
             pendingBytes -= evicted.getByteLength();
             stalePendingDrops = safeAdd(stalePendingDrops, 1L);
+            ADMISSIONS.remove(evicted);
             iterator.remove();
         }
         if (PENDING.isEmpty()) hasPendingMeshes = false;
@@ -401,7 +419,10 @@ public final class ModelMeshCaptureBridge {
 
     private static synchronized void removePending(int displayList) {
         PendingModelMesh removed = PENDING.remove(Integer.valueOf(displayList));
-        if (removed != null) pendingBytes -= removed.getByteLength();
+        if (removed != null) {
+            pendingBytes -= removed.getByteLength();
+            ADMISSIONS.remove(removed);
+        }
         if (PENDING.isEmpty()) hasPendingMeshes = false;
     }
 
@@ -441,6 +462,7 @@ public final class ModelMeshCaptureBridge {
             if (!value.isStale(resources, context, contextIdentity)) continue;
             pendingBytes -= value.getByteLength();
             stalePendingDrops = safeAdd(stalePendingDrops, 1L);
+            ADMISSIONS.remove(value);
             iterator.remove();
         }
         if (PENDING.isEmpty()) hasPendingMeshes = false;
@@ -452,13 +474,6 @@ public final class ModelMeshCaptureBridge {
             FatalErrors.rethrowIfFatal(unavailable);
             return null;
         }
-    }
-
-    static long publicationRetryDelay(int consecutiveFailures) {
-        if (consecutiveFailures <= 0) return 0L;
-        int shift = Math.min(MAX_PUBLICATION_BACKOFF_SHIFT,
-            consecutiveFailures - 1);
-        return 1L << shift;
     }
 
     private static long safeAdd(long left, long right) {
@@ -581,8 +596,6 @@ public final class ModelMeshCaptureBridge {
         private ModelMeshPayload payload;
         private boolean qualifiedLate;
         private boolean permanentlyRejected;
-        private int publicationFailureStreak;
-        private long nextPublicationEpoch = Long.MIN_VALUE;
 
         private PendingModelMesh(int displayList, byte[] vertices,
                                  VertexFormat format, int drawMode,
@@ -664,21 +677,6 @@ public final class ModelMeshCaptureBridge {
             }
             return capturedContext == null
                 || current != null && current != capturedContext;
-        }
-
-        private synchronized boolean shouldAttemptPublication(long epoch) {
-            return epoch >= 0L && (nextPublicationEpoch == Long.MIN_VALUE
-                || epoch >= nextPublicationEpoch);
-        }
-
-        private synchronized void recordPublicationFailure(long epoch) {
-            if (epoch < 0L) return;
-            if (publicationFailureStreak < Integer.MAX_VALUE) {
-                publicationFailureStreak++;
-            }
-            long delay = publicationRetryDelay(publicationFailureStreak);
-            nextPublicationEpoch = epoch > Long.MAX_VALUE - delay
-                ? Long.MAX_VALUE : epoch + delay;
         }
 
         private synchronized boolean consumeQualifiedLate() {

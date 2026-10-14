@@ -66,8 +66,11 @@ public final class RecordingSession {
     }
 
     public synchronized void addMarker(String text) {
-        long now = System.currentTimeMillis();
-        markers.add(new SessionMarker(now, now - startedEpochMillis, text));
+        addMarker(System.currentTimeMillis(), text);
+    }
+
+    public synchronized void addMarker(long epochMillis, String text) {
+        markers.add(new SessionMarker(epochMillis, epochMillis - startedEpochMillis, text));
     }
 
     public synchronized HitchCluster trigger(HitchTrigger trigger, List<StackSample> preSamples) {

@@ -176,6 +176,14 @@ final class RendererDiagnosticsWriter {
     }
 
     private void appendTerrainDiagnostics(StringBuilder report) {
+        if (runtime.components.terrainArena != null) {
+            report.append("terrain_shader_draw_calls=").append(runtime.components.terrainArena.getShaderBatchDrawCalls()).append('\n');
+            report.append("terrain_shader_commands=").append(runtime.components.terrainArena.getShaderBatchCommands()).append('\n');
+            report.append("terrain_directional_culled_vertices=").append(runtime.components.terrainArena.getDirectionalCulledVertices()).append('\n');
+            report.append("terrain_shader_fallbacks=").append(runtime.components.terrainArena.getShaderBatchFallbacks()).append('\n');
+            report.append("terrain_animator_batched_meshes=").append(runtime.components.terrainArena.getAnimatorBatchedMeshes()).append('\n');
+            report.append("terrain_shader_detail=").append(diagnosticText(runtime.components.terrainArena.getShaderBatchDetail(), 256)).append('\n');
+        }
         report.append("terrain_upload_arena=").append(runtime.terrainArenaUploads)
             .append('\n');
         report.append("terrain_upload_legacy=")
@@ -200,9 +208,10 @@ final class RendererDiagnosticsWriter {
         report.append("terrain_last_owned_meshes=")
             .append(runtime.terrainLastOwnedMeshes).append('\n');
         report.append("terrain_last_ownership_percent=")
-            .append(runtime.terrainLastVisibleMeshes <= 0 ? 0.0D
+            .append(runtime.terrainLastOwnedMeshes < 0 ? "not-sampled"
+                : Double.toString(runtime.terrainLastVisibleMeshes <= 0 ? 0.0D
                 : 100.0D * runtime.terrainLastOwnedMeshes
-                    / runtime.terrainLastVisibleMeshes)
+                    / runtime.terrainLastVisibleMeshes))
             .append('\n');
         report.append("terrain_last_region_runs=")
             .append(runtime.terrainLastRegionRuns).append('\n');
@@ -232,6 +241,13 @@ final class RendererDiagnosticsWriter {
                 .append(arena.getUsedBytes()).append('\n');
             report.append("terrain_arena_committed_bytes=")
                 .append(arena.getCommittedBytes()).append('\n');
+            report.append("terrain_arena_maximum_capacity_bytes=")
+                .append(runtime.components.terrainArena.getMaximumCapacityBytes()).append('\n');
+            report.append("terrain_arena_allocated_buffer_bytes=")
+                .append(runtime.components.terrainArena.getAllocatedBufferBytes()).append('\n');
+            report.append("terrain_draw_storage=unmapped-static\n");
+            report.append("terrain_upload_staging_bytes=")
+                .append(runtime.components.terrainArena.getUploadStagingBytes()).append('\n');
             report.append("terrain_arena_live_allocations=")
                 .append(arena.getAllocations()).append('\n');
             report.append("terrain_arena_free_segments=")
@@ -246,12 +262,22 @@ final class RendererDiagnosticsWriter {
                 .append(runtime.components.terrainArena.getInvalidPayloads()).append('\n');
             report.append("terrain_arena_uploaded_bytes=")
                 .append(runtime.components.terrainArena.getUploadedBytes()).append('\n');
+            report.append("terrain_arena_exact_size_replacement_uploads=")
+                .append(runtime.components.terrainArena.getExactSizeReplacementUploads()).append('\n');
             report.append("terrain_arena_persistent_uploads=")
                 .append(runtime.components.terrainArena.getPersistentUploads()).append('\n');
             report.append("terrain_arena_subdata_uploads=")
                 .append(runtime.components.terrainArena.getSubDataUploads()).append('\n');
             report.append("terrain_arena_raw_draw_calls=")
                 .append(runtime.components.terrainArena.getDrawCalls()).append('\n');
+            report.append("terrain_arena_live_vertex_bytes=")
+                .append(runtime.components.terrainArena.getLiveVertexBytes()).append('\n');
+            report.append("terrain_arena_live_unused_tail_bytes=")
+                .append(runtime.components.terrainArena.getLiveUnusedTailBytes()).append('\n');
+            report.append("terrain_arena_array_layout_sets=")
+                .append(runtime.components.terrainArena.getArrayLayoutSets()).append('\n');
+            report.append("terrain_arena_array_layout_reuses=")
+                .append(runtime.components.terrainArena.getArrayLayoutReuses()).append('\n');
             report.append("terrain_arena_raw_multi_draw_calls=")
                 .append(runtime.components.terrainArena.getMultiDrawCalls()).append('\n');
             report.append("terrain_arena_raw_indirect_draw_calls=")
@@ -300,6 +326,26 @@ final class RendererDiagnosticsWriter {
     }
 
     private void appendVisibilityDiagnostics(StringBuilder report) {
+        if (runtime.components.terrainArena != null) {
+            report.append("gpu_visibility_frames=").append(runtime.components.terrainArena.getGpuVisibilityFrames()).append('\n');
+            report.append("gpu_visibility_candidates=").append(runtime.components.terrainArena.getGpuVisibilityCandidates()).append('\n');
+            report.append("gpu_visibility_faces=").append(runtime.components.terrainArena.getGpuVisibilityFaces()).append('\n');
+        }
+        dev.rlcraft.ice.optimizer.render.visibility.CurrentFrameTerrainOcclusion software =
+            runtime.terrainSoftwareOcclusion();
+        report.append("software_occlusion_enabled=").append(software != null).append('\n');
+        report.append("terrain_visibility_traversal=").append(
+            dev.rlcraft.ice.optimizer.render.visibility.PrimitiveTerrainVisibilityBridge.traversalPolicy()).append('\n');
+        if (software != null) {
+            report.append("software_occlusion_meshes=").append(software.getMeshCount()).append('\n');
+            report.append("software_occlusion_bytes=").append(software.getRetainedBytes()).append('\n');
+            report.append("software_occlusion_tested=").append(software.getTested()).append('\n');
+            report.append("software_occlusion_hidden=").append(software.getOccluded()).append('\n');
+            report.append("software_occlusion_raster_quads=").append(software.getRasterizedQuads()).append('\n');
+            report.append("software_occlusion_read_only_tail_passes=").append(software.getReadOnlyTailPasses()).append('\n');
+            report.append("software_occlusion_read_only_tail_budget_stops=").append(software.getReadOnlyTailBudgetStops()).append('\n');
+            report.append("software_occlusion_skipped_empty_probes=").append(software.getSkippedProbes()).append('\n');
+        }
         if (runtime.components.depthHistory != null) {
             report.append("hzb_capture_attempts=")
                 .append(runtime.hzbCaptureAttempts).append('\n');
@@ -416,6 +462,12 @@ final class RendererDiagnosticsWriter {
     }
 
     private void appendModelDiagnostics(StringBuilder report) {
+        if (runtime.components.modelMeshes != null) {
+            report.append("model_pose_batch_draws=").append(runtime.components.modelMeshes.getPoseBatchDraws()).append('\n');
+            report.append("model_pose_batch_parts=").append(runtime.components.modelMeshes.getPoseBatchParts()).append('\n');
+            report.append("model_pose_batch_fallbacks=").append(runtime.components.modelMeshes.getPoseBatchFallbacks()).append('\n');
+            report.append("model_pose_batch_detail=").append(diagnosticText(runtime.components.modelMeshes.getPoseBatchDetail(), 256)).append('\n');
+        }
         report.append("model_mesh_cache_entries=")
             .append(runtime.components.modelMeshes == null ? 0 : runtime.components.modelMeshes.size()).append('\n');
         report.append("model_mesh_shared_pages=")
@@ -586,6 +638,21 @@ final class RendererDiagnosticsWriter {
         if (topReason == null) summary.append("none");
         else summary.append(topReason.name()).append(' ')
             .append(topReasonCount);
+        if (runtime.components.terrainArena != null) {
+            summary.append(" | GPU ").append(runtime.components.terrainArena.getShaderBatchDrawCalls())
+                .append('/').append(runtime.components.terrainArena.getShaderBatchCommands());
+        }
+        if (runtime.components.modelMeshes != null) {
+            summary.append(" | Pose ").append(runtime.components.modelMeshes.getPoseBatchDraws())
+                .append('/').append(runtime.components.modelMeshes.getPoseBatchParts());
+        }
+        if (runtime.terrainSoftwareOcclusion() != null) {
+            summary.append(" | CPU Occ ").append(runtime.terrainSoftwareOcclusion().getOccluded());
+        }
+        if (runtime.components.terrainArena != null) {
+            summary.append(" | GPU Vis ").append(runtime.components.terrainArena.getGpuVisibilityFrames())
+                .append('/').append(runtime.components.terrainArena.getGpuVisibilityCandidates());
+        }
         return summary;
     }
 

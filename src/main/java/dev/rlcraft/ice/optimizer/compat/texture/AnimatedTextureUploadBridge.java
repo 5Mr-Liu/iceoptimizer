@@ -7,16 +7,12 @@ import dev.rlcraft.ice.optimizer.bridge.UnsafeLegacyReplayException;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.client.ModernRendererRuntime;
 import dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState;
-import dev.rlcraft.ice.optimizer.render.backend.MeasurementArm;
-import dev.rlcraft.ice.optimizer.render.backend.SceneFingerprint;
 import dev.rlcraft.ice.optimizer.render.backend.RenderBackendId;
 import dev.rlcraft.ice.optimizer.render.frame.RenderPass;
 import dev.rlcraft.ice.optimizer.render.texture.AnimationTextureCommandQueue;
 import dev.rlcraft.ice.optimizer.render.texture.LwjglAnimatedTextureUploadStream;
 import dev.rlcraft.ice.optimizer.render.texture.LwjglAnimatedTextureUploadStream.FlushResult;
-import dev.rlcraft.ice.optimizer.render.texture.LwjglTextureUploadSelfTest;
 import dev.rlcraft.ice.optimizer.render.texture.SpriteVisibilityTracker;
-import dev.rlcraft.ice.optimizer.render.texture.TextureOutputValidator;
 import dev.rlcraft.ice.optimizer.runtime.MonotonicTokenCounter;
 import java.lang.reflect.InvocationTargetException;
 import java.util.concurrent.atomic.AtomicLong;
@@ -90,10 +86,9 @@ public final class AnimatedTextureUploadBridge {
             // the exact legacy path; it cannot safely reuse its old mirror.
             parent.modern = false;
             parent.visibilityModern = false;
-            parent.stale = true;
         }
         Scope scope = state.scopes[state.depth++];
-        scope.reset(token, atlas);
+        scope.reset(token);
         if (state.overflow != 0) return token;
         try {
             Minecraft minecraft = Minecraft.getMinecraft();
@@ -111,44 +106,14 @@ public final class AnimatedTextureUploadBridge {
             scope.resourceGeneration = runtime.resourceGeneration();
             scope.atlasGeneration = runtime.atlasGeneration();
             scope.contextGeneration = runtime.glContextGeneration();
-            scope.shaderGeneration = runtime.shaderPackGeneration();
             if (atlas instanceof AbstractTexture) {
                 scope.atlasTextureId = ((AbstractTexture) atlas).getGlTextureId();
                 runtime.observeAnimatedAtlas(scope.atlasTextureId);
             }
-            scope.streamState = runtime.backendLifecycleState(
-                OptimizationModule.MODERN_TEXTURE_STREAM);
-            scope.streamArm = armFor(runtime,
-                OptimizationModule.MODERN_TEXTURE_STREAM, scope.streamState);
-            if (scope.streamState == BackendLifecycleState.OUTPUT_VALIDATE) {
-                LwjglTextureUploadSelfTest.Result result =
-                    TextureOutputValidator.validate(scope.contextGeneration, false,
-                        runtime.cacheBudget());
-                runtime.recordValidation(OptimizationModule.MODERN_TEXTURE_STREAM,
-                    result.isEquivalent(), result.getDetail());
-            }
-            scope.modern = usesModern(scope.streamState, scope.streamArm);
-
-            scope.visibilityState = runtime.backendLifecycleState(
-                OptimizationModule.MODERN_TEXTURE_VISIBILITY);
-            scope.visibilityArm = armFor(runtime,
-                OptimizationModule.MODERN_TEXTURE_VISIBILITY,
-                scope.visibilityState);
-            if (scope.visibilityState == BackendLifecycleState.OUTPUT_VALIDATE) {
-                LwjglTextureUploadSelfTest.Result result =
-                    TextureOutputValidator.validate(scope.contextGeneration, false,
-                        runtime.cacheBudget());
-                boolean equivalent = scope.tracker != null
-                    && SpriteVisibilityTracker.selfTest()
-                    && result.isEquivalent();
-                runtime.recordValidation(
-                    OptimizationModule.MODERN_TEXTURE_VISIBILITY, equivalent,
-                    equivalent ? null : result.getDetail() == null
-                        ? "animated visibility CPU self-test failed"
-                        : result.getDetail());
-            }
-            scope.visibilityModern = usesModern(scope.visibilityState,
-                scope.visibilityArm);
+            scope.modern = runtime.backendLifecycleState(
+                OptimizationModule.MODERN_TEXTURE_STREAM) == BackendLifecycleState.MODERN;
+            scope.visibilityModern = runtime.backendLifecycleState(
+                OptimizationModule.MODERN_TEXTURE_VISIBILITY) == BackendLifecycleState.MODERN;
             scope.passToken = runtime.beginObservedPass(
                 RenderPass.ANIMATED_TEXTURE_UPLOAD,
                 scope.modern || scope.visibilityModern
@@ -156,21 +121,8 @@ public final class AnimatedTextureUploadBridge {
                     : RenderBackendId.LEGACY);
             if (!scope.modern) return token;
 
-            scope.persistentState = runtime.backendLifecycleState(
-                OptimizationModule.MODERN_TEXTURE_PERSISTENT_RING);
-            scope.persistentArm = armFor(runtime,
-                OptimizationModule.MODERN_TEXTURE_PERSISTENT_RING,
-                scope.persistentState);
-            if (scope.persistentState == BackendLifecycleState.OUTPUT_VALIDATE) {
-                LwjglTextureUploadSelfTest.Result result =
-                    TextureOutputValidator.validate(scope.contextGeneration, true,
-                        runtime.cacheBudget());
-                runtime.recordValidation(
-                    OptimizationModule.MODERN_TEXTURE_PERSISTENT_RING,
-                    result.isEquivalent(), result.getDetail());
-            }
-            scope.persistent = usesModern(scope.persistentState,
-                scope.persistentArm);
+            scope.persistent = runtime.backendLifecycleState(
+                OptimizationModule.MODERN_TEXTURE_PERSISTENT_RING) == BackendLifecycleState.MODERN;
         } catch (Throwable error) {
             Throwable fatal = FatalErrors.findFatal(error);
             if (fatal != null) throw unwindBeginFatal(state, scope, fatal);
@@ -180,7 +132,9 @@ public final class AnimatedTextureUploadBridge {
         return token;
     }
 
-    public static void beforeSprite(Object sprite) {
+    public static void beforeSprite(Object sprite) { beforeSprite(sprite, false); }
+
+    public static void beforeSprite(Object sprite, boolean reviewedFoamFix) {
         State state = STATE.get();
         Scope scope = state.current();
         if (scope == null || state.overflow != 0) return;
@@ -194,8 +148,10 @@ public final class AnimatedTextureUploadBridge {
         scope.currentSprite = null;
         scope.spriteIndex = -1;
         scope.spriteRegistered = false;
+        scope.capturedCount = 0;
+        scope.captureLevels = false;
         scope.eligible = sprite != null
-            && sprite.getClass() == TextureAtlasSprite.class;
+            && (sprite.getClass() == TextureAtlasSprite.class || reviewedFoamFix);
         if (scope.eligible && scope.tracker != null
             && scope.atlasTextureId > 0
             && scope.runtime != null
@@ -212,16 +168,15 @@ public final class AnimatedTextureUploadBridge {
                 safeTextureVisibilityFailure(scope, visibilityFailure);
             }
         }
-        if (!scope.eligible) {
-            scope.customSprites++;
-            flush(scope);
-        }
+        if (!scope.eligible) flush(scope);
+        scope.captureLevels = reviewedFoamFix && (scope.modern || scope.visibilityModern);
     }
 
     public static void afterSprite() {
         State state = STATE.get();
         Scope scope = state.current();
         if (scope == null || state.overflow != 0) return;
+        commitCaptured(scope);
         scope.inSprite = false;
         scope.eligible = false;
         scope.currentSprite = null;
@@ -243,12 +198,17 @@ public final class AnimatedTextureUploadBridge {
             return;
         }
         flushForCoreBoundary(scope);
-        scope.textureBarriers++;
     }
 
     public static boolean tryUpload(int[][] data, int width, int height,
                                     int originX, int originY, boolean blur,
                                     boolean clamp) {
+        return tryUpload(data, width, height, originX, originY, blur, clamp,
+            data != null && data.length > 1, false);
+    }
+
+    private static boolean tryUpload(int[][] data, int width, int height, int originX, int originY,
+                                     boolean blur, boolean clamp, boolean mipFilter, boolean snapshot) {
         State state = STATE.get();
         Scope scope = state.current();
         if (scope == null || state.overflow != 0 || !scope.inSprite
@@ -256,22 +216,14 @@ public final class AnimatedTextureUploadBridge {
         long bytes = AnimationTextureCommandQueue.validatedByteCount(
             data, width, height);
         if (bytes < 0L || originX < 0 || originY < 0) return false;
-        scope.commands++;
-        scope.mipLevels += AnimationTextureCommandQueue.usableMipLevels(
-            data, width, height);
-        scope.bytes = safeAdd(scope.bytes, bytes);
         if (scope.spriteRegistered && scope.tracker != null) {
             try {
-                scope.visibilityEligibleCommands++;
                 if (scope.visibilityModern && bytes > 0L
                     && scope.tracker.deferIfInvisible(scope.currentSprite,
                         scope.spriteIndex, scope.atlasTextureId, data, width,
-                        height, originX, originY, blur, clamp,
+                        height, originX, originY, blur, clamp, mipFilter,
                         scope.runtime.currentFrameId(), scope.resourceGeneration,
                         scope.atlasGeneration)) {
-                    scope.visibilityDeferredCommands++;
-                    scope.visibilityDeferredBytes = safeAdd(
-                        scope.visibilityDeferredBytes, bytes);
                     scope.runtime.recordTextureVisibilityDeferred(bytes);
                     return true;
                 }
@@ -295,20 +247,74 @@ public final class AnimatedTextureUploadBridge {
         }
         if (!scope.modern || scope.uploader == null) return false;
         try {
-            if (scope.uploader.offer(data, width, height, originX, originY,
-                blur, clamp)) return true;
+            if (offer(scope, data, width, height, originX, originY, blur, clamp, mipFilter, snapshot)) return true;
             flush(scope);
-            return scope.uploader.offer(data, width, height, originX, originY,
-                blur, clamp);
+            return scope.modern && offer(scope, data, width, height, originX, originY, blur, clamp, mipFilter, snapshot);
         } catch (Throwable error) {
             FatalErrors.rethrowIfFatal(error);
             if (error instanceof UnsafeLegacyReplayException) rethrow(error);
             if (isLegacyReplayFailure(scope, error)) {
                 throw unsafeLegacyReplay(error);
             }
+            // Commands accepted before this failed offer still belong to the stream.
+            flushForCoreBoundary(scope);
             safeTextureBackendFailure(scope, error);
             scope.modern = false;
             return false;
+        }
+    }
+
+    private static boolean offer(Scope scope, int[][] data, int width, int height, int x, int y,
+                                 boolean blur, boolean clamp, boolean mipFilter, boolean snapshot) {
+        return snapshot ? scope.uploader.offerSnapshot(data, width, height, x, y, blur, clamp, mipFilter)
+            : scope.uploader.offer(data, width, height, x, y, blur, clamp);
+    }
+
+    /** Consecutive FoamFix mips become one command in the atlas batch. */
+    public static boolean tryUploadLevel(int mip, int[] pixels, int width, int height, int x, int y,
+                                         boolean blur, boolean clamp, boolean mipFilter) {
+        State state = STATE.get();
+        Scope scope = state.current();
+        if (scope == null || !scope.captureLevels || state.overflow != 0) return false;
+        if (mip == 0) {
+            commitCaptured(scope);
+            scope.captureLevels = true;
+            scope.capturedWidth = width;
+            scope.capturedHeight = height;
+            scope.capturedX = x;
+            scope.capturedY = y;
+            scope.capturedBlur = blur;
+            scope.capturedClamp = clamp;
+            scope.capturedMipFilter = mipFilter;
+        }
+        scope.captured[mip] = pixels;
+        scope.capturedCount = mip + 1;
+        return true;
+    }
+
+    private static void commitCaptured(Scope scope) {
+        scope.captureLevels = false;
+        int count = scope.capturedCount;
+        if (count == 0) return;
+        int[][] levels = scope.levelVectors[count];
+        if (levels == null) scope.levelVectors[count] = levels = new int[count][];
+        System.arraycopy(scope.captured, 0, levels, 0, count);
+        scope.capturedCount = 0;
+        try {
+            if (!tryUpload(levels, scope.capturedWidth, scope.capturedHeight, scope.capturedX,
+                scope.capturedY, scope.capturedBlur, scope.capturedClamp, scope.capturedMipFilter, true)) {
+                // Original uploads have been claimed, so commit them here if the batch is full.
+                flushForCoreBoundary(scope);
+                dev.rlcraft.ice.optimizer.render.texture.ExactTextureUpload.upload(levels,
+                    scope.capturedWidth, scope.capturedHeight, scope.capturedX, scope.capturedY,
+                    scope.capturedBlur, scope.capturedClamp, scope.capturedMipFilter);
+            }
+        } catch (Throwable failure) {
+            FatalErrors.rethrowIfFatal(failure);
+            throw unsafeLegacyReplay(failure);
+        } finally {
+            java.util.Arrays.fill(scope.captured, 0, count, null);
+            java.util.Arrays.fill(levels, null);
         }
     }
 
@@ -336,8 +342,8 @@ public final class AnimatedTextureUploadBridge {
         Throwable fatal = null;
         Throwable replayFailure = null;
         try {
+            commitCaptured(scope);
             flush(scope);
-            recordSamples(scope, traversalError == null);
         } catch (Throwable cleanupFailure) {
             Throwable fatalCause = FatalErrors.findFatal(cleanupFailure);
             if (fatalCause != null) {
@@ -377,18 +383,10 @@ public final class AnimatedTextureUploadBridge {
                 || currentContext != scope.contextGeneration) {
                 scope.uploader.reset(currentContext == scope.contextGeneration,
                     currentContext);
-                scope.stale = true;
                 return;
             }
             result = scope.uploader.flush(currentResources, currentContext,
                 scope.persistent);
-            scope.modernWork |= result.usedModern();
-            scope.persistentWork |= scope.persistent
-                ? result == FlushResult.PERSISTENT_PBO
-                : result == FlushResult.STREAMING_PBO;
-            scope.fallbacks += result == FlushResult.LEGACY
-                || result == FlushResult.FAILED_TO_LEGACY ? 1 : 0;
-            if (scope.uploader.wasLastFenceBusy()) scope.busy++;
             Throwable error = scope.uploader.getLastError();
             if (error != null) {
                 if (scope.persistent) {
@@ -420,8 +418,9 @@ public final class AnimatedTextureUploadBridge {
 
     private static boolean isLegacyReplayFailure(Scope scope,
                                                   Throwable error) {
-        return scope != null && scope.uploader != null && error != null
-            && scope.uploader.getLastLegacyReplayFailure() == error;
+        return error instanceof UnsafeLegacyReplayException
+            || scope != null && scope.uploader != null && error != null
+                && scope.uploader.getLastLegacyReplayFailure() == error;
     }
 
     private static void reportReplayInfrastructure(Scope scope,
@@ -466,45 +465,6 @@ public final class AnimatedTextureUploadBridge {
         }
     }
 
-    private static void recordSamples(Scope scope, boolean completedNormally) {
-        if (scope.runtime == null || scope.commands == 0) return;
-        long elapsed = Math.max(1L, System.nanoTime() - scope.startedNanos);
-        SceneFingerprint scene = SceneFingerprint.textureWorkload(scope.commands,
-            scope.mipLevels, scope.bytes, scope.customSprites,
-            scope.resourceGeneration, scope.shaderGeneration);
-        boolean commonStable = completedNormally && !scope.stale;
-        boolean streamStable = commonStable
-            && (!usesModern(scope.streamState, scope.streamArm) || scope.modernWork);
-        scope.runtime.recordAuxiliaryBackendSample(
-            OptimizationModule.MODERN_TEXTURE_STREAM, scope.streamState,
-            scope.streamArm, scene, elapsed, streamStable);
-        if (scope.modern && (scope.persistentState
-            == BackendLifecycleState.PAIRED_MEASURE
-            || scope.persistentState == BackendLifecycleState.REGRESSION_MONITOR)) {
-            scope.runtime.recordAuxiliaryBackendSample(
-                OptimizationModule.MODERN_TEXTURE_PERSISTENT_RING,
-                scope.persistentState, scope.persistentArm, scene, elapsed,
-                commonStable && scope.persistentWork);
-        }
-        if ((scope.visibilityState == BackendLifecycleState.PAIRED_MEASURE
-            || scope.visibilityState
-                == BackendLifecycleState.REGRESSION_MONITOR)
-            && scope.streamState != BackendLifecycleState.PAIRED_MEASURE) {
-            long visibilityElapsed = elapsed;
-            if (scope.visibilityArm == MeasurementArm.MODERN) {
-                visibilityElapsed = safeAdd(visibilityElapsed,
-                    scope.runtime.consumeTextureVisibilityCatchUpNanos());
-            }
-            boolean visibilityStable = commonStable
-                && scope.visibilityEligibleCommands > 0
-                && scope.tracker != null && scope.tracker.sourcesReady();
-            scope.runtime.recordAuxiliaryBackendSample(
-                OptimizationModule.MODERN_TEXTURE_VISIBILITY,
-                scope.visibilityState, scope.visibilityArm, scene,
-                visibilityElapsed, visibilityStable);
-        }
-    }
-
     private static void drainMismatched(State state, Throwable traversalError) {
         IllegalStateException mismatch = new IllegalStateException(
             "animation texture scope token mismatch");
@@ -513,7 +473,7 @@ public final class AnimatedTextureUploadBridge {
         while (state.depth > 0) {
             Scope scope = state.scopes[state.depth - 1];
             try {
-                try { flush(scope); }
+                try { commitCaptured(scope); flush(scope); }
                 catch (Throwable error) {
                     if (FatalErrors.findFatal(error) != null) {
                         fatal = appendFailure(fatal, error);
@@ -521,16 +481,6 @@ public final class AnimatedTextureUploadBridge {
                         replayFailure = appendFailure(replayFailure, error);
                     } else try {
                         safeTextureBackendFailure(scope, error);
-                    } catch (Throwable reportingFailure) {
-                        fatal = appendFailure(fatal, reportingFailure);
-                    }
-                }
-                try { recordSamples(scope, false); }
-                catch (Throwable sampleFailure) {
-                    if (FatalErrors.findFatal(sampleFailure) != null) {
-                        fatal = appendFailure(fatal, sampleFailure);
-                    } else try {
-                        safeTextureBackendFailure(scope, sampleFailure);
                     } catch (Throwable reportingFailure) {
                         fatal = appendFailure(fatal, reportingFailure);
                     }
@@ -567,6 +517,7 @@ public final class AnimatedTextureUploadBridge {
      */
     private static void flushForCoreBoundary(Scope scope) {
         try {
+            commitCaptured(scope);
             flush(scope);
         } catch (Throwable failure) {
             FatalErrors.rethrowIfFatal(failure);
@@ -581,25 +532,6 @@ public final class AnimatedTextureUploadBridge {
         Throwable failure) {
         return new UnsafeLegacyReplayException(
             "animated texture Legacy replay outcome is uncertain", failure);
-    }
-
-    private static boolean usesModern(BackendLifecycleState state,
-                                      MeasurementArm arm) {
-        return state == BackendLifecycleState.MODERN
-            || state == BackendLifecycleState.REGRESSION_MONITOR
-            || (state == BackendLifecycleState.PAIRED_MEASURE
-                && arm == MeasurementArm.MODERN);
-    }
-
-    private static MeasurementArm armFor(ModernRendererRuntime runtime,
-                                         OptimizationModule module,
-                                         BackendLifecycleState state) {
-        if (state == BackendLifecycleState.PAIRED_MEASURE) {
-            return runtime.expectedMeasurementArm(module);
-        }
-        return state == BackendLifecycleState.MODERN
-            || state == BackendLifecycleState.REGRESSION_MONITOR
-                ? MeasurementArm.MODERN : MeasurementArm.LEGACY;
     }
 
     private static long nextToken() {
@@ -625,10 +557,6 @@ public final class AnimatedTextureUploadBridge {
     static int depthForTest() { return STATE.get().depth; }
     static int overflowForTest() { return STATE.get().overflow; }
     static void resetForTest() { STATE.remove(); }
-
-    private static long safeAdd(long left, long right) {
-        return right > Long.MAX_VALUE - left ? Long.MAX_VALUE : left + right;
-    }
 
     private static void addSuppressed(Throwable first, Throwable next) {
         if (first == null || next == null || first == next) return;
@@ -671,76 +599,37 @@ public final class AnimatedTextureUploadBridge {
 
     private static final class Scope {
         private long token;
-        private Object atlas;
+        private final int[][] captured = new int[32][];
+        private final int[][][] levelVectors = new int[33][][];
+        private int capturedCount, capturedWidth, capturedHeight, capturedX, capturedY;
+        private boolean captureLevels, capturedBlur, capturedClamp, capturedMipFilter;
         private Object currentSprite;
         private ModernRendererRuntime runtime;
         private LwjglAnimatedTextureUploadStream uploader;
         private SpriteVisibilityTracker tracker;
-        private BackendLifecycleState streamState = BackendLifecycleState.LEGACY;
-        private BackendLifecycleState persistentState = BackendLifecycleState.LEGACY;
-        private BackendLifecycleState visibilityState = BackendLifecycleState.LEGACY;
-        private MeasurementArm streamArm = MeasurementArm.LEGACY;
-        private MeasurementArm persistentArm = MeasurementArm.LEGACY;
-        private MeasurementArm visibilityArm = MeasurementArm.LEGACY;
         private long resourceGeneration;
         private long atlasGeneration;
         private long contextGeneration;
-        private long shaderGeneration;
-        private long startedNanos;
-        private long bytes;
-        private int commands;
-        private int mipLevels;
-        private int customSprites;
-        private int textureBarriers;
         private int atlasTextureId;
         private int spriteIndex;
-        private int visibilityEligibleCommands;
-        private int visibilityDeferredCommands;
-        private long visibilityDeferredBytes;
-        private int fallbacks;
-        private int busy;
         private boolean inSprite;
         private boolean eligible;
         private boolean modern;
         private boolean persistent;
         private boolean visibilityModern;
         private boolean spriteRegistered;
-        private boolean modernWork;
-        private boolean persistentWork;
-        private boolean stale;
         private long passToken;
 
-        private void reset(long token, Object atlas) {
+        private void reset(long token) {
             this.token = token;
-            this.atlas = atlas;
-            startedNanos = System.nanoTime();
-            streamState = BackendLifecycleState.LEGACY;
-            persistentState = BackendLifecycleState.LEGACY;
-            visibilityState = BackendLifecycleState.LEGACY;
-            streamArm = MeasurementArm.LEGACY;
-            persistentArm = MeasurementArm.LEGACY;
-            visibilityArm = MeasurementArm.LEGACY;
-            bytes = 0L;
-            commands = 0;
-            mipLevels = 0;
-            customSprites = 0;
-            textureBarriers = 0;
             atlasTextureId = 0;
             spriteIndex = -1;
-            visibilityEligibleCommands = 0;
-            visibilityDeferredCommands = 0;
-            visibilityDeferredBytes = 0L;
-            fallbacks = 0;
-            busy = 0;
             inSprite = false;
             eligible = false;
             modern = false;
             persistent = false;
             visibilityModern = false;
             spriteRegistered = false;
-            modernWork = false;
-            persistentWork = false;
-            stale = false;
             passToken = 0L;
             runtime = null;
             uploader = null;
@@ -749,11 +638,12 @@ public final class AnimatedTextureUploadBridge {
             resourceGeneration = 0L;
             atlasGeneration = 0L;
             contextGeneration = 0L;
-            shaderGeneration = 0L;
         }
 
         private void clearReferences() {
-            atlas = null;
+            java.util.Arrays.fill(captured, null);
+            capturedCount = 0;
+            captureLevels = false;
             currentSprite = null;
             runtime = null;
             uploader = null;

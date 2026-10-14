@@ -3,11 +3,11 @@ package dev.rlcraft.ice.optimizer.compat.iceandfire;
 import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
+import dev.rlcraft.ice.optimizer.compat.entity.PathSearchWorkspace;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.pathfinding.PathNodeType;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.IBlockAccess;
-import org.agrona.collections.Long2ObjectHashMap;
 
 /**
  * Primitive caches scoped to one synchronous Ice and Fire PathFinder call.
@@ -16,7 +16,6 @@ import org.agrona.collections.Long2ObjectHashMap;
  */
 public final class IceAndFirePathingBridge {
     private static final int MODULE = OptimizationModule.ICEANDFIRE_PATH_NODE_CACHE.ordinal();
-    private static final int MAX_ENTRIES = 65536;
     private static final ThreadLocal<SearchStack> SEARCHES = new ThreadLocal<SearchStack>();
     private static volatile boolean activated;
     private static volatile boolean recoveryPending;
@@ -65,7 +64,7 @@ public final class IceAndFirePathingBridge {
         long key = packed(x, y, z);
         PathNodeType cached;
         try {
-            cached = context.rawTypes.get(key);
+            cached = context.workspace.rawTypes.get(key);
         } catch (Throwable error) {
             return rawCacheFailure(context, processor, source, x, y, z, error);
         }
@@ -76,9 +75,7 @@ public final class IceAndFirePathingBridge {
 
         PathNodeType computed = processor.ice$rawNodeType(source, x, y, z);
         try {
-            if (computed != null && context.rawTypes.size() < MAX_ENTRIES) {
-                context.rawTypes.put(key, computed);
-            }
+            context.workspace.rawTypes.put(key, computed);
         } catch (Throwable error) {
             disableAfterFailure(context, error);
         }
@@ -96,7 +93,7 @@ public final class IceAndFirePathingBridge {
         long key = packed(position.getX(), position.getY(), position.getZ());
         IBlockState cached;
         try {
-            cached = context.blockStates.get(key);
+            cached = context.workspace.blockStates.get(key);
         } catch (Throwable error) {
             disableAfterFailure(context, error);
             return source.getBlockState(position);
@@ -108,9 +105,7 @@ public final class IceAndFirePathingBridge {
 
         IBlockState computed = source.getBlockState(position);
         try {
-            if (computed != null && context.blockStates.size() < MAX_ENTRIES) {
-                context.blockStates.put(key, computed);
-            }
+            context.workspace.blockStates.put(key, computed);
         } catch (Throwable error) {
             disableAfterFailure(context, error);
         }
@@ -201,25 +196,22 @@ public final class IceAndFirePathingBridge {
     }
 
     private static final class SearchContext {
-        private final Long2ObjectHashMap<PathNodeType> rawTypes =
-            new Long2ObjectHashMap<PathNodeType>(512, 0.65F, true);
-        private final Long2ObjectHashMap<IBlockState> blockStates =
-            new Long2ObjectHashMap<IBlockState>(512, 0.65F, true);
+        private PathSearchWorkspace workspace;
         private IceAndFireRawNodeAccessor processor;
         private IBlockAccess source;
         private boolean active;
 
         private void reset(IceAndFireRawNodeAccessor value, IBlockAccess access) {
-            rawTypes.clear();
-            blockStates.clear();
+            if (workspace != null) workspace.release();
+            workspace = PathSearchWorkspace.acquire(value, access);
             processor = value;
             source = access;
             active = true;
         }
 
         private void clear() {
-            rawTypes.clear();
-            blockStates.clear();
+            if (workspace != null) workspace.release();
+            workspace = null;
             processor = null;
             source = null;
             active = false;
@@ -227,16 +219,8 @@ public final class IceAndFirePathingBridge {
 
         private void disable() {
             active = false;
-            try {
-                rawTypes.clear();
-            } catch (Throwable ignored) {
-                FatalErrors.rethrowIfFatal(ignored);
-            }
-            try {
-                blockStates.clear();
-            } catch (Throwable ignored) {
-                FatalErrors.rethrowIfFatal(ignored);
-            }
+            if (workspace != null) workspace.release();
+            workspace = null;
         }
     }
 }

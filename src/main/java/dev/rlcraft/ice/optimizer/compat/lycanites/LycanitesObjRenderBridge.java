@@ -267,11 +267,15 @@ public final class LycanitesObjRenderBridge {
     private static boolean emit(GroupEntry entry, Vector4f color,
                                 Vector2f uvOffset, boolean vboStyle) {
         EarlyGlStateTracker.Snapshot state = EarlyGlStateTracker.snapshot();
-        int originalMode = EarlyMatrixStateTracker.currentMode();
         if (state == null || !state.hasDrawState() || !state.hasArrayBufferBinding()
             || state.getArrayBuffer() != 0 || state.getClientActiveTexture() != 0
-            || state.getProgram() != 0 || originalMode < 0) return false;
+            || state.getProgram() != 0) return false;
         boolean offset = uvOffset.x != 0.0F || uvOffset.y != 0.0F;
+        int originalMode = GL11.GL_MODELVIEW;
+        if (offset && !vboStyle) {
+            originalMode = EarlyMatrixStateTracker.currentMode();
+            if (originalMode < 0) originalMode = GL11.glGetInteger(GL11.GL_MATRIX_MODE);
+        }
         boolean textureModeSelected = false;
         boolean texturePushed = false;
         boolean issued = false;

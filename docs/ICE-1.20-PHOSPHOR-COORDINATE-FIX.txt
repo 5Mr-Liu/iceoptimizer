@@ -1,0 +1,78 @@
+ICE 1.20 修订 7：Phosphor 邻居坐标边界修复
+日期：2026-10-13
+
+用户再次报告崩溃，要求查因并修复。沿用不运行测试/游戏的要求，仅阅读
+日志与实际 JAR 字节码，修改源码、编译打包及核对制品内容。
+
+实际证据
+--------
+原游戏 crash-2026-10-13_22.52.13-server.txt：
+  Description: Exception ticking world
+  java.lang.ArrayIndexOutOfBoundsException: -1
+  LightingEngine.fetchNeighborDataFromCursor(LightingEngine.java:413)
+  calculateNewLightFromCursor -> processLightUpdates -> InControl 刷怪亮度查询
+  -> WorldEntitySpawner -> WorldServer.tick。
+原安装 JAR SHA256 为 B2A66E77B77EA680818966CDBEAA3A2A91D99024914AAFF5590761D2668631DE，
+与修订 6 一致。当前没有残留游戏进程，未启动或强制结束游戏。
+
+从实际 phosphor-1.12.2-0.2.6+build50-universal.jar 提取 LightingEngine.class，
+SHA256 为 FC016A86331B4F42AA40A4577F57B6F02ACA24863F3EEB5336CC2EA5460135C7，
+与当次启动日志 ICE 安装 phosphor-local-propagation 时报告的输入哈希完全一致。
+第 413 行是 getBlockStorageArray()[nPos.getY() >> 4]，不是地形 GPU 上传。
+原 decodeWorldCoord 对 y 使用 (packed >> 52) & 255，正常区段下标只能为 0..15。
+修订 6 中该旧光照优化仍把 decodeWorldCoord 换成 curPos 加方向，并直接把
+计算出的 y 用于区段数组下标，因此破坏了上述取值范围。
+
+边界失配的源码推导（不是本次执行的回归测试）
+------------------------------------------
+scheduleLightUpdate 不验证入参高度，直接将坐标编码入队。nextItem 对队列
+键解码到 curPos。以 y=256 的排队项为例，curPos.y 经过 8 位掩码变成 0；
+向下邻居在压缩键中减去 1<<52 后变为有效 y=255，原非法高度位检查允许继续。
+原路径解码邻居得到 255，区段下标 15；ICE 旧算法使用 0-1=-1，右移后仍为 -1，
+与此次异常的下标及发生行一致。下边界和压缩坐标进位也不能用普通整数偏移替代。
+日志未记录当时完整队列键，不能断言此次由哪个具体方块或 y=256 入参触发；
+但已确认 ICE 改写引入的坐标语义错误及与实际异常一致的可达路径。
+
+已有 PhosphorCrashFix-1.12.2-1.0.0.jar 也已检查。其 PhosphorSlicePatch 仅处理
+MixinChunk$Vanilla 的 ModifyVariable slice 注解，不修改 LightingEngine，也
+没有覆盖本次 ICE 坐标问题；无需移除它。
+日志 22:52:14 的 Already processing updates! 是随后停止服务/保存时再次进入
+未正常结束的光照更新流程，不将它误认成最先发生的保存或磁盘故障。
+
+修复
+----
+1. PhosphorLocalPropagationAdapter 保留原 decodeWorldCoord 调用和 packed 键
+   运算/非法邻居分支，从解码返回的 MutableBlockPos 提取 x/y/z 到方法局部变量。
+   保留返回对象供原 ASTORE 使用，之后的区段索引和光照查询复用这些坐标。
+2. 删除从 curPos 读取基坐标及加 X/Y/Z 偏移的改写，不再假设游标坐标加方向
+   等价于压缩键运算；同时移除 Bridge 中已经无用的方向数组。
+3. 原 chunk/section 查询、虚光照读取、传播队列、原方法副本和 F6 开关保留。
+   不通过吞异常、裁剪错误下标、跳过亮度更新或关闭全部 Phosphor 来掩盖问题。
+4. 更新已有结构检查的预期（现在必须保留 decodeWorldCoord，不依赖 curPos）；
+   既有行为夹具增加 -1/256/257 入参，并修正夹具游标为实际 nextItem 的解码结果。
+   这些测试文件本次没有编译或运行，不能称为回归测试通过。
+
+范围与限制
+----------
+这是早于地形修订的光照优化缺陷，本次仅修改 Phosphor adapter/bridge 与相关
+测试源码；修订 2..6 的地形渲染代码不改，默认开启和 F6 关闭/恢复语义保留。
+恢复每个邻居的原解码，可能牺牲此前预期的少量计算节省，正确坐标优先；
+没有新的 FPS、加载时间或崩溃消除的实测结论。
+没有新增游戏热路径追踪、性能门禁、光照缓存、异常回退或每帧扫描。
+不修改原游戏 mods/config/saves，不删除世界数据，不自动部署。
+退出并完整重启游戏后用新 JAR 生效，不能用 F6 热替换类补丁。
+
+编译命令：tools/build-native-terrain-candidate.ps1 -PackageOnly
+构建日志：build/fps-target/120-hotfix7-phosphor-build.log
+证据目录：build/fps-target/120-hotfix7-phosphor-evidence/
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix7-playtest.zip
+冻结记录：build/fps-target/120-hotfix7-release/。
+
+交付记录
+--------
+PackageOnly 构建成功，30 秒；没有运行自动测试、启动检查或游戏。
+JAR SHA256：B7E06766E5FD932ABB5398B4DC9F64F5BF1F77884E75D09DBE14F04748D319AC
+ZIP SHA256：7EF0A55045CA16AA1EF4766722CE0B56A859AD8215CEF465AC33F45F087A633E
+对比修订 6，仅 Phosphor adapter/bridge 逻辑改变，其余地形类全部相同。
+匿名 ClassWriter 内部类仅调试位置变化，反汇编方法指令/签名一致。
+体验包与标准 bundle 的 CRC、嵌入 JAR、INSTALL 和版本元数据核对通过。

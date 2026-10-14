@@ -1,0 +1,31 @@
+ICE 1.0.25 进入世界崩溃修复
+2026-10-10
+
+实际故障
+实例：D:\Program Files\Mcserver\rlcraftDregora\.minecraft\versions\RLCraft Dregora
+报告：crash-reports/crash-2026-10-10_20.30.10-server.txt
+安装的 Optimizer/Profiler 1.0.24 SHA-256 与上次构建产物完全一致。
+java.lang.VerifyError: Bad type on operand stack
+位置：ivorius.reccomplex.world.gen.feature.structure.MapGenStructureHook.func_75047_a(II)Z
+异常分支调用要求 ReflectiveOperationException，但转换后的 StackMapTable 声明该值为 java/lang/Object。
+发生于 InitMapGenEvent -> OTG ForgeWorld.provideWorldInstance -> WorldServer 初始化。
+
+原因与修复
+RecurrentReflectionAdapter 只需替换反射查找的等价调用，并在三个装饰事件辅助方法入口增加一个分支，但旧实现对整个类重新 COMPUTE_FRAMES，其 getCommonSuperClass 一律返回 Object。多异常捕获因此丢失异常公共父类，JVM 拒绝加载。
+新实现保留输入类全部精确栈帧，使用 COMPUTE_MAXS；三个新增入口分支各补一个与原入口状态一致的 F_SAME。没有关闭 RC 优化，也没有增加运行时自检/类扫描或回退条件。
+
+验证缺口修复
+之前 RC 集成测试只做 ASM BasicVerifier，没有对这两个类执行完整 JVM 方法验证。BasicVerifier 将引用按通用值处理，不能替代 JVM 的继承类型检查。
+新增测试先验证真实 RC 原类，再验证两个优化后类的全部声明方法和构造方法；逐方法比较原始帧，确认原异常处理类型保持。旧 Object 合并写法的负对照仍可通过 BasicVerifier，却准确复现日志中的 VerifyError。
+
+同批修改复核
+对事件模组、OTG、光照、声音、保存、纹理等相关目标做真实 JVM 类加载复核，具体结果保存在 .refactor-backups/1.0.25-frame-audit/。
+另外修复一处接入遗漏：LoadedChunkSnapshotAdapter 原来只识别无参数 Long2ObjectOpenHashMap()，实际 Forge 使用 Long2ObjectOpenHashMap(8192)。现在保留容量参数并构造跟踪 map，使 NuclearCraft 稳定区块集合快照能正确接入；与自动保存改写的串联验证一并覆盖。
+
+最终构建结果
+Gradle build、optimizerBundleZip 成功。1217 项测试中 1198 通过、19 项可选测试跳过、0 失败；安装包启动隔离 10 项全部通过。
+本次 RC 正/负对照、原始帧保持、真实 Forge 容量构造及保存串联测试均执行，未跳过。最终安装包内两个修复 adapter 的字节与本次已验证的编译产物一致。
+见 .refactor-backups/1.0.25-final/verification.json 与 .refactor-backups/1.0.25-final-build.log。
+核心 RC 证据：.refactor-backups/1.0.25-rc-verify/FINDINGS.txt。
+本次不改地形/纹理渲染算法；1.0.24 的原生图形验证范围仍记录于对应版本说明，不冒充本次重新实测。
+没有运行用户存档；离线 JVM 验证可覆盖本次明确的类型校验崩溃，但不等于完整整合包进入世界实测。

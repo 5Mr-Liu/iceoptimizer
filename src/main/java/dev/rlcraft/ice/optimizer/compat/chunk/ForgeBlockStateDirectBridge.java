@@ -46,6 +46,14 @@ public final class ForgeBlockStateDirectBridge {
         }
     }
 
+    public static int tryBlockLightOpacity(Object rawState, Object rawAccess, Object rawPosition) {
+        if (!OptimizerBridge.isEnabled(MODULE)) return INT_FALLBACK;
+        IBlockState state = (IBlockState) rawState;
+        int value = state.getBlock().getLightOpacity(state, (IBlockAccess) rawAccess, (BlockPos) rawPosition);
+        activateOnce();
+        return value;
+    }
+
     public static int tryDoesSideBlockRendering(Object rawState, Object rawAccess,
                                                 Object rawPosition, Object rawSide) {
         if (!OptimizerBridge.isEnabled(MODULE)) return BOOLEAN_FALLBACK;
@@ -62,7 +70,7 @@ public final class ForgeBlockStateDirectBridge {
     }
 
     private static void activateOnce() {
-        if (ACTIVATED.compareAndSet(false, true)) {
+        if (!ACTIVATED.get() && ACTIVATED.compareAndSet(false, true)) {
             OptimizerBridge.activate(MODULE,
                 "OptiFine 区块光照与侧面遮挡已改为等价 Forge 虚调用，移除 Object[]/Method.invoke");
         }

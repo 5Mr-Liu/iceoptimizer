@@ -13,12 +13,16 @@ def optionalTestInputs = [
     ichunUtilJar: 'ice.ichunutil.jar', oreLibJar: 'ice.orelib.jar',
     betterFoliageJar: 'ice.betterfoliage.jar', betterCavesJar: 'ice.bettercaves.jar',
     qualityToolsJar: 'ice.qualitytools.jar', quarkJar: 'ice.quark.jar',
+    potionCoreJar: 'ice.potioncore.jar', rltweakerJar: 'ice.rltweaker.jar',
     betterFoliageRuntimeClass: 'ice.betterfoliage.runtimeClass', dynamicTreesJar: 'ice.dynamictrees.jar',
     otgJar: 'ice.otg.jar', chunkAnimatorJar: 'ice.chunkanimator.jar',
+    ivToolkitJar: 'ice.ivtoolkit.jar', recurrentComplexJar: 'ice.recurrent.jar',
     dregoraDiscoveryDir: 'ice.dregora.discoveryDir', dregoraModsDir: 'ice.dregora.modsDir',
     dregoraSrpJar: 'ice.dregora.srp.jar', dregoraLycanitesJar: 'ice.dregora.lycanites.jar',
     dregoraRenderLibJar: 'ice.dregora.renderlib.jar', dregoraFoliageJar: 'ice.dregora.foliage.jar',
-    dregoraIceAndFireJar: 'ice.dregora.iceandfire.jar'
+    dregoraIceAndFireJar: 'ice.dregora.iceandfire.jar',
+    serverModsDir: 'ice.server.mods', soundfiltersJar: 'ice.soundfilters.jar',
+    phosphorJar: 'ice.phosphor.jar', nothiriumJar: 'ice.nothirium.jar'
 ]
 test {
     dependsOn earlyClasses, hooksClasses, profilerClasses

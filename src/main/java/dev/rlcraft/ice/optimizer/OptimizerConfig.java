@@ -73,6 +73,7 @@ public final class OptimizerConfig {
         @Config.Comment("Select SRP's nearest non-player target in linear time instead of sorting the whole private list.")
         public boolean srpTargetSearch = true;
 
+        @Config.Comment("Reuse identical Heblu cosine expressions within one pose calculation, preserving limb arithmetic.")
         public boolean srpPoseCache = true;
         public boolean srpParticleCollision = true;
 
@@ -81,6 +82,45 @@ public final class OptimizerConfig {
             "Result order and all dynamic SRP state checks remain unchanged."
         })
         public boolean srpSpawnFilter = true;
+
+        @Config.Comment("Count SRPMixins mob-cap categories in one entity traversal per handler invocation.")
+        public boolean srpMobCap = true;
+
+        @Config.Comment("Cache pure SRPMixins infestation name-rule results, including non-matches.")
+        public boolean srpInfestationCache = true;
+
+        @Config.Comment("Reuse scan coordinates and select the nearest SRP light source in one pass.")
+        public boolean srpLightSearch = true;
+
+        @Config.Comment("Compile SRP weakness rules while preserving duplicate rule order and individual float multiplications.")
+        public boolean srpWeaknessRules = true;
+
+        @Config.Comment("Allocate translated entity collision boxes only after an intersection is found.")
+        public boolean entityCollisionBoxes = true;
+
+        @Config.Comment("Reuse RLTweaker nearest-query candidate storage while preserving query and selection callback order.")
+        public boolean entityNearestQuery = true;
+
+        @Config.Comment("Compare equipment NBT recursively in one pass when compound key order matches.")
+        public boolean vanillaEquipmentNbt = true;
+
+        @Config.Comment("Read PotionCore entity NBT values with one lookup while preserving event ordering.")
+        public boolean potionCoreNbt = true;
+
+        public boolean otgBo3Execution = true;
+        @Config.Comment("Legacy registration hook retained for compatibility; files are now read only by the on-demand OTG cache.")
+        public boolean otgObjectPreparation = true;
+        public boolean otgColumnQueries = true;
+        public boolean recurrentReflection = true;
+        public boolean phosphorLocalPropagation = true;
+        public boolean librarianCapabilityQuery = true;
+        public boolean levelupProcessorSnapshot = true;
+        public boolean nuclearcraftRadiationSnapshot = true;
+        public boolean fishingBiomeQuery = true;
+        public boolean srpArchitectQuery = true;
+        public boolean nbtConstantKeys = true;
+        public boolean soundFilters = true;
+        public boolean vanillaAutosaveSlices = true;
 
         @Config.Comment({
             "Reserve CPU capacity for the client and integrated-server main threads instead of letting",
@@ -114,8 +154,8 @@ public final class OptimizerConfig {
         public boolean rusticLatticeStateCache = true;
 
         @Config.Comment({
-            "During one synchronous full save, index the unchanged scheduled-tick sets once per mutation version.",
-            "Chunk order, tick order, NBT content, save timing and all world writes remain on the original server thread."
+            "Maintain ordered per-chunk scheduled-tick buckets at collection mutation time.",
+            "Saving queries use the current index directly; removal queries preserve the original path and ordering."
         })
         public boolean vanillaSaveTickIndex = true;
 
@@ -213,6 +253,15 @@ public final class OptimizerConfig {
         @Config.Comment("Reuse OTG BO4 block arrays inside one spawn and precompute immutable column offsets while loading a BO4.")
         public boolean otgBo4Layout = true;
 
+        @Config.Comment("Clear only the requested biome-layer rectangle in OTG's reused arrays; retain the original pool and synchronization.")
+        public boolean otgBiomeArrayClear = true;
+
+        @Config.Comment("Reuse exact IvToolkit field values at repeated coordinates within one Recurrent Complex cloud build.")
+        public boolean recurrentCloudField = true;
+
+        @Config.Comment("Reuse candidate and weight arrays in Recurrent Complex ruin interpolation, preserving calculation order.")
+        public boolean recurrentValueWorkspace = true;
+
         @Config.Comment({
             "Cache only fully and stably read OTG settings and BO3 tile-entity NBT blueprints.",
             "Every hit revalidates canonical path, size, modification time, file key and OTG configuration generation;",
@@ -254,13 +303,36 @@ public final class OptimizerConfig {
 
         @Config.Comment({
             "Enable the complete capability-tested modern OpenGL hybrid renderer.",
-            "This switch never selects a backend by hardware model. Each subsystem still requires",
-            "its own self-test, output validation, paired benefit measurement and circuit breaker."
+            "Backends are selected by supported operations, not hardware model.",
+            "Entity and tile-entity backends require output validation and a measured benefit over original drawing.",
+            "Requires restart: disabling the renderer also omits its dedicated bytecode hooks."
         })
+        @Config.RequiresMcRestart
         public boolean modernRenderer = true;
+
+        @Config.Comment({
+            "Use ICE's own resident terrain renderer without an external rendering mod.",
+            "Enabled by default, including the first launch and older configs without this setting.",
+            "Owns terrain storage and submission directly, without legacy VBO copies or runtime sampling.",
+            "Requires OpenGL 4.3 and a restart; shader packs are not yet supported by this candidate."
+        })
+        @Config.RequiresMcRestart
+        public boolean nativeTerrainRenderer = true;
 
         public boolean modernFrameCoordinator = true;
         public boolean modernTerrainBackend = true;
+        @Config.Comment("Use ordered terrain face ranges with shared region transforms. The legacy config key is retained for compatibility. Requires restart.")
+        @Config.RequiresMcRestart
+        public boolean terrainShaderBatching = true;
+        @Config.Comment("Skip back-facing groups of known one-sided solid terrain quads.")
+        @Config.RequiresMcRestart
+        public boolean terrainDirectionalCulling = true;
+        @Config.Comment("Conservatively cull fully occluded solid meshes using current-view software depth before ordered terrain draws.")
+        @Config.RequiresMcRestart
+        public boolean terrainSoftwareOcclusion = true;
+        @Config.Comment("Batch supported model parts with a GPU pose palette. Requires restart.")
+        @Config.RequiresMcRestart
+        public boolean modelPoseBatching = true;
         public boolean modernVisibilityHzb = true;
         public boolean modernEntityBackend = true;
         public boolean modernTesrBackend = true;

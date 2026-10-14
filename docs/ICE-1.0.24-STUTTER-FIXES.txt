@@ -1,0 +1,57 @@
+ICE 1.0.24 剩余卡顿修复与验证
+2026-10-10
+
+范围
+实现 ICE-REMAINING-STUTTERS-20261010.txt 中能够保持游戏行为的直接优化与调度改造。
+原记录属于 1.0.20，不能当作 1.0.24 的游戏效果验证。这个版本尚未测量新游戏 FPS、P95/P99 或服务器 tick 改善幅度。
+不增加运行时收益检测、试跑、静止条件、冷却、自动停用或定期全量重建。F6 和用户配置仍是显式开关；生命周期失效、原虚调用及字节码接入匹配保留。
+
+世界生成与光照
+1. BO3：直接使用配置中的坐标、材料、随机方块数组，复制本次生成所需快照到可重入工作区，选择与挤出只保存整数索引；不再为普通生成逐格物化 BO3BlockFunction 对象。原方块回调、sourceMaterial 判断、坐标与 RNG 顺序保持。
+2. OTG 注册：在真实全局/世界对象索引完成边界，预读已注册文本和分支/继承关联的 NBT 元数据到有界不可变缓存。消费者得到独立 NBT 树。注册可能本身是惰性的，提前读取会增加注册工作；它不等于预生成区块，也不能保证所有首次生成成本消失。
+3. OTG 列缓存：修复填充数组与缓存数组不一致，以及 BlockPos2D 有 equals 却没有 hashCode 的问题；改用坐标 long 键，随预览区块替换/淘汰/正式加载清理对应列。已经加载的可变区块读取实时状态。
+4. RC：固定反射方法复用绑定；装饰事件的类方法及缺失结果放入 ClassValue。每次 invoke 与事件结果仍由原入口处理。
+5. Forge 方块光照 opacity 改用同签名 Block 虚调用，避免反射参数数组；自定义方块实现仍实时执行。
+6. Phosphor：一个实际邻居填充复用已经解码的当前位置和六方向偏移，传递邻居局部坐标，减少六次 packed 坐标解码及重复 getter。已有邻居缓存有效时直接返回；没有新增可变光照或 section 缓存。
+
+持续世界事件
+7. Lycanites：一次扫描只取一次上下文并传入内循环；Block 身份成员表随配置列表变更失效；世界类型分类移出逐格循环。原坐标枚举、排序、随机数及自定义 isValidBlock 虚调用保持。
+8. SRP Architect：直接读取 Minecraft 原本维护的 section 类桶，首次登记后复用实时稀疏桶，省去每 section 的 Iterable 与重复 known-class 查询。仍按原顺序取得完整候选并执行原药水/光照判断。
+9. LibrarianLib：ClassValue 复用规范接口名，直接遍历接口并读取当前 providers，去掉临时列表和重复 intern。
+10. LevelUp：可重入处理器快照替代 stream/collect；保留原 filter/map 能力查询、IProcessor 转型和先完整选择再处理的顺序。原 spliterator 保留集合在回调中变化时的 CME 行为。
+11. NuclearCraft：保留 fastutil 原 map 及其迭代顺序，在 map/视图实际变化时失效 Chunk[]；稳定区块集合不再每 tick 全量 toArray。实体与 tile 快照使用有正确长度的独立工作区，回调中的变更不会改写当前快照。
+12. FishingMadeBetter：共享类型名快照；本次 regenerateInitialFishes 通过固定坐标槽位和位图惰性复用生物群系，重复原点共享槽 0，标准 Chunk 最多查询 7 个坐标。原规则、提前返回及随机顺序保留；自定义 Chunk 的虚查询继续按原次数和次序执行。
+13. NormalStringPool：六个 Anvil 字面量键在其原 Internal 实例生命周期内复用 canonical 引用；动态键和新池仍走原规则。
+
+客户端帧时间
+14. 物品头颅：TileEntityItemStackRenderer 的资料补全接入已有 SkullProfileBridge，保留 SkullOwner 写回。默认资料策略和异步模式均不在绘制线程等待网络；用户显式选择的 allowIncomplete=true、async=false 同步模式保持。
+15. FoamFix 动画：经过现有版本审计的 CPU 上传路径接入 atlas 命令流，多个 mip 组成一条 sprite 命令，连续命令共享 PBO 批次/fence；可变插值数组在重用前复制到计入预算的复用缓冲。保留 maxMips、mipFilter、blur/clamp、实际像素和 OptiFine mip 类型；离屏补帧同样保存这些参数。FoamFix 自有 GPU copy 路径保留原边界。
+16. SoundFilters：整数坐标成员索引替代房间 frontier 的线性 contains，复用搜索数组，保留随机下标删除的顺序。EFX 仅跳过相同标量值；生成新 native 对象时重置，效果槽提交仍逐次执行。
+17. ICE 可见性遍历：方向直接存 byte，稳定 ABI/区块索引在建立时确认，移除内循环重复的类型、索引、容量与位掩码范围认证；保留原 frustum、重复访问标记及动态可见性读取顺序，移动和转视角不关闭优化。
+18. F6：不再调用 loadRenderers 删除全部地形网格。暂停时保留 ICE arena 内网格，用普通逐项绘制读取；新更新交给普通 VBO，旧范围继续退休。恢复时可混合已有 arena 与外部 VBO，避免切换造成全场重建。模型资源也保留。
+
+保存
+19. 计划刻：在 TreeSet/List 实际变更时维护有序区块桶，去掉 first-query defer、全表版本重建与临时 full-save scope。查询直接取当前桶；remove=true 保留原移除行为，集合迭代器、视图、clone 和非结构性 set 的合同已覆盖。
+20. 普通自动保存：只改服务器周期保存入口。接收当时已加载区块引用，以每 tick 至少 24 个、根据剩余期限增加处理量的方式，在最多 100 个允许保存的 tick 内完成。主线程逐块构造快照并执行原保存回调。
+    显式完整保存、卸载和退出保持完整处理；显式增量保存/flush 先完成已接收的工作。F6 暂停在下一可保存 tick 收尾，不遗弃队列。区块替换/卸载后不会再用旧引用覆盖当前区块。
+    这是调度改变：ChunkDataEvent/save 快照分散到对应处理 tick；世界级保存事件仍在原周期。它降低一次性集中工作，不承诺减少全部序列化工作或提升平均 FPS。
+    周期保存意图在 server/world/provider 的确切调用入口即被消费；模组回调中显式保存本维度或另一个维度均立即完整执行。
+
+原方案经真实代码核对后的调整
+- 没有取消 OTG 的 Chunk 构造/转换：构造本身触发 Forge 能力附加回调，直接挪走会改变事件语义。此次修复可复用列及生命周期，而非删除这些回调。
+- Phosphor 保留每次真实 section/chunk 查询：动态虚光照回调能够替换 section；跨回调缓存会读旧数据。优化坐标计算，不宣称重写整套光照引擎。
+- SRP 直接复用原类桶，没有另建常驻实体索引；候选 List 保留原生命周期，扩展 Chunk 可能持有它，不能随意清空回池。
+- Lycanites 不缩小合法扫描体积，否则可能改变候选及 RNG 顺序。
+- SoundSystem 队列锁覆盖真实命令和库状态，没有删除。旧记录缺少 monitor owner，不能把房间搜索优化说成已消除全部声音锁等待。
+- 没有运行 OTG 预生成、长期驻留大量区块、更改 AI/感染/刷怪频率或调高游戏堆上限。
+
+验证
+最终 Gradle build、optimizerBundleZip 成功：1213 项测试中 1194 通过、19 跳过、0 失败；安装包启动隔离 10 项全部通过。
+跳过项需要未提供的其它版本模组/发现快照或符号链接环境。本次新增真实 JAR 集成、保存重入与纹理提交回归均执行并通过。SRP Dregora v1.9.21 使用其独立 Dregora 样本测试，未冒充旧 SRP 指纹样本。
+四组原生 OpenGL 检查全部通过。纹理队列满载后模拟 fence 故障的行为测试证明先提交已有前缀、再交还当前上传；恢复旧的错误重试条件时同一测试按预期失败。共享预算拒绝不会丢弃已接受命令。
+离线真实 JAR 转换、算法差分、完整构建和安装包启动隔离的最终计数见：
+.refactor-backups/1.0.24-final/verification.json
+构建日志：.refactor-backups/1.0.24-final-build.log
+独立算法证据：.refactor-backups/1.0.24-worldgen/、1.0.24-server-mods/、1.0.24-save-client/。
+原生 OpenGL 检查：F6 前后像素和网格所有权、暂停期间替换和混合绘制；真实 FoamFix + OptiFine G5 TextureUtil 的 mip 像素/参数对照，含重用插值数组、流式/持久映射和小批次原调用，整批共用一个 fence。
+这些检查证明接入与行为一致，不等于游戏 FPS 基准。未启动游戏或替换实例 mods。

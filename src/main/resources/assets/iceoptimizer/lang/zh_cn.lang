@@ -1,0 +1,5 @@
+key.categories.iceoptimizer=ICE 优化
+key.iceoptimizer.toggle_optimizations=暂停/恢复 ICE 优化
+message.iceoptimizer.paused=§e[ICE] 优化已关闭，地形正在重建；F6 恢复
+message.iceoptimizer.resumed=§a[ICE] 已按原配置恢复优化
+message.iceoptimizer.toggle_unavailable=§c[ICE] 未完成切换，当前状态保持不变

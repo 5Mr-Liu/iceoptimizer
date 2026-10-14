@@ -26,7 +26,7 @@ public final class ChunkSaveCompressionAdapterTest {
         try {
             verify(jar, "net.minecraft.world.chunk.storage.AnvilChunkLoader",
                 new ChunkSaveCompressionAdapter(ChunkSaveCompressionAdapter.Part.ANVIL_PIPELINE),
-                "schedule", "tryWrite");
+                "publish", "tryWrite");
             verify(jar, "net.minecraft.world.chunk.storage.RegionFile",
                 new ChunkSaveCompressionAdapter(ChunkSaveCompressionAdapter.Part.REGION_RAW_WRITE),
                 "createDeflaterStream", ChunkSaveCompressionAdapter.RAW_ACCESS_METHOD);

@@ -11,7 +11,13 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.invoke.LambdaMetafactory;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.BitSet;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BufferBuilder;
 import net.minecraft.client.renderer.Tessellator;
@@ -49,8 +55,20 @@ public final class AnimatedTextureVisibilityBridge {
             }
         };
     private static volatile boolean coreBridgeInstalled;
+    private static final ThreadLocal<TerrainSprites> TERRAIN_SPRITES =
+        ThreadLocal.withInitial(TerrainSprites::new);
 
     private AnimatedTextureVisibilityBridge() {
+    }
+
+    /** Java-only callbacks can cross the core/runtime classloader boundary.
+     * Their concrete lambda targets are inlineable, unlike a mutable handle trampoline. */
+    public static Object[] visibilityCallbacks() {
+        return new Object[] {
+            (BiConsumer<Object, Object>) AnimatedTextureVisibilityBridge::terrainChunk,
+            (BiConsumer<Object, Object>) AnimatedTextureVisibilityBridge::terrainDraw,
+            (Consumer<Object>) AnimatedTextureVisibilityBridge::bufferDraw
+        };
     }
 
     public static synchronized boolean installCoreBridge() {
@@ -86,8 +104,7 @@ public final class AnimatedTextureVisibilityBridge {
         SpriteVisibilityTracker tracker = tracker(runtime);
         if (tracker == null) return;
         try {
-            Object compiled = renderChunk == null ? null
-                : RENDER_CHUNKS.get(renderChunk.getClass()).compiled(renderChunk);
+            Object compiled = compiled(renderChunk);
             CompiledChunkAccess access = compiled == null ? null
                 : COMPILED_CHUNKS.get(compiled.getClass());
             boolean supported = access != null && access.supported();
@@ -123,6 +140,10 @@ public final class AnimatedTextureVisibilityBridge {
             unknown(runtime, tracker);
             return;
         }
+        TerrainSprites union = TERRAIN_SPRITES.get();
+        // A catch-up callback may reenter a draw. It must not clear the outer union.
+        if (union.inUse) union = new TerrainSprites();
+        union.inUse = true;
         try {
             java.util.List<RenderChunk> chunks =
                 ((TerrainRenderListAccessor) container).ice$renderChunks();
@@ -135,27 +156,44 @@ public final class AnimatedTextureVisibilityBridge {
             // order used by the immediately following terrain emitter.
             for (int index = 0, size = chunks.size(); index < size; index++) {
                 Object renderChunk = chunks.get(index);
-                Object compiled = renderChunk == null ? null
-                    : RENDER_CHUNKS.get(renderChunk.getClass())
-                        .compiled(renderChunk);
+                Object compiled = compiled(renderChunk);
                 CompiledChunkAccess access = compiled == null ? null
                     : COMPILED_CHUNKS.get(compiled.getClass());
                 boolean supported = access != null && access.supported();
-                tracker.observeTerrainSource(supported);
                 if (!supported) {
+                    tracker.observeTerrainSource(false);
                     unknown(runtime, tracker);
                     return;
                 }
                 BitSet sprites = access.animated(compiled, layer);
-                if (sprites != null) mark(runtime, tracker, sprites);
+                if (sprites != null) {
+                    // Bound retained scratch even if an unknown mod supplies a sparse index.
+                    if (sprites.length() <= 65536) union.indices.or(sprites);
+                    else mark(runtime, tracker, sprites);
+                }
             }
+            if (!chunks.isEmpty()) tracker.observeTerrainSource(true);
+            if (!union.indices.isEmpty()) mark(runtime, tracker, union.indices);
             reportFailure(runtime, tracker);
         } catch (Throwable error) {
             FatalErrors.rethrowIfFatal(error);
             tracker.observeTerrainSource(false);
             unknown(runtime, tracker);
             failure(runtime, error);
+        } finally {
+            union.indices.clear();
+            union.inUse = false;
         }
+    }
+
+    private static Object compiled(Object chunk) throws ReflectiveOperationException {
+        if (chunk instanceof RenderChunk) return ((RenderChunk) chunk).getCompiledChunk();
+        return chunk == null ? null : RENDER_CHUNKS.get(chunk.getClass()).compiled(chunk);
+    }
+
+    private static final class TerrainSprites {
+        private final BitSet indices = new BitSet();
+        private boolean inUse;
     }
 
     /** Called before Tessellator resets its BufferBuilder metadata. */
@@ -359,19 +397,35 @@ public final class AnimatedTextureVisibilityBridge {
 
     private static final class CompiledChunkAccess {
         private final Method animated;
+        private final BiFunction<Object, Object, Object> direct;
         private CompiledChunkAccess(Class<?> type) {
             animated = method(type, new String[] {"getAnimatedSprites"},
                 BitSet.class, BlockRenderLayer.class);
+            direct = bind(animated);
         }
         private boolean supported() {
             return animated != null;
         }
         private BitSet animated(Object compiled, Object layer)
             throws ReflectiveOperationException {
-            if (!supported() || layer == null
-                || !animated.getParameterTypes()[0].isInstance(layer)) return null;
-            Object value = animated.invoke(compiled, layer);
-            return value instanceof BitSet ? (BitSet) value : null;
+            if (!(layer instanceof BlockRenderLayer)) return null;
+            if (direct != null) return (BitSet) direct.apply(compiled, layer);
+            return (BitSet) animated.invoke(compiled, layer);
+        }
+        @SuppressWarnings("unchecked")
+        private static BiFunction<Object, Object, Object> bind(Method method) {
+            if (method == null) return null;
+            try {
+                MethodHandles.Lookup lookup = MethodHandles.lookup();
+                return (BiFunction<Object, Object, Object>) LambdaMetafactory.metafactory(
+                    lookup, "apply", MethodType.methodType(BiFunction.class),
+                    MethodType.methodType(Object.class, Object.class, Object.class),
+                    lookup.unreflect(method), MethodType.methodType(BitSet.class,
+                        method.getDeclaringClass(), BlockRenderLayer.class)).getTarget().invokeExact();
+            } catch (Throwable unavailable) {
+                FatalErrors.rethrowIfFatal(unavailable);
+                return null; // Unusual classloader/access rules retain the exact reflection path.
+            }
         }
     }
 
@@ -388,9 +442,8 @@ public final class AnimatedTextureVisibilityBridge {
             return animated != null || animatedField != null;
         }
         private BitSet animated(Object buffer) throws ReflectiveOperationException {
-            Object value = animated != null ? animated.invoke(buffer)
-                : animatedField == null ? null : animatedField.get(buffer);
-            return value instanceof BitSet ? (BitSet) value : null;
+            return (BitSet) (animated != null ? animated.invoke(buffer)
+                : animatedField.get(buffer));
         }
     }
 }

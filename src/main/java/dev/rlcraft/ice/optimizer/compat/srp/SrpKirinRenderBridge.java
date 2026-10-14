@@ -5,6 +5,7 @@ import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker;
 import dev.rlcraft.ice.optimizer.compat.model.ModelMeshCaptureBridge;
+import dev.rlcraft.ice.optimizer.compat.model.ModelStateBatchBridge;
 import dev.rlcraft.ice.optimizer.compat.renderlib.RenderLibRenderBridge;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
@@ -77,7 +78,9 @@ public final class SrpKirinRenderBridge {
                 if (entry.batchCount == 0) return false;
 
                 renderStarted = true;
-                renderNode(entry.root, scale);
+                boolean scoped = ModelStateBatchBridge.begin(root);
+                try { renderNode(entry.root, scale); }
+                finally { if (scoped) ModelStateBatchBridge.end(); }
             }
             if (!activated) {
                 activated = true;
@@ -105,7 +108,7 @@ public final class SrpKirinRenderBridge {
         Counter counter = new Counter();
         IdentityHashMap<ModelRenderer, Boolean> activePath = new IdentityHashMap<ModelRenderer, Boolean>();
         NodeRecord record = captureRecord(root, counter, activePath);
-        return record == null ? null : new RootEntry(root, record, counter.value, generation);
+        return record == null ? null : new RootEntry(record, counter.value, generation);
     }
 
     private static NodeRecord captureRecord(ModelRenderer node, Counter counter,
@@ -554,22 +557,19 @@ public final class SrpKirinRenderBridge {
     }
 
     private static final class RootEntry {
-        private final ModelRenderer identity;
         private final NodeRecord root;
         private final int nodeCount;
         private final long contextGeneration;
         private long calls;
         private int batchCount;
 
-        private RootEntry(ModelRenderer identity, NodeRecord root, int nodeCount, long contextGeneration) {
-            this.identity = identity;
+        private RootEntry(NodeRecord root, int nodeCount, long contextGeneration) {
             this.root = root;
             this.nodeCount = nodeCount;
             this.contextGeneration = contextGeneration;
         }
 
         private boolean refresh() throws IllegalAccessException {
-            if (root.node != identity) return false;
             calls++;
             return root.refresh();
         }

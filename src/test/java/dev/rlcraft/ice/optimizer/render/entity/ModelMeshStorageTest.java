@@ -21,6 +21,44 @@ import java.util.Map;
 import org.junit.Test;
 
 public final class ModelMeshStorageTest {
+    @Test public void admissionProgressCollectsReusableRangesWithoutReattemptingUploads() {
+        Fixture fixture = new Fixture(192);
+        ModelMeshStorage.Allocation first = fixture.allocate();
+        fixture.allocate();
+        long before = fixture.storage.admissionProgress();
+        assertNull(fixture.storage.allocate(96, fixture.stamp));
+        assertTrue(fixture.storage.lastAllocationBlockedByCapacity());
+        assertFalse(fixture.storage.lastAllocationChangedBinding());
+        assertEquals(before, fixture.storage.admissionProgress());
+        fixture.storage.retire(first);
+        assertEquals(before, fixture.storage.admissionProgress());
+        fixture.driver.fences.get(0).signaled = true;
+        assertEquals(before + 1, fixture.storage.admissionProgress());
+        assertEquals(1, fixture.driver.creates);
+        assertNotNull(fixture.storage.allocate(96, fixture.stamp));
+        assertEquals(1, fixture.driver.creates);
+    }
+
+    @Test public void vertexArrayBelongsToSharedPageAndRetiresWithLastPart() {
+        Fixture fixture = new Fixture(192L
+            + ResourceLedger.nativeObjectCharge(RenderResourceKind.VERTEX_ARRAY));
+        ModelMeshStorage.Allocation first = fixture.allocate();
+        ModelMeshStorage.Allocation second = fixture.allocate();
+        dev.rlcraft.ice.optimizer.render.resource.RenderHandle vao =
+            fixture.ledger.registerReservedObject(RenderResourceKind.VERTEX_ARRAY, 77,
+                1, 1, fixture.ledger.reserveNativeObject(RenderResourceKind.VERTEX_ARRAY));
+        assertNotNull(vao);
+        first.vertexArray(vao);
+        assertSame(vao, second.vertexArray());
+        fixture.storage.retire(first);
+        assertTrue(fixture.ledger.isLive(vao));
+        fixture.storage.retire(second);
+        assertFalse(fixture.ledger.isLive(vao));
+        assertEquals(2, fixture.ledger.snapshot().getRetired());
+        assertEquals(0, fixture.storage.pageCount());
+        assertNull(first.vertexArray());
+    }
+
     @Test public void partsShareOnePageWithIndependentVertexOffsetsAndIdentities() {
         Fixture fixture = new Fixture(192);
         ModelMeshStorage.Allocation first = fixture.allocate();

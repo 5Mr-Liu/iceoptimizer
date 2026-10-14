@@ -1,0 +1,67 @@
+ICE 1.20 修订 3：编译层标记与驻留网格衔接
+日期：2026-10-13
+
+用户本次要求：查明并修复，不运行测试，由用户实机验证。
+本次仅编译、重映射和打包，不启动游戏，不运行自动测试或启动检查。
+旧的测试结果仍留在 build 下，不能引用为修订 3 的验证结果。
+
+崩溃证据
+--------
+原游戏 crash-reports/crash-2026-10-13_21.34.36-client.txt：
+IllegalStateException: ICE visible terrain has no resident mesh
+NativeTerrainDrawQueue.add:39 -> add:26 -> NativeTerrainVisibility.State.traverse:106
+-> RenderGlobal.setupTerrain。
+已安装的 JAR SHA256 为
+0D00E411AA9990F5F27FE832FD50DD21CACC183E66CE47CF3F39F71384943321，
+确认属于刚发布的修订 2，不是安装了旧版本。
+这是绘制队列异常，与上一轮空上传的 28 字节布局异常位置不同。
+报告没有给出缺失网格的具体层和更新序列，不声称已确定该次完整时序。
+
+源码依据
+--------
+原版/Forge RenderChunk 依据方块 renderer 返回值汇总 setLayerUsed，
+它不等价于该层上传时必定有非零顶点。
+ChunkRenderWorker 分层上传，通过 allAsList 成功回调发布 CompiledChunk；
+单层上传/释放和整块编译记录是不同的状态。
+NativeTerrainRenderer.Section.activeMask 来自 CompiledChunk.isLayerEmpty；
+residentMask 只在渲染线程随着实际 Mesh 的 put/remove 更新。
+修订 2 已正确处理零顶点：释放旧 Mesh、清零 VBO 顶点数。
+但绘制队列仍只读 activeMask，假设每个标记层一定有 Mesh，
+合法的“标记已使用、实际没有顶点”或分层替换状态就会触发此次异常。
+
+修复
+----
+NativeTerrainDrawQueue.add(Section) 改用 activeMask & residentMask。
+只把编译记录允许且实际存在的网格加入队列，保留原有层内顺序。
+空网格不产生绘制命令；未驻留层随后上传后，由已有的 drawQueueDirty
+与 framePrepared 失效流程重新收集，不永久屏蔽该层。
+仅处于非激活状态的旧驻留网格仍被 activeMask 排除。
+保留 residentMask 指示存在但 Mesh 却为 null 时的内部一致性异常，
+没有捕获异常后继续运行、加入旧渲染回退、降低画质或改变玩法。
+没有新增每帧日志、探针、状态缓存或性能门禁。
+上一轮空上传修复、F6 先取消再等待、区块对象复用均保留。
+
+构建与进程处理
+--------------
+用户崩溃后的原客户端 PID 30760 仍停留在错误界面。
+按此前“先停止游戏再构建”的要求发送正常关闭请求后，进程仍残留；
+线程栈确认客户端在 Minecraft.displayCrashScreen，且无 Server thread，
+随后仅终止该已确认的残留客户端，没有启动任何新的游戏 JVM。
+未修改原游戏的 mods、config、options 或存档文件，未部署新 JAR。
+tools/build-native-terrain-candidate.ps1 增加 -PackageOnly，只请求
+optimizerBundleZip；未执行 build/test/verifyArtifactStartup。
+首次脚本单项任务数组被 PowerShell 展开为字符，Gradle 报 Task 'o'
+ambiguous；修正为显式数组后重新编译，保留第一次失败日志供追溯。
+最终构建日志：build/fps-target/120-hotfix3-resident-mask-build-final.log。
+
+本次无实机或自动测试结果，不承诺已经排除所有崩溃或卡顿。
+版本仍为 ICE 1.20，Minecraft 仍为 1.12.2，体验 ZIP 使用 hotfix3 区分。
+默认开启、F6 关闭/恢复当前启用模块、分析器由用户自行清理的约定不变。
+
+构建成功，27 秒；未运行任何测试任务。
+与修订 2 的 JAR 比较，仅 NativeTerrainDrawQueue.class 改变。
+JAR SHA256：7A8A7D5CEAB8E02F2957EDF3C1BFC392395AAF565D8B129F11FD146BAF6C3267
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix3-playtest.zip
+ZIP SHA256：9FB5ED0EF05FE422A8386911A290BA5160043559A363A184D3C548B3093CE578
+用户包和标准 bundle 的 CRC、版本元数据、嵌入 JAR 与安装说明一致。
+归档完整性检查不代表游戏功能验证。冻结目录：build/fps-target/120-hotfix3-release/。

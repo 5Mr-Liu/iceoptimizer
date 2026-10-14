@@ -78,7 +78,7 @@ public final class LwjglCapabilitySelfTest implements CapabilitySelfTest {
             boolean buffer = testBuffer(result, capabilities, budget);
             boolean framebuffer = testFramebuffer(result, capabilities, budget);
             testFence(result, capabilities, budget);
-            boolean timer = testTimer(result, capabilities, budget);
+            testTimer(result, capabilities, budget);
 
             if (!capabilities.OpenGL20) {
                 failPrerequisite(result, ModernCapability.SHADER_PROGRAM,
@@ -161,9 +161,9 @@ public final class LwjglCapabilitySelfTest implements CapabilitySelfTest {
                     "delegated_pbo_probe");
             }
 
-            if (!framebuffer || !timer || !capabilities.OpenGL30) {
+            if (!framebuffer || !capabilities.OpenGL30) {
                 failPrerequisite(result, ModernCapability.CONSERVATIVE_HZB,
-                    "offscreen framebuffer, timer query, and OpenGL 3.0 proofs required");
+                    "offscreen framebuffer and OpenGL 3.0 proofs required");
             } else {
                 LwjglConservativeDepthReducer.SelfTestResult hzb =
                     LwjglConservativeDepthReducer.selfTestResult(budget);

@@ -1,0 +1,92 @@
+Build13 rejected experiment — independently implemented float support products
+
+References read locally (2026-10-13)
+- Captured OptiFine G5 + RenderLib ClippingHelper, disassembly in
+  build/fps-target/130-clipping-helper-bytecode.txt.
+- RenderLib-main/src/main/java/meldexun/renderlib/mixin/MixinClippingHelper.java
+  only replaces ordinary isBoxInFrustum, using a double maximum support vertex.
+- RenderLib util/Frustum.java and Nothirium AbstractChunkRenderer.java use a
+  support vertex for intersection and call frustum culling during traversal.
+  Their intersection rule cannot replace OptiFine's mixed Fully semantics.
+No third-party implementation or class is copied into the production artifact.
+
+OptiFine Fully semantics
+After disabled short-circuits, narrow all six coordinates to float. For each
+corner, evaluate ((px*x + py*y) + pz*z) + pw in that exact order. In planes
+0..3 any distance <= 0 rejects. In planes 4..5 all distances <= 0 reject.
+NaN <= 0 is false; replacing !(distance <= 0) by distance > 0 is incorrect.
+
+Reduction
+Calculate the two rounded products on each axis before selecting extremes.
+This also handles reversed endpoints and zero coefficients times infinity.
+For planes 0..3 select the minimum non-NaN product (NaN if both are NaN).
+For planes 4..5 select the maximum product, propagating either NaN. Evaluate
+the original left-associated sum and retain <= 0 as the rejection predicate.
+No coordinate sorting, epsilon, double arithmetic, reassociation, FMA,
+cross-frame cache, runtime oracle or retained eight-corner method is used.
+
+Why exceptional arithmetic does not need an old-method fallback
+For numeric finite intermediates, rounded float addition is monotone. Thus
+the selected products give the smallest/largest corner distance. Signed
+zeros have identical <= 0 results. Underflow and overflow preserve this order.
+For minimum selection, NaN products may be ignored because every corner using
+them fails to reject. If a selected minimum sum first becomes NaN from an
+infinity cancellation, every non-NaN alternative at that step can only be
++infinity; later additions leave it +infinity or NaN, never <= 0. If an axis
+has only NaNs, every corner is NaN. For maximum selection, any NaN product
+already guarantees a passing corner. A selected maximum sum <= 0 cannot have
+encountered +infinity or NaN: either would remain positive infinity or become
+NaN. Its other possible intermediates are finite values or negative infinity,
+so no smaller corner can introduce an infinity cancellation/NaN while the
+selected maximum remains <= 0. This preserves the two rejection predicates,
+without requiring the selected numeric distance itself to equal a NaN-aware
+minimum/maximum in every pathological case.
+
+Validation (outside the game)
+tools/experiments/frustum-support-build13/FrustumSupportResearch.java exhausts 20,000,000 combinations of product
+extremes including infinities, overflow, NaN and signed zero. Its reference
+enumerates the eight products; this is an algebra check, not the sole oracle.
+NativeFrustumAdapterTest executes the actual captured Fully method in an
+isolated generated class. It compares 300,000 random/IEEE boundary cases and
+100,000 rounded plane boundary cases against the transformed method. It also
+checks disabled/null planes, first-four/last-two difference, unchanged ordinary
+RenderLib method bodies, ASM validity and native-only startup registration.
+Capture is local optional input; this machine's run must show no skipped tests
+in that test class. No test instrumentation is packaged in the optimizer.
+
+Measured outcome (2026-10-13)
+Full build: 1295 tests, 130 optional skips, no failures/errors; all six new
+tests executed. Ten artifact startup checks passed. Frozen candidate/source:
+build/fps-target/130-native-build13-candidate/; JAR SHA256
+FF5EC5E3143F1F1BFC8C36CBBD22C0D3BC96CCCA137CC2B81AB70FF935FC576F.
+The final running class dump confirms the Fully body calls only the new helper.
+
+Synthetic microbenchmark, original/new nanoseconds per invocation:
+all inside 17.382/29.520; mixed 17.680/14.575; early reject 5.684/5.507.
+The two isolated game snapshots were prepared before measurement, with equal
+initial world/options/config hashes. Same frozen v7 fixture and coarse-v6
+agent; 90-second warmup, 20 seconds per scene; serial execution with no
+compilation/copy/probes while the games ran. Both completed with active windows,
+entity distance 1.875, matching camera route and no invalid marker.
+
+Build11 / Build13 BFS ms/frame:
+static   0.294262 / 0.354643 (+20.52%)
+rotation 0.547138 / 0.603316 (+10.27%)
+movement 0.568196 / 0.572583 (+0.77%)
+Static BFS ms/call: 0.618733 / 0.660471 (+6.75%); invocation frequency differs.
+Total diagnostic FPS: 327.769/283.509, 299.839/273.805, 279.897/269.734.
+P99 ms: 9.5717/10.7028, 9.8697/10.6515, 10.6088/10.3332.
+These are diagnostic observations, NOT formal acceptance results or a causal
+estimate of this method's cost. Build13 had more natural entities (static
+233-242 vs 201-221; rotation 240-246 vs 199-212; movement 238-265 vs 205-224).
+Its entity stage was also slower. The candidate static image has terrain,
+vegetation and fog with no obvious holes; this is not a pixel-equivalence proof.
+
+Decision: no demonstrated net gain to justify retaining this implementation.
+It has been removed from production, including adapter registration and tests;
+all evidence and implementation remain frozen. No formal FPS run was performed
+for Build13. Do not reintroduce this product-extrema version based solely on
+theory or the mixed-input microbenchmark. OptiFine also already caches parent
+AABB Fully results per frame; total section frustum calls overstate its work.
+This rejects this implementation, not a proof that every support-vertex
+implementation is slower. A different candidate needs new measured evidence.

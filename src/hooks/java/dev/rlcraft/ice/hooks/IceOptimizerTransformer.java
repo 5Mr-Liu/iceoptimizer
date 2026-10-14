@@ -30,6 +30,7 @@ public final class IceOptimizerTransformer implements IClassTransformer {
         String fingerprint = CoreClassFingerprint.sha256(basicClass);
         byte[] current = basicClass;
         for (TargetSpec target : targets) {
+            if (!OptimizerBootstrapPolicy.shouldInstall(target)) continue;
             OptimizerBytecodeAdapter adapter = OptimizerAdapterRegistry.find(target.adapterId);
             if (adapter == null) {
                 for (String moduleId : target.moduleIds) {

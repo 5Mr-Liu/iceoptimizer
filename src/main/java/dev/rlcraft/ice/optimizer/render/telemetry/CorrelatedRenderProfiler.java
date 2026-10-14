@@ -17,7 +17,7 @@ import java.util.Map;
 public final class CorrelatedRenderProfiler {
     private static final int MAXIMUM_CPU_SCOPE_DEPTH = 64;
     private static final int MAXIMUM_GPU_SLOT_POLLS = 256;
-    private static final long QUERY_OBJECT_CHARGE = 4L * 1024L;
+    private static final long QUERY_OBJECT_CHARGE = 0L;
     private static final int BACKEND_COUNT = RenderBackendId.values().length;
     private static final int PROFILE_COUNT = RenderPass.values().length * BACKEND_COUNT;
     private static final CpuWorkKind[] CPU_KINDS = CpuWorkKind.values();

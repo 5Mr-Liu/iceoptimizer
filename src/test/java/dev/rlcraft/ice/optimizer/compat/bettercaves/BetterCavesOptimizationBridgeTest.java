@@ -16,7 +16,7 @@ import org.objectweb.asm.Opcodes;
 
 public class BetterCavesOptimizationBridgeTest {
     @Test
-    public void cachedBreakerStillReadsLiveModuleState() {
+    public void activatedBridgeStillReadsLiveModuleState() {
         ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(OptimizationModule.BETTER_CAVES_NOISE);
         breaker.configure(true, 3);
         breaker.patchInstalled("test.NoiseTuple", "test");
@@ -32,12 +32,32 @@ public class BetterCavesOptimizationBridgeTest {
     }
 
     @Test
+    public void runtimePauseOverridesAnOperationalBreaker() {
+        ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(OptimizationModule.BETTER_CAVES_NOISE);
+        boolean previouslyPaused = OptimizerRegistry.isRuntimePaused();
+        OptimizerRegistry.setRuntimePaused(false);
+        breaker.configure(true, 3);
+        breaker.patchInstalled("test.NoiseTuple", "test");
+        try {
+            assertTrue(BetterCavesOptimizationBridge.isEnabled());
+            OptimizerRegistry.setRuntimePaused(true);
+            assertTrue("pause preserves the configured breaker state", breaker.isOperational());
+            assertFalse(BetterCavesOptimizationBridge.isEnabled());
+            OptimizerRegistry.setRuntimePaused(false);
+            assertTrue(BetterCavesOptimizationBridge.isEnabled());
+        } finally {
+            breaker.configure(false, 3);
+            OptimizerRegistry.setRuntimePaused(previouslyPaused);
+        }
+    }
+
+    @Test
     public void hotGateDoesNotResolveStringModuleIds() throws Exception {
         String resource = "/" + BetterCavesOptimizationBridge.class.getName().replace('.', '/') + ".class";
         InputStream input = BetterCavesOptimizationBridge.class.getResourceAsStream(resource);
         assertNotNull(input);
         final boolean[] stringLookup = { false };
-        final boolean[] liveBreakerRead = { false };
+        final boolean[] effectiveMaskRead = { false };
         try {
             new ClassReader(input).accept(new ClassVisitor(Opcodes.ASM5) {
                 @Override
@@ -54,9 +74,9 @@ public class BetterCavesOptimizationBridgeTest {
                                 && "byId".equals(calledName))) {
                                 stringLookup[0] = true;
                             }
-                            if ("dev/rlcraft/ice/optimizer/ModuleCircuitBreaker".equals(owner)
+                            if ("dev/rlcraft/ice/optimizer/OptimizerRegistry".equals(owner)
                                 && "isOperational".equals(calledName)) {
-                                liveBreakerRead[0] = true;
+                                effectiveMaskRead[0] = true;
                             }
                         }
                     };
@@ -66,6 +86,6 @@ public class BetterCavesOptimizationBridgeTest {
             if (input != null) input.close();
         }
         assertFalse("Better Caves hot gate must not parse a module id", stringLookup[0]);
-        assertTrue("Better Caves hot gate must preserve live circuit-breaker reads", liveBreakerRead[0]);
+        assertTrue("Better Caves hot gate must read the effective runtime mask", effectiveMaskRead[0]);
     }
 }

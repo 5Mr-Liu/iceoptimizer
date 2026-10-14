@@ -64,7 +64,7 @@ public final class AnimatedTextureAdapterTest {
             "beforeSprite"));
         assertEquals(4, calls(result, AnimatedTextureAdapter.BOOTSTRAP,
             "afterSprite"));
-        assertEquals(5, calls(result, AnimatedTextureAdapter.BOOTSTRAP,
+        assertEquals(6, calls(result, AnimatedTextureAdapter.BOOTSTRAP,
             "textureBarrier"));
     }
 
@@ -153,6 +153,33 @@ public final class AnimatedTextureAdapterTest {
         }
     }
 
+    @Test public void reviewedG5StandaloneSpriteBindGetsItsOwnParameterBarrier() throws Exception {
+        OptifinePatchedClassSupport support=OptifinePatchedClassSupport.openOrSkip();
+        try {
+            byte[] original=support.patchAndRemap("cdp",AnimatedTextureAdapter.TEXTURE_MAP.replace('/','.'));
+            byte[] transformed=transform(AnimatedTextureAdapter.Part.MAP,AnimatedTextureAdapter.TEXTURE_MAP,original);
+            assertEquals(6,calls(transformed,AnimatedTextureAdapter.BOOTSTRAP,"textureBarrier"));
+            org.objectweb.asm.tree.ClassNode node=new org.objectweb.asm.tree.ClassNode();
+            new ClassReader(transformed).accept(node,0);
+            int found=0;
+            for(org.objectweb.asm.tree.MethodNode method:node.methods) {
+                if(!AnimatedTextureAdapter.ORIGINAL_MAP.equals(method.name))continue;
+                for(org.objectweb.asm.tree.AbstractInsnNode instruction:method.instructions.toArray())
+                    if(instruction instanceof org.objectweb.asm.tree.MethodInsnNode) {
+                        org.objectweb.asm.tree.MethodInsnNode call=(org.objectweb.asm.tree.MethodInsnNode)instruction;
+                        if(!"bindSpriteTexture".equals(call.name))continue;
+                        org.objectweb.asm.tree.AbstractInsnNode previous=instruction.getPrevious();
+                        while(previous!=null && previous.getOpcode()<0)previous=previous.getPrevious();
+                        assertTrue(previous instanceof org.objectweb.asm.tree.MethodInsnNode);
+                        org.objectweb.asm.tree.MethodInsnNode barrier=(org.objectweb.asm.tree.MethodInsnNode)previous;
+                        assertEquals(AnimatedTextureAdapter.BOOTSTRAP,barrier.owner);
+                        assertEquals("textureBarrier",barrier.name);found++;
+                    }
+            }
+            assertEquals(1,found);
+        } finally {support.close();}
+    }
+
     private static byte[] transform(AnimatedTextureAdapter.Part part,
                                     String className, byte[] original) {
         byte[] result = new AnimatedTextureAdapter(part).transform(
@@ -182,6 +209,11 @@ public final class AnimatedTextureAdapterTest {
                 false);
         }
         for (int call = 0; call < spriteCalls; call++) {
+            if(spriteCalls==4 && call==1) {
+                update.visitInsn(Opcodes.ACONST_NULL);
+                update.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                    AnimatedTextureAdapter.SPRITE,"bindSpriteTexture","()V",false);
+            }
             update.visitInsn(Opcodes.ACONST_NULL);
             update.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
                 AnimatedTextureAdapter.SPRITE,

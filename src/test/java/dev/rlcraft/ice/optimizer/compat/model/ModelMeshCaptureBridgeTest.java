@@ -54,16 +54,6 @@ public final class ModelMeshCaptureBridgeTest {
     }
 
     @Test
-    public void deferredPublicationBackoffIsBoundedAndStartsNextFrame() {
-        assertEquals(0L, ModelMeshCaptureBridge.publicationRetryDelay(0));
-        assertEquals(1L, ModelMeshCaptureBridge.publicationRetryDelay(1));
-        assertEquals(2L, ModelMeshCaptureBridge.publicationRetryDelay(2));
-        assertEquals(4L, ModelMeshCaptureBridge.publicationRetryDelay(3));
-        assertEquals(64L, ModelMeshCaptureBridge.publicationRetryDelay(7));
-        assertEquals(64L, ModelMeshCaptureBridge.publicationRetryDelay(1000));
-    }
-
-    @Test
     public void unchangedGenerationPurgesPendingMapOnlyOnce() throws Exception {
         ModelMeshCaptureBridge.resetForTest();
         long before = ModelMeshCaptureBridge.diagnostics()

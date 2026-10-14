@@ -1,119 +1,103 @@
 package dev.rlcraft.ice.optimizer.compat.hud;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-
+import static org.junit.Assert.*;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
-import dev.rlcraft.ice.optimizer.render.hud.LwjglHudRenderer;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import org.junit.Test;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import net.minecraftforge.fml.common.eventhandler.EventPriority;
+import net.minecraftforge.fml.common.eventhandler.ListenerList;
 import net.minecraftforge.fml.common.eventhandler.Event;
 import net.minecraftforge.fml.common.eventhandler.EventBus;
+import org.junit.Test;
 
 public final class HudRenderBridgeDispatchTest {
-    @Test
-    public void noModernSubmissionCallsEventDirectlyWithoutLegacyIsland() {
-        final int[] eventCalls = new int[1];
-        final int[] legacyCalls = new int[1];
-
-        boolean cancelled = HudRenderBridge.dispatchEvent(false,
-            new HudRenderBridge.EventInvocation() {
-                @Override public boolean invoke() {
-                    eventCalls[0]++;
-                    return true;
-                }
-            }, new HudRenderBridge.LegacyEventInvocation() {
-                @Override public boolean invoke(HudRenderBridge.EventInvocation event) {
-                    legacyCalls[0]++;
-                    throw new AssertionError("legacy island must not be entered");
-                }
-            });
-
-        assertTrue(cancelled);
-        assertEquals(1, eventCalls[0]);
-        assertEquals(0, legacyCalls[0]);
+    public static class HudEvent extends Event {
+        private static final ListenerList LISTENERS = new ListenerList();
+        @Override public boolean isCancelable() { return true; }
+        @Override public ListenerList getListenerList() { return LISTENERS; }
     }
-
-    @Test
-    public void submittedModernWorkPreservesOrderAndCancellationResult() {
-        final List<String> order = new ArrayList<String>();
-        boolean cancelled = HudRenderBridge.dispatchEvent(true,
-            new HudRenderBridge.EventInvocation() {
-                @Override public boolean invoke() {
-                    order.add("event");
-                    return false;
-                }
-            }, new HudRenderBridge.LegacyEventInvocation() {
-                @Override public boolean invoke(HudRenderBridge.EventInvocation event) {
-                    order.add("legacy-enter");
-                    boolean result = event.invoke();
-                    order.add("legacy-exit");
-                    return result;
-                }
-            });
-
-        assertFalse(cancelled);
-        assertEquals(Arrays.asList("legacy-enter", "event", "legacy-exit"), order);
-    }
-
-    @Test
-    public void originalRuntimeExceptionIsPropagatedWithoutDuplicatePost() {
-        final RuntimeException expected = new RuntimeException("event failed");
-        final int[] eventCalls = new int[1];
-        try {
-            HudRenderBridge.dispatchEvent(true,
-                new HudRenderBridge.EventInvocation() {
-                    @Override public boolean invoke() {
-                        eventCalls[0]++;
-                        throw expected;
-                    }
-                }, new HudRenderBridge.LegacyEventInvocation() {
-                    @Override public boolean invoke(HudRenderBridge.EventInvocation event) {
-                        return event.invoke();
-                    }
-                });
-        } catch (RuntimeException actual) {
-            assertSame(expected, actual);
-            assertEquals(1, eventCalls[0]);
-            return;
+    public static final class Listener {
+        int calls;
+        RuntimeException failure;
+        public void handle(HudEvent event) {
+            calls++;
+            if (failure != null) throw failure;
+            event.setCanceled(true);
         }
-        throw new AssertionError("expected event failure");
     }
 
-    @Test
-    public void failedAfterDrawRequiresBoundaryButFailedBeforeDrawDoesNot() {
-        assertFalse(HudRenderBridge.boundaryAfterFlush(false,
-            LwjglHudRenderer.FlushResult.EMPTY));
-        assertFalse(HudRenderBridge.boundaryAfterFlush(false,
-            LwjglHudRenderer.FlushResult.FAILED_BEFORE_DRAW));
-        assertTrue(HudRenderBridge.boundaryAfterFlush(false,
-            LwjglHudRenderer.FlushResult.MODERN));
-        assertTrue(HudRenderBridge.boundaryAfterFlush(false,
-            LwjglHudRenderer.FlushResult.FAILED_AFTER_DRAW));
-        assertTrue(HudRenderBridge.boundaryAfterFlush(true,
-            LwjglHudRenderer.FlushResult.LEGACY_STATE));
+    @Test public void actualForgePostIsOnceAndInvalidatesWithoutEagerNativeQueries() throws Exception {
+        EventBus bus = new EventBus();
+        Listener listener = new Listener();
+        register(bus, listener);
+        Object state = state();
+        Object scope = enterScope(state);
+        try {
+            publishTrackedState();
+            assertTrue(HudRenderBridge.post(bus, new HudEvent()));
+            assertEquals(1, listener.calls);
+            assertFalse(EarlyGlStateTracker.isKnown());
+            assertTrue(field(scope, "stateNeedsSync").getBoolean(scope));
+            assertEquals(0, field(state, "legacyDepth").getInt(state));
+            // This test has no GL context. A second event still needs no query.
+            assertTrue(HudRenderBridge.post(bus, new HudEvent()));
+            assertEquals(2, listener.calls);
+        } finally { field(state, "hudDepth").setInt(state, 0); }
     }
 
-    @Test
-    public void emptyActualPostIsDirectAndPreservesKnownTracker() {
+    @Test public void originalForgeExceptionPropagatesWithoutDuplicatePost() throws Exception {
+        EventBus bus = new EventBus((ignored, event, listeners, index, failure) -> { });
+        Listener listener = new Listener();
+        listener.failure = new IllegalStateException("event failed");
+        register(bus, listener);
+        Object state = state();
+        Object scope = enterScope(state);
+        try {
+            try {
+                HudRenderBridge.post(bus, new HudEvent());
+                fail("expected original listener exception");
+            } catch (RuntimeException actual) { assertSame(listener.failure, actual); }
+            assertEquals(1, listener.calls);
+            assertEquals(0, field(state, "legacyDepth").getInt(state));
+            assertTrue(field(scope, "stateNeedsSync").getBoolean(scope));
+        } finally { field(state, "hudDepth").setInt(state, 0); }
+    }
+
+    @Test public void emptyActualPostIsDirectAndPreservesKnownTracker() {
         publishTrackedState();
         assertTrue(EarlyGlStateTracker.isKnown());
         assertFalse(HudRenderBridge.post(new EventBus(), new Event()));
         assertTrue(EarlyGlStateTracker.isKnown());
     }
 
-    @Test
-    public void queuedBatchGenerationMustMatchAtSubmissionTime() {
-        assertTrue(HudRenderBridge.hudGenerationCurrent(7L, 11L, 7L, 11L));
-        assertFalse(HudRenderBridge.hudGenerationCurrent(7L, 11L, 8L, 11L));
-        assertFalse(HudRenderBridge.hudGenerationCurrent(7L, 11L, 7L, 12L));
-        assertFalse(HudRenderBridge.hudGenerationCurrent(0L, 11L, 0L, 11L));
+    @Test public void queuedBatchGenerationMustMatchAtSubmissionTime() {
+        assertTrue(HudRenderBridge.hudGenerationCurrent(7, 11, 7, 11));
+        assertFalse(HudRenderBridge.hudGenerationCurrent(7, 11, 8, 11));
+        assertFalse(HudRenderBridge.hudGenerationCurrent(7, 11, 7, 12));
+        assertFalse(HudRenderBridge.hudGenerationCurrent(0, 11, 0, 11));
     }
 
+    private static void register(EventBus bus, Listener listener) throws Exception {
+        int busId = field(bus, "busID").getInt(bus);
+        new HudEvent().getListenerList().register(busId, EventPriority.NORMAL,
+            event -> listener.handle((HudEvent) event));
+    }
+    private static Object state() throws Exception {
+        Field field = HudRenderBridge.class.getDeclaredField("STATE");
+        field.setAccessible(true);
+        return ((ThreadLocal<?>) field.get(null)).get();
+    }
+    private static Object enterScope(Object state) throws Exception {
+        Object scope = ((Object[]) field(state, "hudScopes").get(state))[0];
+        Method reset = scope.getClass().getDeclaredMethod("reset", long.class);
+        reset.setAccessible(true); reset.invoke(scope, 1L);
+        field(state, "hudDepth").setInt(state, 1);
+        return scope;
+    }
+    private static Field field(Object value, String name) throws Exception {
+        Field field = value.getClass().getDeclaredField(name);
+        field.setAccessible(true); return field;
+    }
     private static void publishTrackedState() {
         EarlyGlStateTracker.beginProbe();
         EarlyGlStateTracker.useProgram(7);

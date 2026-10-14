@@ -59,7 +59,7 @@ public class CoreTransformerIsolationTest {
             Class<?> accessor = Class.forName(PENDING_TICK_ACCESSOR, true, loader);
             assertEquals("the transformed-class ABI must be defined by the isolated core loader",
                 loader, accessor.getClassLoader());
-            assertEquals(4, accessor.getDeclaredMethods().length);
+            assertEquals(3, accessor.getDeclaredMethods().length);
             int[] expectedMethods = { 11, 6, 5, 2, 1 };
             for (int i = 0; i < TERRAIN_VISIBILITY_ABI.length; i++) {
                 Class<?> visibilityAbi = Class.forName(TERRAIN_VISIBILITY_ABI[i], true, loader);

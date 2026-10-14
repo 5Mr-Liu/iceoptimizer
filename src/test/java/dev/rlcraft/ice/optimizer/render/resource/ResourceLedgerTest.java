@@ -393,15 +393,17 @@ public final class ResourceLedgerTest {
     }
 
     @Test
-    public void opaqueNativeObjectsConsumeAPreAllocationToken() {
+    public void fullPayloadBudgetDoesNotBlockTrackedOpaqueObjects() {
         CacheBudget budget = new CacheBudget(64, 64, 128L * 1024L);
+        CacheBudget.Reservation payload = budget.tryReserve(
+            dev.rlcraft.ice.optimizer.memory.BudgetKind.GPU, 128L * 1024L);
         AtomicInteger deletes = new AtomicInteger();
         ResourceLedger ledger = ledger(budget, new FaultHook(), deletes);
         FrameStamp stamp = stamp();
         CacheBudget.Reservation reservation = ledger.reserveNativeObject(
             RenderResourceKind.PROGRAM);
         assertNotNull(reservation);
-        assertEquals(64L * 1024L, budget.snapshot().getGpuUsed());
+        assertEquals(128L * 1024L, budget.snapshot().getGpuUsed());
         RenderHandle handle = ledger.registerReservedObject(
             RenderResourceKind.PROGRAM, 61,
             stamp.getResourceGeneration(), stamp.getGlContextGeneration(),
@@ -411,6 +413,8 @@ public final class ResourceLedgerTest {
             RenderResourceKind.PROGRAM), handle.getBytes());
         ledger.destroyAll(stamp.getGlContextGeneration());
         assertEquals(1, deletes.get());
+        assertEquals(0L, ledger.storageReleaseSerial());
+        payload.close();
         assertEquals(0L, budget.snapshot().getGpuUsed());
     }
 
@@ -433,10 +437,39 @@ public final class ResourceLedgerTest {
             RenderResourceKind.VERTEX_ARRAY, 72,
             stamp.getResourceGeneration(), stamp.getGlContextGeneration(),
             reservation));
-        assertEquals(1L + 4L * 1024L, budget.snapshot().getGpuUsed());
+        assertEquals(1L, budget.snapshot().getGpuUsed());
         reservation.close();
         assertEquals(1L, budget.snapshot().getGpuUsed());
         ledger.destroyAll(stamp.getGlContextGeneration());
+    }
+
+    @Test
+    public void pressureReclaimsPublishedPayloadBeforeRetryingReservation() {
+        CacheBudget budget = new CacheBudget(64L, 64L, 128L);
+        AtomicInteger deletes = new AtomicInteger();
+        final ResourceLedger ledger = ledger(budget, new FaultHook(), deletes);
+        final FrameStamp stamp = stamp();
+        final RenderHandle buffer = ledger.register(RenderResourceKind.BUFFER, 73,
+            128L, stamp);
+        final TestFence fence = new TestFence();
+        ledger.retire(buffer, fence);
+        AtomicInteger reclaims = new AtomicInteger();
+        ledger.setGpuReclaimer(() -> {
+            reclaims.incrementAndGet();
+            ledger.collect(stamp.getGlContextGeneration(), 8);
+        });
+        assertNull(ledger.reserveGpu(32L));
+        assertEquals(0L, ledger.storageReleaseSerial());
+        fence.signaled = true;
+        CacheBudget.Reservation next = ledger.reserveGpu(32L);
+        assertNotNull(next);
+        assertEquals(2, reclaims.get());
+        assertEquals(1, deletes.get());
+        assertEquals(1L, ledger.storageReleaseSerial());
+        next.close();
+        assertEquals("unpublished rollback does not wake a blocked model queue",
+            1L, ledger.storageReleaseSerial());
+        assertEquals(0L, budget.snapshot().getGpuUsed());
     }
 
     @Test

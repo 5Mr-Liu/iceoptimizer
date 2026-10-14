@@ -1,0 +1,157 @@
+完整地形渲染路径研究（2026-10-12）
+
+当前结论
+主线转向完整地形渲染路径。保留同包关闭 ICE 的基线、同画质要求和帧时间
+检查。停止战斗专项；不再把修补当前适配层的微小开销作为主要研究内容。
+尚未完成验收，也没有向原游戏部署候选。
+
+1. 完整替换实现的首轮普通移动实测
+基线：原整合包，移除 ICE，没有 Nothirium。
+候选：同一原整合包，移除 ICE，加入官方 Nothirium 0.4.9-beta。
+两边都在 C 盘隔离目录，使用同一冻结 gameplay v9 夹具，预热 120 秒、
+采样 60 秒，没有区间插桩。222 个共同顶层模组 JAR 的 SHA256 相同，
+候选仅多一个 Nothirium JAR。原游戏和存档未修改。
+
+                      关闭 ICE 基线    Nothirium（无 ICE）
+FPS                   198.287563       342.846162
+帧时间 P95 (ms)         10.6938           8.2072
+帧时间 P99 (ms)         12.7821          10.5863
+服务端 tick P95 (ms)    17.5235          20.2925
+GPU 中位时间 (ms)        1.754112         1.937408
+平均整帧 (ms)            5.043181         2.916760
+平均渲染区间 (ms)        3.873944         1.803134
+
+单组观察到 FPS +72.90%、帧时间 P95/P99 降低；主要差值发生在渲染区间。
+GPU 中位时间、服务端 P95 没有同步改善。不能把 FPS 增益归为 ICE 自身成果，
+也不能从整条路径的收益反推某个绘制 API 的独立收益。
+
+两边 1201 个服务端 tick，路线 153.285505625 m，最终位置、逻辑视角、
+装备、无药水效果、0 次受击、窗口全程活跃。自然实体仍不同：237–268
+对 222–266。只有一组独立世界对照，没有重复实验或置信区间。
+
+画面检查没有完成：初次末帧截图均显示实际地形和 HUD，但渲染视角不同。
+夹具在路线转向处更新逻辑 yaw 后，前一 tick yaw 和 partial tick 可不同；
+这是待验证原因，不是已确认解释。新夹具只在测量结束后固定当前/前一位置
+和旋转，等两帧再截图，并记录实际字段以核对。该动作不进入计时样本。
+Nothirium 的 LINEAR 雾 shader 还使用 smoothstep；这与线性雾公式不同，
+不能默认视觉等价。旧版 C: 0/0 计数不适用于替换渲染器，也不能证明漏画。
+
+证据
+build/fps-target/129-nothirium-v9-comparison.txt
+build/fps-target/129-nothirium-input-diff.json
+build/fps-target/129-nothirium-frame-components.json
+C:/Users/32884/.codex/scratch/ice-fps-target/live-129-original-cdrive-v9-1
+C:/Users/32884/.codex/scratch/ice-fps-target/live-129-nothirium-v9-1
+
+2. ICE 单层共享缓冲区原型：局部 CPU 收益不足以支持采用
+工具 CapturedTerrainSubmissionProbe 增加 singleLayerReplay 模式。把已有
+捕获的 SOLID 网格合并到一个 VBO，使用 16 字节标准间接命令、现有 ICE
+顶点变换及原有固定片段路径，保留网格顺序和区域偏移。
+1013 个自有网格，1132 个可见项，原来 48 个页，约 72.4 MB 顶点。
+
+                         原固定绘制      单 VBO 间接绘制
+全量 CPU 提交中位 (ms)     0.079363        0.024813
+全量含 GPU 完成 (ms)       0.480383        0.584211
+方向裁剪 CPU 中位 (ms)     0.102675        0.039263
+方向裁剪含 GPU 完成 (ms)   0.332591        0.424241
+
+CPU 提交节省约 0.055–0.063 ms，GPU 完成等待口径反而增加 0.092–0.104 ms。
+2232/2073600 像素不同，最大通道差 158；其中仅 855 像素邻接参考图明显
+梯度，不能概括成无害的边缘舍入。缓冲区合并/建立未计时，原型也不涵盖
+实时分配、回收、区块变化和外部回调。没有并入生产，也不算整包 FPS 收益。
+
+证据
+build/fps-target/129-single-layer-replay.txt
+build/fps-target/129-single-layer-pixel-analysis.txt
+
+3. 粗粒度区间与固定视角检查（20:47 完成）
+对完整 Nothirium 路径和关闭 ICE 基线做了同夹具的粗粒度区间计时。
+这组带插桩，只用于定位与画面检查，不作为正式独立重复或 50% 验收。
+两份未启动快照的 level.dat 和三份 options 文件 SHA256 已核对相同。
+冻结夹具：build/fps-target/129-fixed-view-fixture-v1
+benchmark SHA256: 79EA3B4473708C5D79F00DF80926F62F1EA93598A6948A85460A687058E26F0E
+agent SHA256: 3200256B9D2585119B80765717523181B89C5B22DA98ADF5F5C2C11288414E8A
+
+区间（包含式 ms/帧）      关闭 ICE 基线    Nothirium（无 ICE）
+相机及渲染                 3.779242         1.544535
+地形可见性/准备            0.458245         0.381514
+四层地形绘制               1.897919         0.054122
+实体渲染                   0.372557         0.165108
+HUD                        0.238392         0.209026
+OTG 雾颜色                 0.036614         0.033429
+OTG 雾距离                 0.128508         0.129551
+
+主要观测差值为地形绘制约 1.844 ms/帧；准备约 0.077 ms/帧。
+不同层级包含式区间不可相加。实体差值也不能直接归为相同实体工作变快。
+两边自然实体范围为 210–243 和 220–250，服务端 tick 数 1200 和 1201。
+区间入口覆盖替换实现：Nothirium 在 RenderGlobal.setupTerrain 中执行
+自己的 setup，在 renderBlockLayer 中执行自己的 render 后返回。
+
+归一化注意：图集动画 ms/帧从 0.331479 变成 0.177623，但每次调用耗时
+1.658639 对 1.662332 ms，几乎没有降低；更高 FPS 分摊了相同 tick 工作。
+client tick 同样是每次 6.669732 对 6.646815 ms。不能把分母变化算成
+动画或客户端逻辑算法优化。
+
+诊断 FPS 200.180 -> 374.364（+87.01%），P95 10.7608 -> 7.4810 ms、
+P99 13.1001 -> 9.6468 ms；双方窗口全程活跃。比较器正确标注 pilot，
+NOT_EVALUABLE，不把它充作又一次无插桩的正式性能复测。
+
+两张固定视角截图中的当前、前一 tick、lastTick 位置与 yaw/pitch 字段
+两两相同，requested_pose_preserved 均为 true。目视主体地形视角对齐，
+原来末帧的大幅角度差没有再出现。但远处树木可见程度有差异，仍未通过
+视觉一致性检查。当前/前一位置旋转相同不等于所有动画、世界时间和视效
+状态相同，不能据此做逐像素等价声明。
+
+进一步对照：强制 GL15 的 Nothirium 新快照于 20:55 完成。它保留完整
+数据管理，使用固定管线；配置文件确认实际保留 renderEngine=GL15。
+同样的粗粒度诊断得到 286.287 FPS（对基线 +43.02%），P95 9.2747 ms、
+P99 11.5021 ms；GPU 中位 1.4049 ms，服务端 P95 21.4818 ms。
+地形准备 0.273374 ms/帧、地形绘制 1.021987 ms/帧、HUD 0.214785 ms/帧。
+固定视角中，左侧远处树木的可见程度目视更接近原版；这支持 shader/fog
+路径影响画面的判断，但不是逐像素等价或完整可见性正确性的证明。
+自然实体 229–281，与其他两组仍不同；这也是诊断，不能宣称正式 +43%。
+
+三组初始世界、options、夹具、agent 哈希相同；两种 Nothirium 后端的模组
+JAR 完全相同，与基线相比只有 Nothirium 一个额外模组。三组固定相机字段
+匹配。没有改原游戏或生产 ICE 构建。
+
+由这些证据选择后续主线：完整地形管理 + 更少的 CPU 状态切换/绘制提交。
+GL15 表明完整数据路径在保留固定管线时已有可观潜力；默认后端更快，但
+需解决画面差异。不能把两者差额全部当成间接绘制的纯收益，因为 shader、
+矩阵路径、准备工作与自然实体也不同。下一轮应在已加载自然地形的静止、
+转向和普通移动场景验证后端，并检查雾、透明层、动态光、区块变化；继续
+排除战斗专项。当前不直接部署 Nothirium，也不回到只修补旧 ICE 局部开销。
+
+证据
+build/fps-target/129-nothirium-coarse-fixed-comparison.txt
+build/fps-target/129-nothirium-coarse-fixed-sections.json
+build/fps-target/129-nothirium-gl15-coarse-fixed-comparison.txt
+C:/Users/32884/.codex/scratch/ice-fps-target/live-129-original-coarse-fixed-1
+C:/Users/32884/.codex/scratch/ice-fps-target/live-129-nothirium-coarse-fixed-1
+C:/Users/32884/.codex/scratch/ice-fps-target/live-129-nothirium-gl15-coarse-fixed-1
+
+诊断工具改动与使用范围
+启动器现在冻结 ice-optimizer.cfg / nothirium.cfg 的初始内容和 SHA256，
+防止相同模组 JAR、不同后端设置被混作相同输入；此记录从 GL15 组开始有。
+夹具新增测量结束后的后端名称、引擎、真实 section 计数读取，代替解释
+旧调试字符串中的 0/0；实际 0.4.9 JAR 的公开 API 已用 javap 核对。
+新夹具已编译、重映射并冻结，比较器 3 项回归通过；新字段尚未实机验证。
+build/fps-target/129-backend-observation-fixture-v2
+benchmark SHA256: D2DB51849B7DD4C7C4FDC94489C2603607987BCC0DEF04D9EA9C764FE9B87FDB
+agent SHA256: 3819C6C4F710274782E0E1BC9B9C4343F4843D3EC9E2AA1AC882FC23B9D0AD52
+
+后续实现选择
+完整渲染器实测优先于继续拼接单个 API 探针。若完整替换兼容且可重复，
+优先将其作为可选地形后端验证，与 ICE 的独立功能做组合对照，避免双重
+接管地形。若关键视觉/兼容性不成立，再据完整路径的耗时设计自有实现。
+不能仅凭一次高 FPS 固定选用外部依赖，也不能照抄其实现。
+
+来源和边界
+官方版本 https://modrinth.com/mod/nothirium/version/s9WsUXE1
+源代码 https://github.com/Meldexun/Nothirium
+Nothirium 研究 JAR SHA256:
+A86E5AA4FD09B6FD782DA9D797CA9E4AB32DE4453CF762E1AA3212DFB9E27D12
+该项目为 All Rights Reserved；本地安装测试与源码研究不代表取得复制或
+重新分发许可。ICE 内未复制其代码，交付中不将该依赖伪装成 ICE 构建。
+另有 Dregora 特定生物群系性能问题报告（尚未在本机验证）：
+https://github.com/Meldexun/Nothirium/issues/121

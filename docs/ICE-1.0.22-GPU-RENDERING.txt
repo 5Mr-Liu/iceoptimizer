@@ -1,0 +1,83 @@
+ICE 1.0.22 GPU 渲染测试构建（2026-10-10）
+
+本版目标
+减少主线程逐个地形 VBO 向驱动提交的工作，并把当前视角的遮挡计算交给 GPU。
+这是可实测的测试构建，未测量整合包内 FPS；离线局部耗时不能等同游戏帧率提升。
+
+已实现
+1. 跨 VBO 间接绘制
+   支持 NVIDIA bindless multi-draw 扩展时，已有 arena 页和普通地形 VBO 可合并提交，不复制普通 VBO 的整套顶点。
+   同一 VBO 使用 16 字节普通 MDI 命令；遇到第二个不同 VBO 才扩展为 112 字节地址命令。这个选择由存储布局决定，没有帧率检测、冷却或收益门槛。
+   顶点地址只在首次使用/实际存储替换时获取。上传、删除、OptiFine VboRegion 迁移和资源重载都通过已有生命周期维护。
+   不支持该 NVIDIA 扩展的设备继续使用标准 OpenGL 4.3 MDI。OptiFine region 和自定义 shader 仍按其实际顶点/着色语义处理。
+   即使 ICE 没有接管可见列表的顶点存储，也能直接借用普通 VBO 进行批处理。
+
+2. 当前帧 GPU 遮挡
+   每次 SOLID 绘制使用当前相机矩阵、当前上传的网格边界和真实不透明遮挡面，建立低分辨率保守深度。
+   双精度投影后，由每个面的 16 个线程分担 8×8 深度块；完全覆盖的块保留覆盖证明，避免大墙面逐格重复计算。FP32 边测试加入向内的舍入误差界。
+   GPU 修改固定顺序命令的 instanceCount，再经 command memory barrier 绘制；不把可见性结果同步读回 CPU。
+   移动和转视角每帧重新计算，不使用“静止才优化”的条件，也不复用上帧遮挡结果。
+   只剔除有完整覆盖证据且在遮挡面之后的网格；孔洞、cutout、近裁剪交叉、过期几何和未知边界不会被当成实心遮挡。
+   GPU 已处理的原生批次不再重复执行 CPU 软件遮挡；普通渲染路径保留原有 CPU 实现。
+   没有遮挡面时不发出 compute；可选遮挡资源不足不会取消已经可用的批量绘制。
+
+3. 模型与工作空间
+   删除模型姿态批次开始前多余的普通模型 VAO 绑定，后续实际绘制按需绑定。
+   地形命令工作空间在区块缓存占满共享预算之前预留；GPU 遮挡约 0.76 MiB 的固定工作空间同样提前记账，不提高现有 256 MiB 共享 GPU 预算。无法预留完整工作区时归还该次部分预留。
+   所有原生资源沿用现有释放/退休机制；没有加入游戏内性能自测、移动检测或按收益自动停用。
+
+实现边界
+- 跨实体实例合并没有纳入此版本。小模型扩大姿态批次的离线实验比原数组绘制更慢，已撤回该实验。
+- bounds/遮挡面目前仍由 CPU 打包后上传；跨帧 GPU 元数据常驻尚未实现。
+- GPU 不接管 Java 世界对象、SRP AI 或 Forge 回调。没有调整 -Xmx，也没有把堆内存占用当作显存占用。
+- GPU 使用率可能提高，但判断改善应看帧时间和卡顿；仅把 GPU 百分比提高没有意义。
+
+离线验证范围
+构建和最终验证结果见 .refactor-backups/1.0.22-final/verification.json。
+最终构建成功：1111 项常规测试通过、20 项按环境跳过、0 失败；10 项打包启动测试通过；22 次原生 GPU 验证和实际 OptiFine G5 VBO 生命周期验证通过。
+普通/NVIDIA 路径分别验证真实像素、atlas/lightmap/fog/alpha/透明顺序、连续帧位移、VBO 替换、资源释放。
+完整 Arena→数据打包→compute→间接绘制链路验证 16/112 字节命令，移动视角像素一致，同时确认被遮挡命令确实置零，证据删除后立即恢复绘制。
+预算用满和没有遮挡面的场景验证原生批处理仍继续，没有重复 CPU 剔除。
+Shader 的随机移动视角结果对照保守 CPU oracle，检查命令除 instanceCount 外不被改写，外来 GL program/SSBO 绑定恢复。
+测试中的像素读取、计时和断言仅存在于 tools 离线程序，不加入游戏运行路径。
+
+提交阶段实测
+本机 RTX 4060 Laptop / NVIDIA 592.82，384 网格，v1.0.21 源码副本对照最终命令实现。
+以下是地形提交 pass 的批量平均墙钟耗时，批次前后调用 glFinish，包含批次结束等待 GPU 的时间；不是纯 CPU 指令耗时，不包含新的 GPU 遮挡过程，也不是游戏总帧时间：
+场景                       1.0.21       1.0.22
+单个 VBO 页                13.25 us     12.32 us
+每 8 个混入外部 VBO         20.28 us     18.23 us
+每 2 个混入外部 VBO         65.87 us     17.78 us
+密集外部 VBO               66.80 us     18.44 us
+四组实际像素一致。密集跨 VBO 的阶段成本下降约 72%，单页没有保留初版大命令带来的退步。
+日志：.refactor-backups/1.0.22-bindless/v21-v22-layer-cost-final.log
+复现：.refactor-backups/1.0.22-bindless/reproduce-cost.ps1
+
+遮挡阶段同场景对照
+稳定热身后，比较原 CPU filter 与新数据导出+GPU 提交的主线程 p50；CPU 输入列表复原在计时之外。
+场景                         原 CPU       GPU 导出与提交
+512 候选，开阔                51.5 us      41.6 us
+512 候选，遮挡                83.6 us      43.7 us
+1536 候选，开阔              163.6 us      99.1 us
+1536 候选，遮挡              292.2 us     148.5 us
+4096 候选，开阔              492.2 us     252.2 us
+4096 候选，遮挡              882.0 us     265.2 us
+2048 重叠大墙                261.3 us     145.7 us
+这些样例 GPU 队列计时约 0.07～0.39 ms，包含连续提交期间的供给间隙，不是纯 shader kernel 时间，不与主线程耗时简单相加。
+小场景尾部尚未全面改善：512 开阔的主线程 p95 为 66.2→74.2 us，512 遮挡为 117.1→172.2 us。不能承诺所有位置更稳，也不能据主线程 p50 推断游戏总帧率。
+完整日志：.refactor-backups/1.0.22-gpu-visibility/same-scene-steady-final.txt
+复现：.refactor-backups/1.0.22-gpu-visibility/reproduce.ps1
+
+安装与实测
+退出游戏后，把 mods 中旧 optimizer 换成 build/libs/ice-rlcraft-optimizer-1.0.22.jar。
+要录制数据，同时把旧 profiler 换成 build/libs/ice-rlcraft-profiler-1.0.22.jar。两者各一个 JAR。
+本次没有改动游戏实例或启动 Minecraft。
+F6 仍控制所有可即时切换的优化。切换后等待区块重建完成，再沿相同路线移动/转视角，交错比较数轮开启/暂停状态的帧时间。
+现有报告新增 gpu_visibility_frames/candidates/faces 累计提交数；F3 的 GPU Vis 表示提交次数/候选数，不是 GPU 隐藏数量。CPU Occ 只统计 CPU 路径，不能拿它的零增长判定 GPU 剔除失效。
+
+参考规范
+https://registry.khronos.org/OpenGL/extensions/NV/NV_bindless_multi_draw_indirect.txt
+https://registry.khronos.org/OpenGL/extensions/NV/NV_vertex_buffer_unified_memory.txt
+https://registry.khronos.org/OpenGL/extensions/NV/NV_shader_buffer_load.txt
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_compute_shader.txt
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_shader_image_load_store.txt

@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.compat.entity;
 
 import dev.rlcraft.ice.optimizer.FatalErrors;
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -11,7 +12,7 @@ public final class QuarkItemSyncBridge {
     public static final int USE_ORIGINAL = -1;
     public static final int NO_SYNC = 0;
     public static final int SYNC = 1;
-    private static final String MODULE = "quark-item-sync";
+    private static final int MODULE = OptimizationModule.QUARK_ITEM_SYNC.ordinal();
     private static final Map<EntityItem, State> STATES = new WeakHashMap<EntityItem, State>();
     private static volatile boolean activated;
 

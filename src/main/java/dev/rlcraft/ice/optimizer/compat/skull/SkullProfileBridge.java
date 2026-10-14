@@ -137,7 +137,6 @@ public final class SkullProfileBridge {
     private static GameProfile resolveWithoutBlocking(final GameProfile input) {
         if (input == null || input.getName() == null || input.getName().isEmpty()) return input;
         if (hasTextureData(input)) return input;
-        ensureConfigured();
         final String key = input.getName().toLowerCase(Locale.ROOT);
         Cache<String, GameProfile> positiveCache = positive;
         Cache<String, Boolean> negativeCache = negative;
@@ -218,15 +217,6 @@ public final class SkullProfileBridge {
         } catch (LinkageError | RuntimeException ignored) {
             FatalErrors.rethrowIfFatal(ignored);
             return false;
-        }
-    }
-
-    private static void ensureConfigured() {
-        if (executor != null && positive != null && negative != null) return;
-        synchronized (SkullProfileBridge.class) {
-            if (executor == null || positive == null || negative == null) {
-                configure(2048, 360, 300, 128);
-            }
         }
     }
 

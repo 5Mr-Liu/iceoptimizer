@@ -57,7 +57,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 public final class ReportWriter implements ReportExporter {
-    private static final int CAPTURE_VERSION = 4;
+    private static final int CAPTURE_VERSION = 5;
     private static final int MAX_CHURN_DIMENSIONS = 64;
     private final File reportsRoot;
 
@@ -293,7 +293,7 @@ public final class ReportWriter implements ReportExporter {
     private void writeTimeline(RecordingSession session, File file) throws IOException {
         PrintWriter writer = utf8Writer(file);
         try {
-            writer.println("epoch_ms,elapsed_ms,fps,frame_avg_ms,frame_p95_ms,frame_p99_ms,frame_max_ms,gpu_frame_ms,client_tick_p95_ms,server_tick_avg_ms,server_tick_p95_ms,server_tick_p99_ms,server_tick_max_ms,heap_used_mib,heap_committed_mib,gc_count,gc_pause_ms,cpu_load,loaded_chunks,entities,tile_entities,chunk_loads,chunk_unloads,chunk_data_loads,chunk_data_saves,render_queue,upload_queue,in_packets,out_packets,in_bytes,out_bytes,chunk_data_backed_loads,chunk_loads_without_data_event,chunk_reload_le_1s,chunk_reload_le_5s,chunk_reload_le_30s,chunk_short_unload_le_1s,chunk_short_unload_le_5s,chunk_short_unload_le_30s,chunk_churn_state_evictions,chunk_churn_tracked_entries,chunk_churn_dimensions");
+            writer.println("epoch_ms,elapsed_ms,fps,frame_avg_ms,frame_p95_ms,frame_p99_ms,frame_max_ms,gpu_frame_ms,client_tick_p95_ms,server_tick_avg_ms,server_tick_p95_ms,server_tick_p99_ms,server_tick_max_ms,heap_used_mib,heap_committed_mib,gc_count,gc_pause_ms,cpu_load,loaded_chunks,entities,tile_entities,chunk_loads,chunk_unloads,chunk_data_loads,chunk_data_saves,render_queue,upload_queue,in_packets,out_packets,in_bytes,out_bytes,chunk_data_backed_loads,chunk_loads_without_data_event,chunk_reload_le_1s,chunk_reload_le_5s,chunk_reload_le_30s,chunk_short_unload_le_1s,chunk_short_unload_le_5s,chunk_short_unload_le_30s,chunk_churn_state_evictions,chunk_churn_tracked_entries,chunk_churn_dimensions,frame_count,sample_interval_ns,optimizer_runtime_state");
             for (TimelinePoint point : session.getTimeline()) {
                 JvmSnapshot jvm = point.getJvm();
                 writer.printf(Locale.ROOT,
@@ -305,13 +305,14 @@ public final class ReportWriter implements ReportExporter {
                     point.getLoadedChunks(), point.getEntities(), point.getTileEntities(), point.getChunkLoads(), point.getChunkUnloads(), point.getChunkDataLoads(), point.getChunkDataSaves(),
                     point.getRenderQueueSize(), point.getChunkUploadQueueSize(), point.getInboundPackets(), point.getOutboundPackets(), point.getInboundBytes(), point.getOutboundBytes());
                 ChunkChurnSnapshot churn = point.getChunkChurn();
-                writer.printf(Locale.ROOT, ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s%n",
+                writer.printf(Locale.ROOT, ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%d,%d,%d%n",
                     churn.getDataBackedLoads(), churn.getLoadsWithoutDataEvent(),
                     churn.getReloadWithinOneSecond(), churn.getReloadWithinFiveSeconds(),
                     churn.getReloadWithinThirtySeconds(), churn.getShortUnloadWithinOneSecond(),
                     churn.getShortUnloadWithinFiveSeconds(), churn.getShortUnloadWithinThirtySeconds(),
                     churn.getStateEvictions(), churn.getTrackedEntries(),
-                    csv(compactDimensions(churn)));
+                    csv(compactDimensions(churn)), point.getFrameCount(),
+                    point.getSampleIntervalNanos(), point.getOptimizerRuntimeState());
             }
         } finally { writer.close(); }
     }
@@ -569,6 +570,9 @@ public final class ReportWriter implements ReportExporter {
             out.writeLong(metric.getTotalNanos()); out.writeLong(metric.getMaximumNanos());
         }
         writeChunkChurn(out, point.getChunkChurn());
+        out.writeInt(point.getFrameCount());
+        out.writeLong(point.getSampleIntervalNanos());
+        out.writeByte(point.getOptimizerRuntimeState());
     }
 
     private static void writeChunkChurn(DataOutputStream out,

@@ -2,6 +2,7 @@ package dev.rlcraft.ice.optimizer.render.visibility;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.optimizer.OptimizationModule;
@@ -29,12 +30,9 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
     }
 
     @Test
-    public void onlineLifecycleFallsThroughDuringWarmupThenPreservesExactBfsOrder() {
+    public void enabledTraversalImmediatelyPreservesExactBfsOrder() {
         FakeOwner owner = FakeOwner.line(3);
-        for (int frame = 1; frame <= 120; frame++) {
-            assertFalse(runFrame(owner, frame));
-        }
-        assertTrue(runFrame(owner, 121));
+        assertTrue(runFrame(owner, 1));
         assertEquals(Arrays.asList(1, 0, 2), owner.outputIndices());
         assertEquals(Arrays.asList(FakeDirection.DOWN, FakeDirection.UP,
             FakeDirection.NORTH, FakeDirection.SOUTH, FakeDirection.WEST,
@@ -44,12 +42,44 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
     @Test
     public void modernTraversalMarksAChunkBeforeItsFrustumTest() {
         FakeOwner owner = FakeOwner.line(3);
-        for (int frame = 1; frame <= 120; frame++) runFrame(owner, frame);
+        assertTrue(runFrame(owner, 1));
         owner.camera.hiddenIndex = 2;
-        assertTrue(runFrame(owner, 121));
+        assertTrue(runFrame(owner, 2));
         assertEquals(Arrays.asList(1, 0), owner.outputIndices());
-        assertEquals(121, owner.chunks[2].lastFrame);
+        assertEquals(2, owner.chunks[2].lastFrame);
         assertTrue(owner.camera.observedMarkedBeforeTest);
+        assertTrue(OptimizerRegistry.isOperational(OptimizationModule.MODERN_VISIBILITY_GRID));
+    }
+
+    @Test
+    public void disablingTheModuleBypassesAnExistingWorkspace() {
+        FakeOwner owner = FakeOwner.line(3);
+        assertTrue(runFrame(owner, 1));
+
+        OptimizerRegistry.breaker(OptimizationModule.MODERN_VISIBILITY_GRID)
+            .configure(false, 3);
+        assertFalse(runFrame(owner, 2));
+        assertEquals(Arrays.asList(1, 0, 2), owner.outputIndices());
+    }
+
+    @Test
+    public void runtimePauseBypassesAnExistingWorkspaceAndPreservesTheLegacyQueue() {
+        boolean previouslyPaused = OptimizerRegistry.isRuntimePaused();
+        OptimizerRegistry.setRuntimePaused(false);
+        try {
+            FakeOwner owner = FakeOwner.line(3);
+            assertTrue(runFrame(owner, 1));
+            OptimizerRegistry.setRuntimePaused(true);
+            assertTrue(OptimizerRegistry.breaker(
+                OptimizationModule.MODERN_VISIBILITY_GRID).isOperational());
+            assertFalse(runFrame(owner, 2));
+            assertEquals(Arrays.asList(1, 0, 2), owner.outputIndices());
+            OptimizerRegistry.setRuntimePaused(false);
+            assertTrue(runFrame(owner, 3));
+            assertEquals(Arrays.asList(1, 0, 2), owner.outputIndices());
+        } finally {
+            OptimizerRegistry.setRuntimePaused(previouslyPaused);
+        }
     }
 
     @Test
@@ -59,25 +89,29 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
         owner.chunks[0].ice$setFrameIndex(1);
         incompatible.add(new FakeInfo(owner.chunks[0], null, 0));
         assertFalse(PrimitiveTerrainVisibilityBridge.tryTraverse(owner, incompatible,
-            Integer.valueOf(0), owner.camera, 1, true, false, 0, false));
+            BlockPos.ORIGIN, owner.camera, 1, true, false, 0, false));
         assertEquals(1, incompatible.size());
         assertTrue(owner.infos.isEmpty());
+        assertFalse(OptimizerRegistry.isOperational(OptimizationModule.MODERN_VISIBILITY_GRID));
+        assertTrue(OptimizerRegistry.isOperational(OptimizationModule.MODERN_VISIBILITY_HZB));
     }
 
     @Test
-    public void unseenWorkloadCapturesLegacyBeforeValidationCanAdvance() {
+    public void unseenOriginsImmediatelyUseTheConfiguredTraversal() {
         FakeOwner owner = FakeOwner.line(3);
-        for (int frame = 1; frame <= 120; frame++) runFrame(owner, frame);
-        assertFalse(runFrame(owner, 121, 99));
-        assertTrue(runFrame(owner, 122, 99));
+        for (int frame = 1; frame <= 300; frame++) {
+            assertTrue(runFrame(owner, frame, frame));
+        }
+        assertTrue(OptimizerRegistry.isOperational(OptimizationModule.MODERN_VISIBILITY_GRID));
     }
 
     @Test
-    public void outputMismatchFusesOnlyThePrimitiveGrid() {
+    public void ownershipMismatchDisablesOnlyThePrimitiveGrid() {
         FakeOwner owner = FakeOwner.line(3);
-        for (int frame = 1; frame <= 120; frame++) runFrame(owner, frame);
-        owner.modernCounterBias = 1;
-        assertTrue(runFrame(owner, 121));
+        ArrayDeque<Object> queue = seedQueue(owner, 1, (byte) 0);
+        assertTrue(PrimitiveTerrainVisibilityBridge.tryTraverse(owner, queue,
+            BlockPos.ORIGIN, owner.camera, 1, true, false, 12, false));
+        PrimitiveTerrainVisibilityBridge.afterTraversal(owner, false);
         assertFalse(OptimizerRegistry.breaker(
             OptimizationModule.MODERN_VISIBILITY_GRID).isOperational());
         assertTrue(OptimizerRegistry.breaker(
@@ -101,12 +135,9 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
     }
 
     @Test
-    public void optifineTraversalPreservesPreOffsetPathFilteringAndSideLists() {
+    public void optifineOriginalTraversalPreservesPreOffsetPathFilteringAndSideLists() {
         FakeOwner owner = FakeOwner.optifineLine(3);
-        for (int frame = 1; frame <= 120; frame++) {
-            assertFalse(runFrame(owner, frame, 1, (byte) 1));
-        }
-        assertTrue(runFrame(owner, 121, 1, (byte) 1));
+        assertFalse(runFrame(owner, 1, 1, (byte) 1));
         assertEquals(Arrays.asList(1, 0, 2), owner.outputIndices());
         assertEquals(Arrays.asList(1, 0, 2), owner.entityOutputIndices());
         assertEquals(Arrays.asList(1, 0, 2), owner.tileOutputIndices());
@@ -114,6 +145,81 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
             FakeDirection.SOUTH, FakeDirection.WEST, FakeDirection.EAST),
             owner.firstExpansionDirections(5));
         assertTrue(owner.camera.receivedOptifineNullBounds);
+        assertTrue(OptimizerRegistry.isOperational(OptimizationModule.MODERN_VISIBILITY_GRID));
+    }
+
+    @Test
+    public void optifineDelegationDoesNotConsumeQueueOrChangeAnyChunkStamp() {
+        FakeOwner owner = FakeOwner.optifineLine(3);
+        ArrayDeque<Object> queue = seedQueue(owner, 5, (byte) 1);
+        Object seed = queue.peek();
+        int[] stamps = {owner.chunks[0].lastFrame, owner.chunks[1].lastFrame, owner.chunks[2].lastFrame};
+        assertFalse(PrimitiveTerrainVisibilityBridge.tryTraverse(owner, queue, BlockPos.ORIGIN,
+            owner.camera, 5, true, true, 12, true));
+        assertEquals(1, queue.size()); assertSame(seed, queue.peek());
+        assertTrue(owner.infos.isEmpty()); assertTrue(owner.entityInfos.isEmpty()); assertTrue(owner.tileInfos.isEmpty());
+        for (int index = 0; index < 3; index++) assertEquals(stamps[index], owner.chunks[index].lastFrame);
+        assertEquals("optifine-original", PrimitiveTerrainVisibilityBridge.traversalPolicy());
+    }
+
+    @Test
+    public void movingAndTurningPreserveVanillaTraversalWithoutDisablingTheGrid() {
+        assertMovingViewsMatchLegacy(false);
+    }
+
+    @Test
+    public void movingAndTurningPreserveOptifineTraversalAndSideLists() {
+        assertMovingViewsMatchLegacy(true);
+    }
+
+    @Test
+    public void committedTraversalFailureIsPropagatedWithoutReplayingTheQueue() {
+        FakeOwner owner = FakeOwner.line(3);
+        RuntimeException failure = new IllegalStateException("offset callback failed");
+        owner.offsetFailure = failure;
+        ArrayDeque<Object> queue = seedQueue(owner, 1, (byte) 0);
+        try {
+            PrimitiveTerrainVisibilityBridge.tryTraverse(owner, queue,
+                BlockPos.ORIGIN, owner.camera, 1, true, false, 12, false);
+            throw new AssertionError("committed failure was swallowed");
+        } catch (RuntimeException expected) {
+            assertSame(failure, expected);
+        }
+        assertTrue(queue.isEmpty());
+        assertEquals(Arrays.asList(1), owner.outputIndices());
+        owner.offsetFailure = null;
+        assertTrue(runFrame(owner, 2));
+        assertEquals(Arrays.asList(1, 0, 2), owner.outputIndices());
+    }
+
+    private static void assertMovingViewsMatchLegacy(boolean optifine) {
+        FakeOwner actual = optifine ? FakeOwner.optifineLine(9) : FakeOwner.line(9);
+        FakeOwner expected = optifine ? FakeOwner.optifineLine(9) : FakeOwner.line(9);
+        for (int frame = 1; frame <= 300; frame++) {
+            // Alternate turning in place and crossing an origin boundary.
+            int hidden = frame % 3 == 0 ? -1 : frame % 9;
+            actual.camera.hiddenIndex = hidden;
+            expected.camera.hiddenIndex = hidden;
+            byte seedPath = (byte) (frame & 1);
+            assertEquals("traversal policy on moving frame " + frame, !optifine,
+                runFrame(actual, frame, frame / 2, seedPath));
+            expected.legacy(seedQueue(expected, frame, seedPath), frame, true);
+            assertEquals(details(expected.infos), details(actual.infos));
+            assertEquals(details(expected.entityInfos), details(actual.entityInfos));
+            assertEquals(details(expected.tileInfos), details(actual.tileInfos));
+            assertEquals(expected.offsetCalls, actual.offsetCalls);
+            assertTrue(OptimizerRegistry.isOperational(OptimizationModule.MODERN_VISIBILITY_GRID));
+        }
+    }
+
+    private static List<String> details(List<Object> infos) {
+        List<String> result = new ArrayList<String>();
+        for (Object value : infos) {
+            FakeInfo info = (FakeInfo) value;
+            result.add(info.chunk.index + ":" + info.incoming + ":"
+                + info.path + ":" + info.counter);
+        }
+        return result;
     }
 
     private static boolean runFrame(FakeOwner owner, int frame) {
@@ -127,6 +233,16 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
 
     private static boolean runFrame(FakeOwner owner, int frame, int originKey,
                                     byte seedPath) {
+        ArrayDeque<Object> queue = seedQueue(owner, frame, seedPath);
+        boolean modern = PrimitiveTerrainVisibilityBridge.tryTraverse(owner, queue,
+            new BlockPos(originKey, 0, 0), owner.camera, frame, true,
+            owner.optifine, 12, owner.optifine);
+        if (!modern) owner.legacy(queue, frame, true);
+        PrimitiveTerrainVisibilityBridge.afterTraversal(owner, modern);
+        return modern;
+    }
+
+    private static ArrayDeque<Object> seedQueue(FakeOwner owner, int frame, byte seedPath) {
         owner.beginFrame();
         ArrayDeque<Object> queue = new ArrayDeque<Object>();
         FakeChunk start = owner.chunks[1 < owner.chunks.length ? 1 : 0];
@@ -134,12 +250,7 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
         FakeInfo seed = new FakeInfo(start, null, 0);
         seed.path = seedPath;
         queue.add(seed);
-        boolean modern = PrimitiveTerrainVisibilityBridge.tryTraverse(owner, queue,
-            new BlockPos(originKey, 0, 0), owner.camera, frame, true,
-            owner.optifine, 12, owner.optifine);
-        if (!modern) owner.legacy(queue, frame, true);
-        PrimitiveTerrainVisibilityBridge.afterTraversal(owner, modern);
-        return modern;
+        return queue;
     }
 
     private enum FakeDirection {
@@ -156,7 +267,7 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
         private List<Object> tileInfos = new ArrayList<Object>();
         private final List<FakeDirection> offsetCalls = new ArrayList<FakeDirection>();
         private final boolean optifine;
-        private int modernCounterBias;
+        private RuntimeException offsetFailure;
 
         private FakeOwner(int count, boolean optifine) {
             this.optifine = optifine;
@@ -261,6 +372,7 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
                                                int renderDistance) {
             FakeDirection facing = (FakeDirection) direction;
             offsetCalls.add(facing);
+            if (offsetFailure != null) throw offsetFailure;
             int index = ((FakeChunk) chunk).index;
             if (facing == FakeDirection.WEST) index--;
             else if (facing == FakeDirection.EAST) index++;
@@ -274,7 +386,7 @@ public final class PrimitiveTerrainVisibilityBridgeTest {
 
         @Override public Object ice$newRenderInfo(Object chunk, Object direction, int counter) {
             return new FakeInfo((FakeChunk) chunk, (FakeDirection) direction,
-                counter + modernCounterBias);
+                optifine ? 0 : counter);
         }
 
         @Override public boolean ice$isInFrustum(Object chunk, Object camera,

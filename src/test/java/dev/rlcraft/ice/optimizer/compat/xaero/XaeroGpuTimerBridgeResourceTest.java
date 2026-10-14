@@ -78,12 +78,17 @@ public class XaeroGpuTimerBridgeResourceTest {
     }
 
     @Test
-    public void insufficientPairBudgetFailsBeforeNativeAllocation() {
-        CacheBudget budget = new CacheBudget(1L, 1L,
-            XaeroGpuTimerBridge.QUERY_PAIR_GPU_BYTES - 1L);
+    public void fullPayloadBudgetDoesNotPreventQueryAllocation() {
+        CacheBudget budget = new CacheBudget(1L, 1L, 1L);
+        CacheBudget.Reservation payload = budget.tryReserve(
+            dev.rlcraft.ice.optimizer.memory.BudgetKind.GPU, 1L);
         FakeDriver driver = new FakeDriver();
-        assertNull(XaeroGpuTimerBridge.QueryPair.create(budget, driver));
-        assertEquals(0, driver.createCalls);
+        XaeroGpuTimerBridge.QueryPair pair =
+            XaeroGpuTimerBridge.QueryPair.create(budget, driver);
+        assertNotNull(pair);
+        assertEquals(2, driver.createCalls);
+        pair.abandon();
+        payload.close();
     }
 
     @Test

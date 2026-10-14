@@ -122,6 +122,8 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         requireField(node, "field_72755_R", "Ljava/util/List;");
         requireField(node, "field_175008_n", "L" + VIEW_FRUSTUM + ";");
         MethodNode setup = requireMethod(node, SETUP_TERRAIN, SETUP_TERRAIN_DESC);
+        MethodNode incomingSetup = dev.rlcraft.ice.early.EarlyRendererOwnership.hasNativeTerrainRenderer()
+            ? NativeTerrainPauseAdapter.copy(setup) : null;
         TraversalShape shape = resolveTraversalShape(node, setup);
         MethodInsnNode emptyCall = shape.emptyCall;
         AbstractInsnNode queueLoadNode = previousCode(emptyCall);
@@ -199,6 +201,38 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         VarInsnNode pathFlagLoad = nearestLoad(directionAnchor, Opcodes.ILOAD, 16);
         if (pathFlagLoad == null) throw new IllegalStateException("setupTerrain path flag");
         int pathFlagLocal = pathFlagLoad.var;
+
+        if (dev.rlcraft.ice.early.EarlyRendererOwnership.hasNativeTerrainRenderer()) {
+            InsnList nativeTraversal = new InsnList();
+            nativeTraversal.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            nativeTraversal.add(new VarInsnNode(Opcodes.ALOAD, queueLocal));
+            nativeTraversal.add(new VarInsnNode(Opcodes.ALOAD, originLocal));
+            nativeTraversal.add(new VarInsnNode(Opcodes.ALOAD, cameraLocal));
+            nativeTraversal.add(new VarInsnNode(Opcodes.ILOAD, frameLocal));
+            nativeTraversal.add(new VarInsnNode(Opcodes.ILOAD, pathFlagLocal));
+            nativeTraversal.add(shape.optifine ? new VarInsnNode(Opcodes.ILOAD, fogLocal)
+                : new InsnNode(Opcodes.ICONST_0));
+            nativeTraversal.add(shape.optifine ? new VarInsnNode(Opcodes.ILOAD, renderDistanceLocal)
+                : new InsnNode(Opcodes.ICONST_0));
+            nativeTraversal.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            nativeTraversal.add(new VarInsnNode(Opcodes.DLOAD, 2));
+            nativeTraversal.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                NativeTerrainFrameAdapter.VISIBILITY, "traverse",
+                "(Ljava/lang/Object;Ljava/util/Queue;Ljava/lang/Object;Ljava/lang/Object;IZZILnet/minecraft/entity/Entity;D)V", false));
+            setup.instructions.insertBefore(queueLoadNode, nativeTraversal);
+            AbstractInsnNode instruction = queueLoadNode;
+            while (instruction != loopExit) {
+                AbstractInsnNode next = instruction.getNext();
+                setup.instructions.remove(instruction);
+                instruction = next;
+            }
+            // Locals spanning the removed loop are debug metadata, not runtime state.
+            if (setup.localVariables != null) setup.localVariables.clear();
+            addGlobalAccessors(node, shape);
+            NativeTerrainFrameAdapter.install(node, setup);
+            NativeTerrainPauseAdapter.install(node, setup, incomingSetup);
+            return;
+        }
 
         MethodInsnNode iterationStart = findIterationProfilerCall(setup, loopStartIndex);
         int handledLocal = setup.maxLocals++;
@@ -369,8 +403,9 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         return method;
     }
 
-    /** Replays OptiFine G5's three observable render-info list updates. */
-    private static MethodNode optifineAppendRenderInfo(TraversalShape shape) {
+    /** Keeps only lists consumed by the installed entity renderers. */
+    private static MethodNode optifineAppendRenderInfo(TraversalShape shape,
+                                                       boolean entities, boolean tiles) {
         MethodNode method = newMethod("ice$appendRenderInfo",
             "(Ljava/lang/Object;Ljava/lang/Object;)V");
         LabelNode addMain = new LabelNode();
@@ -398,20 +433,23 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         addToList(method.instructions, shape.mainInfosField, 1);
         method.instructions.add(afterMain);
 
-        method.instructions.add(new VarInsnNode(Opcodes.ALOAD, chunkLocal));
-        method.instructions.add(copyCall(shape.getChunk));
-        method.instructions.add(copyCall(shape.hasEntities));
-        method.instructions.add(new JumpInsnNode(Opcodes.IFEQ, afterEntities));
-        addToList(method.instructions, shape.entityInfosField, 1);
-        method.instructions.add(afterEntities);
-
-        method.instructions.add(new VarInsnNode(Opcodes.ALOAD, compiledLocal));
-        method.instructions.add(copyCall(shape.compiledTiles));
-        method.instructions.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
-            "java/util/List", "size", "()I", true));
-        method.instructions.add(new JumpInsnNode(Opcodes.IFLE, afterTiles));
-        addToList(method.instructions, shape.tileInfosField, 1);
-        method.instructions.add(afterTiles);
+        if (entities) {
+            method.instructions.add(new VarInsnNode(Opcodes.ALOAD, chunkLocal));
+            method.instructions.add(copyCall(shape.getChunk));
+            method.instructions.add(copyCall(shape.hasEntities));
+            method.instructions.add(new JumpInsnNode(Opcodes.IFEQ, afterEntities));
+            addToList(method.instructions, shape.entityInfosField, 1);
+            method.instructions.add(afterEntities);
+        }
+        if (tiles) {
+            method.instructions.add(new VarInsnNode(Opcodes.ALOAD, compiledLocal));
+            method.instructions.add(copyCall(shape.compiledTiles));
+            method.instructions.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
+                "java/util/List", "size", "()I", true));
+            method.instructions.add(new JumpInsnNode(Opcodes.IFLE, afterTiles));
+            addToList(method.instructions, shape.tileInfosField, 1);
+            method.instructions.add(afterTiles);
+        }
         method.instructions.add(new InsnNode(Opcodes.RETURN));
         return method;
     }
@@ -451,8 +489,11 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         optifine.instructions.add(new InsnNode(Opcodes.IRETURN));
         node.methods.add(optifine);
 
+        boolean nativeTerrain = dev.rlcraft.ice.early.EarlyRendererOwnership.hasNativeTerrainRenderer();
         node.methods.add(shape.optifine
-            ? optifineAppendRenderInfo(shape)
+            ? optifineAppendRenderInfo(shape,
+                !nativeTerrain || !renderLibReplacesLoop(node, "EntityRenderManager", "renderEntities", "renderInfosEntities"),
+                !nativeTerrain || !renderLibReplacesLoop(node, "TileEntityRenderManager", "renderTileEntities", "renderInfosTileEntities"))
             : vanillaAppendRenderInfo());
 
         MethodNode chunks = newMethod("ice$renderChunks", "()[Ljava/lang/Object;");
@@ -555,6 +596,31 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         node.methods.add(inFrustum);
     }
 
+    /** Install-time shape matching; no renderer detection runs during traversal. */
+    private static boolean renderLibReplacesLoop(ClassNode node, String manager, String render, String list) {
+        MethodNode method = findMethod(node, "func_180446_a",
+            "(Lnet/minecraft/entity/Entity;L" + CAMERA + ";F)V");
+        if (method == null) return false;
+        for (AbstractInsnNode n : method.instructions.toArray()) {
+            if (!(n instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) n;
+            if (call.getOpcode() != Opcodes.INVOKESTATIC
+                || !call.owner.equals("meldexun/renderlib/renderer/" + manager)
+                || !call.name.equals(render) || !call.desc.equals("(F)V")) continue;
+            AbstractInsnNode zero = nextCode(call);
+            AbstractInsnNode jump = nextCode(zero);
+            if (zero == null || zero.getOpcode() != Opcodes.ICONST_0
+                || !(jump instanceof JumpInsnNode) || jump.getOpcode() != Opcodes.IFEQ) continue;
+            LabelNode end = ((JumpInsnNode) jump).label;
+            for (AbstractInsnNode cursor = jump.getNext(); cursor != null && cursor != end; cursor = cursor.getNext()) {
+                if (!(cursor instanceof FieldInsnNode) || cursor.getOpcode() != Opcodes.GETFIELD) continue;
+                FieldInsnNode field = (FieldInsnNode) cursor;
+                if (field.owner.equals(node.name) && field.name.equals(list) && field.desc.equals("Ljava/util/List;")) return true;
+            }
+        }
+        return false;
+    }
+
     private static void transformRenderInfo(ClassNode node) {
         requireClass(node, RENDER_INFO);
         addInterface(node, INFO_ACCESS);
@@ -611,6 +677,32 @@ final class PrimitiveTerrainVisibilityAdapter implements OptimizerBytecodeAdapte
         addPrimitiveGetter(node, "ice$renderChunkIndex", "()I", "field_178596_j", "I",
             Opcodes.IRETURN);
         addObjectGetter(node, "ice$bounds", "field_178591_c", "L" + AABB + ";");
+        if (dev.rlcraft.ice.early.EarlyRendererOwnership.hasNativeTerrainRenderer()) {
+            addInterface(node, "dev/rlcraft/ice/optimizer/compat/chunk/NativeTerrainChunkAccessor");
+            node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_TRANSIENT | Opcodes.ACC_SYNTHETIC,
+                "ice$nativeSection", "Ljava/lang/Object;", null, null));
+            addObjectGetter(node, "ice$nativeSection", "ice$nativeSection", "Ljava/lang/Object;");
+            MethodNode set = newMethod("ice$nativeSection", "(Ljava/lang/Object;)V");
+            set.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            set.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            set.instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, node.name, "ice$nativeSection", "Ljava/lang/Object;"));
+            set.instructions.add(new InsnNode(Opcodes.RETURN));
+            node.methods.add(set);
+            // Includes publication and the DUMMY reset on cancellation/reposition.
+            // Only a layer mask is published; GPU ownership stays on the render thread.
+            for (MethodNode method : node.methods) for (AbstractInsnNode n : method.instructions.toArray()) {
+                if (!(n instanceof FieldInsnNode) || n.getOpcode() != Opcodes.PUTFIELD) continue;
+                FieldInsnNode field = (FieldInsnNode) n;
+                if (!field.owner.equals(node.name) || !field.name.equals("field_178590_b")) continue;
+                InsnList publish = new InsnList();
+                publish.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                publish.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                publish.add(new FieldInsnNode(Opcodes.GETFIELD, node.name, field.name, field.desc));
+                publish.add(new MethodInsnNode(Opcodes.INVOKESTATIC, NativeTerrainFrameAdapter.RENDERER,
+                    "publish", "(L" + RENDER_CHUNK + ";L" + COMPILED_CHUNK + ";)V", false));
+                method.instructions.insert(n, publish);
+            }
+        }
 
         MethodNode setFrame = newMethod("ice$setFrameIndex", "(I)Z");
         setFrame.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));

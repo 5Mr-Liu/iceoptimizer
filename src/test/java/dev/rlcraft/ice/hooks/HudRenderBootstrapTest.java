@@ -10,6 +10,37 @@ import org.junit.After;
 import org.junit.Test;
 
 public final class HudRenderBootstrapTest {
+    @Test public void inlineableBarriersCrossAnIsolatedCoreClassloader() throws Exception {
+        java.net.URL output = HudRenderBootstrap.class.getProtectionDomain().getCodeSource().getLocation();
+        try (java.net.URLClassLoader isolated = new java.net.URLClassLoader(new java.net.URL[] {output}, null)) {
+            Class<?> type = Class.forName(HudRenderBootstrap.class.getName(), true, isolated);
+            CallbackBridge.count = 0;
+            assertEquals(Boolean.TRUE, type.getMethod("install", Class.class).invoke(null, CallbackBridge.class));
+            type.getMethod("barrier").invoke(null);
+            type.getMethod("textureBarrier", int.class).invoke(null, 17);
+            assertEquals(18, CallbackBridge.count);
+        }
+    }
+
+    @Test public void invalidCallbacksClearThePreviousInstallation() {
+        CallbackBridge.count = 0;
+        assertTrue(HudRenderBootstrap.install(CallbackBridge.class));
+        assertFalse(HudRenderBootstrap.install(BrokenCallbacks.class));
+        HudRenderBootstrap.barrier();
+        HudRenderBootstrap.textureBarrier(17);
+        assertEquals(0, CallbackBridge.count);
+    }
+
+    public static final class CallbackBridge extends TestBridge {
+        static int count;
+        public static Object[] barrierCallbacks() {
+            return new Object[] { (Runnable) () -> count++,
+                (java.util.function.IntConsumer) value -> count += value };
+        }
+    }
+    public static final class BrokenCallbacks extends TestBridge {
+        public static Object[] barrierCallbacks() { return new Object[] {"invalid"}; }
+    }
     @After
     public void reset() {
         HudRenderBootstrap.resetForTest();
@@ -88,7 +119,7 @@ public final class HudRenderBootstrapTest {
             1, 1, 256, 256));
     }
 
-    public static final class TestBridge {
+    public static class TestBridge {
         static Throwable failure;
         static RuntimeException committedFailure;
         static int posts;

@@ -43,6 +43,10 @@ public final class OptimizerConfigTest {
         assertTrue(OptimizerConfig.settings.lycanitesSpawnScan);
         assertTrue(OptimizerConfig.settings.lycanitesBlockMembership);
         assertTrue(OptimizerConfig.settings.srpSpawnFilter);
+        assertTrue(OptimizerConfig.settings.entityCollisionBoxes);
+        assertTrue(OptimizerConfig.settings.entityNearestQuery);
+        assertTrue(OptimizerConfig.settings.vanillaEquipmentNbt);
+        assertTrue(OptimizerConfig.settings.potionCoreNbt);
         assertTrue(OptimizerConfig.settings.lycanitesObjRender);
         assertTrue(OptimizerConfig.settings.lycanitesModelAnimation);
         assertTrue(OptimizerConfig.settings.lycanitesEffectCache);

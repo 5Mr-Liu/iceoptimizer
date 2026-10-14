@@ -164,6 +164,7 @@ public final class CommonModelStateBatchAdapterTest {
         ClassNode classNode = node(adapted);
         MethodNode rendered = render(classNode);
         assertEquals(2, calls(rendered, CommonModelStateBatchAdapter.BRIDGE, "beginRoots"));
+        assertEquals(partCalls - 2, calls(rendered, CommonModelStateBatchAdapter.BRIDGE, "beforeRoot"));
         assertEquals(1, calls(rendered, CommonModelStateBatchAdapter.BRIDGE, "end"));
         assertEquals(1, calls(rendered, CommonModelStateBatchAdapter.BRIDGE, "endAfterFailure"));
         assertEquals(partCalls, calls(rendered, ModelRendererVboAdapter.TARGET, "func_78785_a"));

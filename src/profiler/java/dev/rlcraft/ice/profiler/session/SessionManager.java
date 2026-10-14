@@ -108,6 +108,10 @@ public final class SessionManager {
         if (current != null) current.addMarker(text);
     }
 
+    public synchronized void addMarker(long epochMillis, String text) {
+        if (current != null) current.addMarker(epochMillis, text);
+    }
+
     public void submitExport(final RecordingSession session) {
         reportExecutor.submit(new Runnable() {
             @Override public void run() {

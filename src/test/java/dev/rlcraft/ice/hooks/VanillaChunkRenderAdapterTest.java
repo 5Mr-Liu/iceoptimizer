@@ -22,6 +22,26 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
 public final class VanillaChunkRenderAdapterTest {
+    @Test
+    public void nativeUploadRetainsIncomingUploaderForExplicitPauseOnly() {
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false, true);
+        try {
+            byte[] transformed = new IceOptimizerTransformer().transform(
+                VanillaChunkRenderAdapter.DISPATCHER.replace('/', '.'),
+                VanillaChunkRenderAdapter.DISPATCHER.replace('/', '.'), syntheticDispatcher(false, 0));
+            assertFalse(hasMethod(transformed, VanillaChunkRenderAdapter.ORIGINAL_UPLOAD,
+                VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR));
+            assertTrue(hasMethod(transformed, NativeTerrainPauseAdapter.PREFIX + VanillaChunkRenderAdapter.UPLOAD_METHOD,
+                VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR));
+            assertEquals(0, countCalls(transformed, VanillaChunkRenderAdapter.UPLOAD_BRIDGE,
+                "tryUpload", "(Lnet/minecraft/client/renderer/BufferBuilder;"
+                    + "Lnet/minecraft/client/renderer/vertex/VertexBuffer;)Z"));
+            assertEquals(1, countCalls(transformed,
+                "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainRenderer", "upload",
+                VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR));
+        } finally { dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false); }
+    }
+
     private static final Sample[] SAMPLES = {
         new Sample("net.minecraft.client.renderer.chunk.ChunkRenderDispatcher",
             "8b0c19529e1c64cb9d38e411c2825c98d6b922a7ba90a095e1d11c4764164299"),
@@ -68,6 +88,33 @@ public final class VanillaChunkRenderAdapterTest {
         assertEquals("vanilla-chunk-dispatch-policy", targets.get(0).adapterId);
         assertEquals("vanilla-chunk-vbo-dispatch", targets.get(1).adapterId);
         assertEquals("modern-terrain-upload-context", targets.get(2).adapterId);
+    }
+
+    @Test
+    public void dispatcherPublishesSoftwareGeometryOnlyAtSuccessAndDiscardsItOnThrow() {
+        String owner = "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher";
+        byte[] transformed = new IceOptimizerTransformer().transform(
+            owner, owner, syntheticDispatcher(false, 0));
+        String descriptor = "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;)V";
+        assertEquals(1, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+            "afterUpload", descriptor));
+        assertEquals(1, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+            "failedUpload", descriptor));
+        final int[] handlers = new int[1];
+        new ClassReader(transformed).accept(new ClassVisitor(Opcodes.ASM5) {
+            @Override public MethodVisitor visitMethod(int access, String name, String desc,
+                                                       String signature, String[] exceptions) {
+                if (!VanillaChunkRenderAdapter.UPLOAD_METHOD.equals(name)
+                    || !VanillaChunkRenderAdapter.UPLOAD_DESCRIPTOR.equals(desc)) return null;
+                return new MethodVisitor(Opcodes.ASM5) {
+                    @Override public void visitTryCatchBlock(org.objectweb.asm.Label start,
+                            org.objectweb.asm.Label end, org.objectweb.asm.Label handler, String type) {
+                        if ("java/lang/Throwable".equals(type)) handlers[0]++;
+                    }
+                };
+            }
+        }, 0);
+        assertEquals(1, handlers[0]);
     }
 
     @Test
@@ -162,7 +209,12 @@ public final class VanillaChunkRenderAdapterTest {
             assertEquals(0, countCallsInMethod(transformed, VanillaChunkRenderAdapter.SORT_METHOD,
                 "java/util/Arrays", "sort", "([Ljava/lang/Object;Ljava/util/Comparator;)V"));
         } else {
+            assertEquals(1, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+                "beforeVertexBufferUpload", "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;)V"));
+            assertEquals(1, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+                "releaseVertexBuffer", "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;)V"));
             assertTrue(hasInterface(transformed, VanillaChunkRenderAdapter.VBO_ACCESS));
+            assertTrue(hasMethod(transformed, "ice$vertexCount", "()I"));
             assertTrue(hasField(transformed, VanillaChunkRenderAdapter.CAPACITY_FIELD, "I"));
             assertTrue(hasMethod(transformed, VanillaChunkRenderAdapter.ORIGINAL_BUFFER_DATA,
                 VanillaChunkRenderAdapter.BUFFER_DATA_DESCRIPTOR));

@@ -144,7 +144,7 @@ public final class ChunkVboUploadBridge {
             builder.reset();
             GPU_UPLOADS.incrementAndGet();
             backend = activeBackend;
-            if (ACTIVATED.compareAndSet(false, true)) {
+            if (!ACTIVATED.get() && ACTIVATED.compareAndSet(false, true)) {
                 OptimizerBridge.activate(MODULE,
                     "区块 VBO 已使用 " + activeBackend + " 有界 Fence staging");
             }

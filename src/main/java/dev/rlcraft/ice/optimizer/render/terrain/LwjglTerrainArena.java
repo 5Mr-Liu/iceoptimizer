@@ -5,6 +5,7 @@ import dev.rlcraft.ice.optimizer.compat.chunk.ChunkAnimatorRenderBridge;
 import dev.rlcraft.ice.optimizer.compat.chunk.ChunkVertexBufferAccessor;
 import dev.rlcraft.ice.optimizer.compat.chunk.TerrainRenderListAccessor;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
+import dev.rlcraft.ice.optimizer.compat.gl.EarlyMatrixStateTracker;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import dev.rlcraft.ice.optimizer.render.arena.ArenaRange;
@@ -18,9 +19,12 @@ import dev.rlcraft.ice.optimizer.render.resource.LwjglRetirementFence;
 import dev.rlcraft.ice.optimizer.render.resource.RenderResourceKind;
 import dev.rlcraft.ice.optimizer.render.resource.RenderThreadGuard;
 import dev.rlcraft.ice.optimizer.render.resource.ResourceLedger;
+import dev.rlcraft.ice.optimizer.render.visibility.CurrentFrameTerrainOcclusion;
+import dev.rlcraft.ice.optimizer.render.visibility.RenderMatrixBridge;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.nio.FloatBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -38,12 +42,14 @@ import net.minecraft.util.BlockRenderLayer;
 import net.minecraft.util.math.BlockPos;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.ARBBufferStorage;
+import org.lwjgl.opengl.ARBCopyBuffer;
 import org.lwjgl.opengl.ARBSync;
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL31;
 import org.lwjgl.opengl.GL32;
 import org.lwjgl.opengl.GL43;
 import org.lwjgl.opengl.GLContext;
@@ -93,14 +99,30 @@ public final class LwjglTerrainArena {
     private final ResourceLedger resources;
     private final CacheBudget budget;
     private final CapabilityReport capabilities;
+    private CurrentFrameTerrainOcclusion visibilitySource;
+    private RenderMatrixBridge.Snapshot visibilityMatrices;
+    private boolean nativeShaderBatching;
+    private boolean directionalCulling;
+    private boolean cpuDirection;
+    private ByteBuffer faceStaging;
+    private CacheBudget.Reservation faceStagingReservation;
+    private final double[] directionalEye = new double[3];
+    private final float[] directionalView = new float[16];
+    private final FloatBuffer directionalViewBuffer = BufferUtils.createFloatBuffer(16);
+    private long shaderBatchDrawCalls;
+    private long shaderBatchCommands;
+    private long directionalCulledVertices;
+    private long shaderBatchFallbacks;
+    private long animatorBatchedMeshes;
     private final TerrainCommandGenerator commandGenerator =
         new TerrainCommandGenerator();
+    private int commandPageFirst;
     private final TerrainCommandGenerator.CommandSink fallbackCommandSink =
         new TerrainCommandGenerator.CommandSink() {
             @Override public void accept(int count, int first, int baseInstance,
                                          int originX, int originY, int originZ,
                                          long sequence, long checksum) {
-                firstCommands.put(first);
+                firstCommands.put(first - commandPageFirst);
                 countCommands.put(count);
             }
         };
@@ -109,11 +131,15 @@ public final class LwjglTerrainArena {
             @Override public void accept(int count, int first, int baseInstance,
                                          int originX, int originY, int originZ,
                                          long sequence, long checksum) {
-                putIndirectCommand(indirectCommands, count, first, baseInstance);
+                putIndirectCommand(indirectCommands, count,
+                    first - commandPageFirst, baseInstance);
             }
         };
     private final long capacityBytes;
     private final long pageBytes;
+    private final BufferPage[] bufferPages;
+    private final boolean[] failedAllocationPages;
+    private final long[] allocationPageCapacities;
     private final IdentityHashMap<VertexBuffer, MeshRecord> meshes =
         new IdentityHashMap<VertexBuffer, MeshRecord>();
     private final ArrayDeque<ArenaRange> pendingRetirement;
@@ -122,9 +148,6 @@ public final class LwjglTerrainArena {
     private GpuArenaAllocator allocator;
     private long arenaGeneration;
     private int bufferId;
-    private RenderHandle bufferHandle;
-    private ByteBuffer mapped;
-    private boolean persistent;
     private boolean mappingPoisoned;
     private Throwable mappingFailure;
     private boolean lastUploadPersistent;
@@ -147,10 +170,13 @@ public final class LwjglTerrainArena {
     private boolean lastSubmissionStarted;
     private long nextSequence;
     private long uploadedBytes;
+    private long exactSizeReplacementUploads;
     private long rejectedUploads;
     private long busyFences;
     private long invalidPayloads;
     private long drawCalls;
+    private long arrayLayoutSets;
+    private long arrayLayoutReuses;
     private long multiDrawCalls;
     private long indirectDrawCalls;
     private long indirectFallbacks;
@@ -163,6 +189,7 @@ public final class LwjglTerrainArena {
     private long failedBindingQueryInvalidation = Long.MIN_VALUE;
     private final long[] indirectReasons =
         new long[TerrainIndirectReason.values().length];
+    private final LwjglTerrainUploadStream uploadStream;
     private TerrainIndirectReason acquireIndirectFailureReason;
     private TerrainIndirectReason slotCapacityFailureReason;
     private long strandedRanges;
@@ -186,21 +213,43 @@ public final class LwjglTerrainArena {
         }
         this.guard = guard;
         this.resources = resources;
+        this.uploadStream = new LwjglTerrainUploadStream(resources);
         this.budget = budget;
         this.capabilities = capabilities;
         this.pendingRetirement = pendingRetirement;
-        long bounded = Math.max(16L * 1024L * 1024L,
-            Math.min(128L * 1024L * 1024L, requestedCapacity));
+        long bounded = Math.max(16L * 1024L * 1024L, requestedCapacity);
         bounded = Math.min((long) Integer.MAX_VALUE - STRIDE, bounded);
-        long nominalPage = 4L * 1024L * 1024L;
-        pageBytes = nominalPage - nominalPage % STRIDE;
+        long nominalPage = 16L * 1024L * 1024L;
+        // A complete quad is 112 bytes. Every page starts on a quad boundary
+        // and can contain the largest accepted upload without spanning VBOs.
+        pageBytes = nominalPage - nominalPage % (STRIDE * 4L);
         capacityBytes = Math.max(pageBytes, bounded - bounded % pageBytes);
+        bufferPages = new BufferPage[(int) (capacityBytes / pageBytes)];
+        failedAllocationPages = new boolean[bufferPages.length];
+        allocationPageCapacities = new long[bufferPages.length];
         arenaGeneration = generation;
         allocator = new GpuArenaAllocator(pageBytes, capacityBytes, 4L,
-            generation, budget);
+            generation, budget, pageBytes, GpuArenaAllocator.rangeHeapBytes() + 128L);
         for (int i = 0; i < indirectSlots.length; i++) {
             indirectSlots[i] = new IndirectSlot();
         }
+    }
+
+    public void configureNativeBatching(boolean enabled, boolean cullFaces) {
+        guard.check();
+        nativeShaderBatching = enabled;
+        directionalCulling = cullFaces;
+    }
+
+    public void configureVisibility(FrameStamp frame, CurrentFrameTerrainOcclusion source,
+                                    RenderMatrixBridge.Snapshot matrices) {
+        visibilitySource = source;
+        visibilityMatrices = matrices;
+    }
+
+    /** Existing upload hook invalidates addresses while retaining reusable vertex layouts. */
+    public void beforeBufferStorageReplacement(VertexBuffer vertexBuffer) {
+        guard.check();
     }
 
     public boolean upload(TerrainUploadContext.Value context, BufferBuilder builder,
@@ -236,54 +285,66 @@ public final class LwjglTerrainArena {
             invalidPayloads++;
             return false;
         }
+        TerrainVertexSpace vertexSpace = TerrainVertexSpace.capture(builder, context.getChunk());
+        if (vertexSpace == null) {
+            invalidPayloads++;
+            return false;
+        }
         if (!ensureStaging(bytes)) {
             rejectedUploads++;
             return false;
         }
-        if (!ensureBuffer(stamp, allowPersistentStorage)) {
+        MeshRecord previous = meshes.get(vertexBuffer);
+        ArenaRange range = allocateUploadRange(bytes, previous, stamp);
+        if (range == null) {
             rejectedUploads++;
             return false;
         }
-        ArenaRange range = allocator.allocate(bytes);
-        if (range == null || range.getOffset() % STRIDE != 0L
-            || range.endExclusive() > capacityBytes) {
-            if (range != null) allocator.free(range);
-            rejectedUploads++;
-            return false;
-        }
+        boolean reused = previous != null && range == previous.range;
 
         BlockPos position = context.getChunk().getPosition();
         int regionX = regionOrigin(position.getX());
         int regionY = regionOrigin(position.getY());
         int regionZ = regionOrigin(position.getZ());
         MeshRecord replacement = null;
-        MeshRecord previous = null;
         boolean putReturned = false;
         boolean previousRetired = false;
         try {
             ByteBuffer normalized = normalizeIntoStaging(source, sourceBytes,
-                stride, bytes, position, regionX, regionY, regionZ, staging);
-            long normalizedChecksum = checksum(normalized, bytes);
+                stride, bytes, vertexSpace.originX, vertexSpace.originY, vertexSpace.originZ,
+                vertexSpace.scale, vertexSpace.translation, regionX, regionY, regionZ, staging);
+            TerrainFaceRanges faces = null;
+            // Only opaque ordinary terrain may be reordered. A ShaderPack
+            // shadow copy and every translucent mesh retain their exact order.
+            if (nativeShaderBatching && directionalCulling && !retainLegacyCopy
+                && layer == TerrainLayer.SOLID && ensureFaceStaging(bytes)) {
+                faces = TerrainFaceRanges.group(normalized, faceStaging, bytes);
+                normalized = faceStaging;
+            }
             lastUploadPersistent = write(range, normalized,
-                preferPersistentWrite);
+                allowPersistentStorage && preferPersistentWrite);
             TerrainMesh mesh = TerrainMesh.metadataOnly(layer, vertices, STRIDE,
                 position.getX(), position.getY(), position.getZ(),
-                nextSequence(), normalizedChecksum, range);
+                // Production draws need no diagnostic payload checksum.
+                nextSequence(), 0L, range);
+            mesh.setFaceRanges(faces);
             replacement = new MeshRecord(context.getChunk(), regionX, regionY,
-                regionZ, stamp, mesh, lastUploadPersistent, retainLegacyCopy);
-            previous = meshes.get(vertexBuffer);
+                regionZ, stamp, mesh, retainLegacyCopy);
             MeshRecord displaced = meshes.put(vertexBuffer, replacement);
             putReturned = true;
             if (displaced != previous) {
                 throw new IllegalStateException(
                     "terrain mesh registry changed during publication");
             }
-            if (previous != null) {
+            if (previous != null && !reused) {
                 retireOrStrand(previous.range);
                 previousRetired = true;
             }
             if (!retainLegacyCopy) builder.reset();
             uploadedBytes = safeAdd(uploadedBytes, bytes);
+            if (reused && bytes == range.getLength()) {
+                exactSizeReplacementUploads = safeAdd(exactSizeReplacementUploads, 1L);
+            }
             if (lastUploadPersistent) {
                 persistentUploads = safeAdd(persistentUploads, 1L);
             } else {
@@ -291,16 +352,94 @@ public final class LwjglTerrainArena {
             }
             return true;
         } catch (Throwable error) {
-            Throwable failure = rollbackFailedUpload(vertexBuffer, replacement,
-                previous, putReturned, previousRetired, range, error);
+            Throwable failure = reused
+                ? rollbackReusedUpload(vertexBuffer, range, error)
+                : rollbackFailedUpload(vertexBuffer, replacement,
+                    previous, putReturned, previousRetired, range, error);
             rethrow(failure);
             return false;
         }
     }
 
+    private ArenaRange allocateUploadRange(int bytes, MeshRecord previous,
+                                          FrameStamp stamp) {
+        // Resident writes are ordered GPU copies or glBufferSubData, never
+        // CPU writes into a draw buffer. An equal-size rebuild can keep its
+        // address even with queued old draws, avoiding allocation/retirement
+        // churn without retaining an oversized tail. Failure uses the existing
+        // reused-upload rollback, which discards metadata for changed bytes.
+        if (previous != null && bytes == previous.range.getLength()
+            && allocator.ownsLiveRange(previous.range)) return previous.range;
+        captureAllocationPageCapacities();
+        ArenaRange range = allocator.allocatePaged(bytes, allocationPageCapacities, null);
+        if (range == null) {
+            // Poll only on allocation pressure; these are zero-timeout polls.
+            // Finished replacements should be reusable before rejecting a
+            // new mesh merely because endFrame has not visited their batch.
+            collectRetired(retired.size(), true);
+            captureAllocationPageCapacities();
+            range = allocator.allocatePaged(bytes, allocationPageCapacities, null);
+        }
+        boolean retrying = false;
+        while (range != null) {
+            try {
+                if (ensureBuffer(range, stamp)) return range;
+            } catch (Throwable error) {
+                try { allocator.free(range); }
+                catch (Throwable cleanup) { error = appendFailure(error, cleanup); }
+                rethrow(error);
+            }
+            int failedPage = pageIndex(range);
+            allocator.free(range);
+            if (!retrying) {
+                java.util.Arrays.fill(failedAllocationPages, false);
+                retrying = true;
+            }
+            failedAllocationPages[failedPage] = true;
+            captureAllocationPageCapacities();
+            long available = budget.availableBytes(BudgetKind.GPU);
+            if (!contextCapabilities.OpenGL31 && !contextCapabilities.GL_ARB_copy_buffer
+                && available < pageBytes) available = 0L;
+            range = allocator.allocatePaged(bytes, allocationPageCapacities, failedAllocationPages,
+                available);
+        }
+        // Both GPU copy and glBufferSubData are ordered after queued draws.
+        // On a full arena they can replace an equal/smaller mesh in place;
+        // no CPU writes touch the draw buffer. Unused tail bytes stay owned.
+        return previous != null && bytes <= previous.range.getLength()
+            ? previous.range : null;
+    }
+
+    private void captureAllocationPageCapacities() {
+        for (int page = 0; page < bufferPages.length; page++) {
+            BufferPage buffer = bufferPages[page];
+            allocationPageCapacities[page] = buffer == null ? 0L : buffer.capacity;
+        }
+    }
+
+    private Throwable rollbackReusedUpload(VertexBuffer vertexBuffer,
+                                             ArenaRange range,
+                                             Throwable failure) {
+        // The queued update may have changed old bytes already: discard its
+        // metadata rather than presenting an old mesh with new vertex data.
+        try {
+            meshes.remove(vertexBuffer);
+            retireOrStrand(range);
+        } catch (Throwable cleanup) {
+            failure = appendFailure(failure, cleanup);
+            strandRange(range);
+        }
+        return failure;
+    }
+
     public void release(VertexBuffer vertexBuffer) {
         guard.check();
         if (vertexBuffer == null) return;
+        try {
+        } finally { releaseMesh(vertexBuffer); }
+    }
+
+    private void releaseMesh(VertexBuffer vertexBuffer) {
         MeshRecord previous = null;
         boolean previousKnown = false;
         boolean retirementAttempted = false;
@@ -339,13 +478,16 @@ public final class LwjglTerrainArena {
     public boolean beforeLegacyUpload(VertexBuffer vertexBuffer) {
         guard.check();
         if (vertexBuffer == null) return false;
+        beforeBufferStorageReplacement(vertexBuffer);
         MeshRecord record = meshes.get(vertexBuffer);
         if (record != null && record.retainLegacyCopy
             && record.legacyUploadExpected) {
             record.legacyUploadExpected = false;
             return true;
         }
-        release(vertexBuffer);
+        // Replacing this buffer's storage leaves its name and VAO layout valid.
+        // Deletion, unlike bufferData, goes through release() above.
+        releaseMesh(vertexBuffer);
         return false;
     }
 
@@ -444,45 +586,81 @@ public final class LwjglTerrainArena {
         lastIndirectEligibleCommands = 0;
         lastSubmissionStarted = false;
         indirectFailure = null;
-        if (!(container instanceof TerrainRenderListAccessor) || bufferId == 0) return false;
+        if (!(container instanceof TerrainRenderListAccessor)) return false;
         TerrainRenderListAccessor accessor = (TerrainRenderListAccessor) container;
         if (!accessor.ice$initialized()) return false;
         TerrainLayer expected = layer(blockLayer);
-        if (expected == null || !ownsAny(container, blockLayer)) return false;
+        if (expected == null) return false;
         List<RenderChunk> visible = accessor.ice$renderChunks();
+        if (!ownsAny(container, blockLayer)) return false;
+        // Direction tests are once per layer, then O(1) per face range. The
+        // ordinary fixed pipeline retains exact fog/lightmap/model semantics.
+        cpuDirection = batchMappedRanges && nativeShaderBatching && directionalCulling
+            && expected == TerrainLayer.SOLID && directionStateSafe()
+            && captureDirectionalEye();
         int previousArrayBuffer = preserveArrayBufferBinding();
+        int arrayLayoutBuffer = 0;
         int index = 0;
         boolean completed = false;
         Throwable failure = null;
         try {
+            if (visibilitySource != null && blockLayer == BlockRenderLayer.SOLID)
+                visibilitySource.filterAdaptive(container, blockLayer, visibilityMatrices);
             while (index < visible.size()) {
                 RenderChunk chunk = visible.get(index);
                 MeshRecord record = record(chunk, expected);
                 if (record == null) {
-                    drawLegacy(chunk, blockLayer, accessor);
-                    drawCalls++;
-                    index++;
+                    arrayLayoutBuffer = 0;
+                    index = drawLegacyRun(visible, index, blockLayer, accessor);
                     continue;
                 }
                 if (ChunkAnimatorRenderBridge.requiresCompatibilityDraw(chunk)) {
+                    arrayLayoutBuffer = 0;
                     drawMappedWithCompatibilityTransform(chunk, record, accessor,
                         frameId);
                     index++;
                     continue;
                 }
+                if (batchMappedRanges && nativeShaderBatching
+                    && chunk.getClass() == RenderChunk.class) {
+                    int regionEnd = index + 1;
+                    while (regionEnd < visible.size()) {
+                        RenderChunk nextChunk = visible.get(regionEnd);
+                        // Do not call an unknown virtual getter while a shared
+                        // transform is active, or cross a compatibility draw.
+                        if (nextChunk.getClass() != RenderChunk.class) break;
+                        MeshRecord next = record(nextChunk, expected);
+                        if (next == null || !record.sameRegion(next)
+                            || ChunkAnimatorRenderBridge.requiresCompatibilityDraw(nextChunk)) break;
+                        regionEnd++;
+                    }
+                    if (regionEnd > index + 1) {
+                        arrayLayoutBuffer = drawMappedRegion(visible, index, regionEnd,
+                            expected, accessor, frameId, record, arrayLayoutBuffer);
+                        index = regionEnd;
+                        continue;
+                    }
+                }
                 int end = index + 1;
+                // Unknown virtual getters can mutate GL state during a scan.
+                // Reuse layouts only across exact vanilla chunk instances.
+                boolean reusableLayout = chunk.getClass() == RenderChunk.class;
                 if (batchMappedRanges) {
                     while (end < visible.size()) {
                         RenderChunk nextChunk = visible.get(end);
+                        if (nextChunk.getClass() != RenderChunk.class) reusableLayout = false;
                         MeshRecord next = record(nextChunk, expected);
                         if (next == null || !record.sameRegion(next)
+                            || pageIndex(record.range) != pageIndex(next.range)
                             || ChunkAnimatorRenderBridge
                                 .requiresCompatibilityDraw(nextChunk)) break;
                         end++;
                     }
                 }
                 drawMappedRun(visible, index, end, expected, accessor,
-                    useIndirect, frameId);
+                    useIndirect && !nativeShaderBatching, frameId,
+                    reusableLayout ? arrayLayoutBuffer : 0);
+                arrayLayoutBuffer = reusableLayout ? nativeBuffer(record.range) : 0;
                 index = end;
             }
             completed = true;
@@ -512,57 +690,16 @@ public final class LwjglTerrainArena {
         return true;
     }
 
-    /** Expensive readback is used only by the OUTPUT_VALIDATE state. */
-    public Boolean validateOne(Object container, BlockRenderLayer blockLayer,
-                               FrameStamp current) {
-        return validateOne(container, blockLayer, current, false);
-    }
-
-    public Boolean validateOnePersistent(Object container,
-                                         BlockRenderLayer blockLayer,
-                                         FrameStamp current) {
-        return validateOne(container, blockLayer, current, true);
-    }
-
-    private Boolean validateOne(Object container, BlockRenderLayer blockLayer,
-                                FrameStamp current, boolean persistentOnly) {
-        guard.check();
-        if (!(container instanceof TerrainRenderListAccessor) || bufferId == 0) return false;
-        TerrainLayer expected = layer(blockLayer);
-        for (RenderChunk chunk : ((TerrainRenderListAccessor) container).ice$renderChunks()) {
-            MeshRecord record = record(chunk, expected);
-            if (record == null || !record.matchesGeneration(current)) continue;
-            if (persistentOnly && !record.persistentUpload) continue;
-            int bytes = record.byteCount;
-            if (!ensureStaging(bytes)) return Boolean.FALSE;
-            int previous = preserveArrayBufferBinding();
-            Boolean result = null;
-            Throwable failure = null;
-            try {
-                bindArrayBuffer(bufferId);
-                staging.clear();
-                staging.limit(bytes);
-                GL15.glGetBufferSubData(GL15.GL_ARRAY_BUFFER,
-                    record.range.getOffset(), staging);
-                result = Boolean.valueOf(
-                    checksum(staging, bytes) == record.checksum);
-            } catch (Throwable error) {
-                failure = appendFailure(failure, error);
-            } finally {
-                try { restoreArrayBufferBinding(previous); }
-                catch (Throwable restoreError) {
-                    failure = appendFailure(failure, restoreError);
-                }
-            }
-            if (failure != null) rethrow(failure);
-            return result;
-        }
-        return null;
-    }
-
     public void endFrame(boolean contextValid) {
         guard.check();
+        if (contextValid) try { uploadStream.endFrame(); }
+        catch (Throwable error) {
+            mappingPoisoned = true;
+            recordMappingFailure(error);
+            FatalErrors.rethrowIfFatal(error);
+        }
         collectRetired(8, contextValid);
+        if (contextValid) retireEmptyPages();
         if (pendingRetirement.isEmpty()) return;
         if (!contextValid) {
             pendingRetirement.clear();
@@ -626,6 +763,7 @@ public final class LwjglTerrainArena {
         failure = releaseRetiredFences(contextValid, failure);
         try { closeIndirectSlots(contextValid); }
         catch (Throwable error) { failure = appendFailure(failure, error); }
+        visibilitySource = null; visibilityMatrices = null;
         try { closeBuffer(contextValid); }
         catch (Throwable error) { failure = appendFailure(failure, error); }
         try {
@@ -647,6 +785,7 @@ public final class LwjglTerrainArena {
         failure = releaseRetiredFences(contextValid, failure);
         try { closeIndirectSlots(contextValid); }
         catch (Throwable error) { failure = appendFailure(failure, error); }
+        visibilitySource = null; visibilityMatrices = null;
         try { closeBuffer(contextValid); }
         catch (Throwable error) { failure = appendFailure(failure, error); }
         try { closeStaging(); }
@@ -657,6 +796,7 @@ public final class LwjglTerrainArena {
     }
 
     public long getUploadedBytes() { return uploadedBytes; }
+    public long getExactSizeReplacementUploads() { return exactSizeReplacementUploads; }
     public long getRejectedUploads() { return rejectedUploads; }
     public long getInvalidPayloads() { return invalidPayloads; }
     public int getOwnedMeshes() { guard.check(); return meshes.size(); }
@@ -679,8 +819,30 @@ public final class LwjglTerrainArena {
         return bytes;
     }
     public ArenaStatus allocatorStatus() { guard.check(); return allocator.snapshot(); }
+    public long getMaximumCapacityBytes() { return capacityBytes; }
+    public long getAllocatedBufferBytes() {
+        guard.check();
+        long bytes = 0L;
+        for (BufferPage page : bufferPages) if (page != null) bytes += page.capacity;
+        return bytes;
+    }
     public long getBusyFences() { return busyFences; }
     public long getDrawCalls() { return drawCalls; }
+    public long getArrayLayoutSets() { return arrayLayoutSets; }
+    public long getArrayLayoutReuses() { return arrayLayoutReuses; }
+    public long getShaderBatchDrawCalls() { return shaderBatchDrawCalls; }
+    public long getShaderBatchCommands() { return shaderBatchCommands; }
+    public long getDirectionalCulledVertices() { return directionalCulledVertices; }
+    public long getShaderBatchFallbacks() { return shaderBatchFallbacks; }
+    public long getAnimatorBatchedMeshes() { return animatorBatchedMeshes; }
+    public String getShaderBatchDetail() {
+        return shaderBatchDrawCalls == 0L ? "not-initialized"
+            : nativeShaderBatching ? "ordered-fixed-ranges" : "legacy-arena";
+    }
+    public long getGpuVisibilityFrames() { return 0L; }
+    public long getGpuVisibilityCandidates() { return 0L; }
+    public long getGpuVisibilityFaces() { return 0L; }
+    public Throwable consumeShaderBatchFailure() { return null; }
     public long getMultiDrawCalls() { return multiDrawCalls; }
     public long getIndirectDrawCalls() { return indirectDrawCalls; }
     public long getIndirectFallbacks() { return indirectFallbacks; }
@@ -710,13 +872,26 @@ public final class LwjglTerrainArena {
     public boolean wasLastSubmissionStarted() { return lastSubmissionStarted; }
     public long getStrandedRanges() { return strandedRanges; }
     public long getStrandedBytes() { return strandedBytes; }
+    /** On-demand diagnostics; never scanned on the per-frame draw path. */
+    public long getLiveVertexBytes() {
+        long bytes = 0L;
+        for (MeshRecord record : meshes.values()) bytes += (long) record.vertexCount * STRIDE;
+        return bytes;
+    }
+    public long getLiveUnusedTailBytes() {
+        long bytes = 0L;
+        for (MeshRecord record : meshes.values())
+            bytes += record.range.getLength() - (long) record.vertexCount * STRIDE;
+        return bytes;
+    }
     public Throwable consumePublicationFailure() {
         Throwable result = publicationFailure;
         publicationFailure = null;
         return result;
     }
     void retireRangeForTest(ArenaRange range) { retireOrStrand(range); }
-    public boolean isPersistent() { return persistent; }
+    public boolean isPersistent() { return uploadStream.isMapped(); }
+    public long getUploadStagingBytes() { return uploadStream.allocatedBytes(); }
     public boolean wasLastUploadPersistent() { return lastUploadPersistent; }
     public long getPersistentUploads() { return persistentUploads; }
     public long getSubDataUploads() { return subDataUploads; }
@@ -734,22 +909,31 @@ public final class LwjglTerrainArena {
         return result;
     }
 
-    private boolean ensureBuffer(FrameStamp stamp,
-                                 boolean allowPersistentStorage) {
-        if (bufferId != 0) return true;
+    private boolean ensureBuffer(ArenaRange range, FrameStamp stamp) {
+        int pageIndex = pageIndex(range);
+        BufferPage oldPage = bufferPages[pageIndex];
+        long required = pageOffset(range) + range.getLength();
+        if (oldPage != null && oldPage.capacity >= required) return true;
         contextCapabilities = GLContext.getCapabilities();
+        boolean canCopy = contextCapabilities.OpenGL31 || contextCapabilities.GL_ARB_copy_buffer;
+        long physicalBytes = physicalPageCapacity(required, pageBytes, canCopy);
         int previous = preserveArrayBufferBinding();
         CacheBudget.Reservation reservation = null;
         int created = 0;
-        ByteBuffer createdMapping = null;
-        boolean createdPersistent = false;
         boolean allocationReturned = false;
         boolean nativeNameCreated = false;
-        boolean nativeDeleteAttempted = false;
         boolean result = false;
         Throwable failure = null;
         try {
-            reservation = resources.reserveGpu(capacityBytes);
+            reservation = resources.reserveGpu(physicalBytes);
+            if (reservation == null && canCopy && required < physicalBytes) {
+                long fitted = physicalPageCapacityUnderBudget(required, physicalBytes,
+                    budget.availableBytes(BudgetKind.GPU));
+                if (fitted > 0L && fitted < physicalBytes) {
+                    reservation = resources.reserveGpu(fitted);
+                    if (reservation != null) physicalBytes = fitted;
+                }
+            }
             if (reservation == null) {
                 // State still has to be restored because preserving the
                 // compatibility binding may have pushed client attributes.
@@ -762,80 +946,13 @@ public final class LwjglTerrainArena {
                 "terrain glGenBuffers failed");
             nativeNameCreated = true;
             bindArrayBuffer(created);
-            if (allowPersistentStorage
-                && capabilities.passed(ModernCapability.PERSISTENT_MAPPING)) {
-                try {
-                    int storage = GL30.GL_MAP_WRITE_BIT
-                        | ARBBufferStorage.GL_MAP_PERSISTENT_BIT
-                        | ARBBufferStorage.GL_DYNAMIC_STORAGE_BIT;
-                    int mapping = GL30.GL_MAP_WRITE_BIT
-                        | ARBBufferStorage.GL_MAP_PERSISTENT_BIT
-                        | GL30.GL_MAP_FLUSH_EXPLICIT_BIT;
-                    ARBBufferStorage.glBufferStorage(GL15.GL_ARRAY_BUFFER, capacityBytes, storage);
-                    createdMapping = GL30.glMapBufferRange(GL15.GL_ARRAY_BUFFER, 0L,
-                        capacityBytes, mapping, null);
-                    if (createdMapping == null) throw new IllegalStateException(
-                        "null terrain mapping");
-                    createdMapping.order(ByteOrder.nativeOrder());
-                    createdPersistent = true;
-                } catch (Throwable mappingFailure) {
-                    mappingPoisoned = true;
-                    if (createdMapping != null) {
-                        try {
-                            if (!GL15.glUnmapBuffer(GL15.GL_ARRAY_BUFFER)) {
-                                throw new IllegalStateException(
-                                    "failed terrain mapping unmap reported corruption");
-                            }
-                        }
-                        catch (Throwable cleanup) {
-                            mappingFailure = appendFailure(mappingFailure,
-                                cleanup);
-                        }
-                    }
-                    createdMapping = null;
-                    createdPersistent = false;
-                    boolean deleteCompleted = false;
-                    nativeDeleteAttempted = true;
-                    try {
-                        GL15.glDeleteBuffers(created);
-                        deleteCompleted = true;
-                    } catch (Throwable cleanup) {
-                        Throwable combined = appendFailure(mappingFailure,
-                            cleanup);
-                        recordMappingFailure(combined);
-                        throw propagate(combined);
-                    }
-                    if (!deleteCompleted) {
-                        recordMappingFailure(mappingFailure);
-                        throw propagate(mappingFailure);
-                    }
-                    created = 0;
-                    nativeNameCreated = false;
-                    recordMappingFailure(mappingFailure);
-                    FatalErrors.rethrowIfFatal(mappingFailure);
-                    try {
-                        allocationReturned = false;
-                        nativeDeleteAttempted = false;
-                        created = GL15.glGenBuffers();
-                        allocationReturned = true;
-                        if (created <= 0) throw new IllegalStateException(
-                            "terrain fallback glGenBuffers failed");
-                        nativeNameCreated = true;
-                        bindArrayBuffer(created);
-                        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, capacityBytes,
-                            GL15.GL_DYNAMIC_DRAW);
-                    } catch (Throwable fallbackFailure) {
-                        Throwable combined = appendFailure(fallbackFailure,
-                            mappingFailure);
-                        recordMappingFailure(combined);
-                        throw propagate(combined);
-                    }
-                }
-            } else {
-                GL15.glBufferData(GL15.GL_ARRAY_BUFFER, capacityBytes, GL15.GL_DYNAMIC_DRAW);
-            }
+            // Long-lived vertex data is never CPU-mapped. On the tested driver
+            // mapped terrain was much slower to draw, even between uploads.
+            // CPU-visible storage belongs only to the bounded upload stream.
+            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, physicalBytes, GL15.GL_STATIC_DRAW);
+            if (oldPage != null) copyPage(oldPage);
             RenderHandle registered = resources.registerReserved(
-                RenderResourceKind.BUFFER, created, capacityBytes,
+                RenderResourceKind.BUFFER, created, physicalBytes,
                 stamp.getResourceGeneration(), stamp.getGlContextGeneration(),
                 reservation);
             if (registered != null) {
@@ -844,33 +961,17 @@ public final class LwjglTerrainArena {
                 created = 0;
                 nativeNameCreated = false;
                 reservation = null;
+                bufferPages[pageIndex] = new BufferPage(publishedId, registered, physicalBytes);
                 bufferId = publishedId;
-                bufferHandle = registered;
-                mapped = createdMapping;
-                createdMapping = null;
-                persistent = createdPersistent;
-                if (createdPersistent) mappingPoisoned = false;
                 result = true;
+                if (oldPage != null) failure = retirePage(oldPage, failure);
             }
             }
         } catch (Throwable error) {
-            failure = error;
-        }
-        if (createdMapping != null) {
-            createdMapping = null;
-            try {
-                if (!GL15.glUnmapBuffer(GL15.GL_ARRAY_BUFFER)) {
-                    failure = appendFailure(failure,
-                        new IllegalStateException(
-                            "terrain buffer unmap reported corruption"));
-                }
-            } catch (Throwable cleanup) {
-                failure = appendFailure(failure, cleanup);
-            }
+            failure = appendFailure(failure, error);
         }
         boolean deleteCompleted = false;
-        if (nativeNameCreated && !nativeDeleteAttempted) {
-            nativeDeleteAttempted = true;
+        if (nativeNameCreated) {
             try {
                 GL15.glDeleteBuffers(created);
                 deleteCompleted = true;
@@ -894,49 +995,72 @@ public final class LwjglTerrainArena {
         return result;
     }
 
+    static long physicalPageCapacity(long required, long maximum) {
+        return physicalPageCapacity(required, maximum, true);
+    }
+
+    static long physicalPageCapacity(long required, long maximum, boolean canCopy) {
+        if (required <= 0L || required > maximum) throw new IllegalArgumentException("terrain page extent");
+        // VBO + ARB_sync contexts predate buffer copying. Keep their original
+        // physical page size so later uploads never require an unavailable API.
+        if (!canCopy) return maximum;
+        long size = Math.min(256L * 1024L, maximum);
+        while (size < required) size = Math.min(size << 1, maximum);
+        return size;
+    }
+
+    /** Fit real spare payload space without dropping the old in-flight page. */
+    static long physicalPageCapacityUnderBudget(long required, long preferred, long available) {
+        long capacity = Math.min(preferred, available);
+        if (capacity < required) return 0L;
+        long aligned = capacity - capacity % (256L * 1024L);
+        return aligned >= required ? aligned : required;
+    }
+
+    /** Destination is the new GL_ARRAY_BUFFER; both storage names remain owned. */
+    private void copyPage(BufferPage source) {
+        int previous = GL11.glGetInteger(GL31.GL_COPY_READ_BUFFER_BINDING);
+        Throwable failure = null;
+        try {
+            GL15.glBindBuffer(GL31.GL_COPY_READ_BUFFER, source.nativeId);
+            if (contextCapabilities.OpenGL31) {
+                GL31.glCopyBufferSubData(GL31.GL_COPY_READ_BUFFER, GL15.GL_ARRAY_BUFFER,
+                    0L, 0L, source.capacity);
+            } else {
+                ARBCopyBuffer.glCopyBufferSubData(GL31.GL_COPY_READ_BUFFER, GL15.GL_ARRAY_BUFFER,
+                    0L, 0L, source.capacity);
+            }
+        } catch (Throwable error) { failure = error; }
+        finally {
+            try { GL15.glBindBuffer(GL31.GL_COPY_READ_BUFFER, previous); }
+            catch (Throwable error) { failure = appendFailure(failure, error); }
+        }
+        if (failure != null) rethrow(failure);
+    }
+
     private boolean write(ArenaRange range, ByteBuffer normalized,
                           boolean preferPersistentWrite) {
-        int offset = checkedInt(range.getOffset());
-        int bytes = normalized.remaining();
-        if (preferPersistentWrite && mapped != null && !mappingPoisoned) {
-            int previous = Integer.MIN_VALUE;
-            boolean bindingPreserved = false;
-            Throwable failure = null;
+        BufferPage page = bufferPages[pageIndex(range)];
+        int offset = pageOffset(range);
+        if (preferPersistentWrite && !mappingPoisoned
+            && capabilities.passed(ModernCapability.PERSISTENT_MAPPING)
+            && (contextCapabilities.OpenGL31 || contextCapabilities.GL_ARB_copy_buffer)) {
             try {
-                ByteBuffer destination = mapped.duplicate()
-                    .order(ByteOrder.nativeOrder());
-                destination.position(offset);
-                destination.limit(checkedInt(range.endExclusive()));
-                destination.put(normalized.duplicate());
-                previous = preserveArrayBufferBinding();
-                bindingPreserved = true;
-                bindArrayBuffer(bufferId);
-                GL30.glFlushMappedBufferRange(GL15.GL_ARRAY_BUFFER,
-                    range.getOffset(), bytes);
+                if (uploadStream.upload(page.handle, offset, normalized)) return true;
             } catch (Throwable error) {
-                failure = appendFailure(failure, error);
-            } finally {
-                if (bindingPreserved) try {
-                    restoreArrayBufferBinding(previous);
-                } catch (Throwable restoreError) {
-                    EarlyGlStateTracker.invalidate();
-                    failure = appendFailure(failure, restoreError);
-                }
+                // The unpublished destination can safely receive the same
+                // bytes again through the ordered GL fallback.
+                mappingPoisoned = true;
+                recordMappingFailure(error);
+                EarlyGlStateTracker.invalidate();
+                FatalErrors.rethrowIfFatal(error);
             }
-            if (failure == null) return true;
-            // The range is not published yet. Re-uploading identical bytes
-            // through subdata repairs a partial mapped write without ever
-            // exposing it to a draw.
-            mappingPoisoned = true;
-            recordMappingFailure(failure);
-            EarlyGlStateTracker.invalidate();
-            FatalErrors.rethrowIfFatal(failure);
         }
         int previous = preserveArrayBufferBinding();
         Throwable failure = null;
         try {
-            bindArrayBuffer(bufferId);
-            GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, range.getOffset(),
+            bindArrayBuffer(page.nativeId);
+            GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, offset,
                 normalized.duplicate());
         } catch (Throwable error) {
             failure = appendFailure(failure, error);
@@ -976,28 +1100,144 @@ public final class LwjglTerrainArena {
         return true;
     }
 
+    private boolean ensureFaceStaging(int required) {
+        if (required <= 0 || required > MAX_UPLOAD_BYTES) return false;
+        if (faceStaging != null && faceStaging.capacity()
+            >= TerrainFaceRanges.storageBytes(required)) return true;
+        int capacity = 64 * 1024;
+        while (capacity < required) capacity <<= 1;
+        capacity = TerrainFaceRanges.storageBytes(capacity);
+        CacheBudget.Reservation reservation = budget.tryReserve(BudgetKind.DIRECT, capacity);
+        if (reservation == null) return false;
+        ByteBuffer replacement;
+        try { replacement = BufferUtils.createByteBuffer(capacity).order(ByteOrder.nativeOrder()); }
+        catch (Throwable error) {
+            try { reservation.close(); }
+            catch (Throwable cleanup) { error = appendFailure(error, cleanup); }
+            rethrow(error);
+            return false;
+        }
+        CacheBudget.Reservation previous = faceStagingReservation;
+        faceStaging = replacement;
+        faceStagingReservation = reservation;
+        if (previous != null) previous.close();
+        return true;
+    }
+
+    private static boolean directionStateSafe() {
+        EarlyGlStateTracker.CompatibilitySnapshot state = EarlyGlStateTracker.compatibilitySnapshot();
+        int program = EarlyGlStateTracker.modelProgramBinding();
+        if (program == Integer.MIN_VALUE) program = GL11.glGetInteger(org.lwjgl.opengl.GL20.GL_CURRENT_PROGRAM);
+        return program == 0 && (state != null
+            ? state.isCull() && !state.isBlend() && state.getCullFace() == GL11.GL_BACK
+            : GL11.glIsEnabled(GL11.GL_CULL_FACE) && !GL11.glIsEnabled(GL11.GL_BLEND)
+                && GL11.glGetInteger(GL11.GL_CULL_FACE_MODE) == GL11.GL_BACK)
+            && GL11.glGetInteger(GL11.GL_FRONT_FACE) == GL11.GL_CCW;
+    }
+
+    private boolean captureDirectionalEye() {
+        if (!EarlyMatrixStateTracker.copyModelView(directionalView, 0)) {
+            directionalViewBuffer.clear();
+            GL11.glGetFloat(GL11.GL_MODELVIEW_MATRIX, directionalViewBuffer);
+            for (int index = 0; index < 16; index++) directionalView[index] = directionalViewBuffer.get(index);
+        }
+        return TerrainCamera.eye(directionalView, directionalEye);
+    }
+
     private void drawMappedRun(List<RenderChunk> visible, int start, int end,
                                TerrainLayer expected,
                                TerrainRenderListAccessor accessor,
-                               boolean useIndirect, long frameId) {
-        MeshRecord first = record(visible.get(start), expected);
-        if (first == null) throw new IllegalStateException("missing mapped terrain run");
+                               boolean useIndirect, long frameId, int arrayLayoutBuffer) {
+        drawMappedRun(visible, start, end, expected, accessor,
+            useIndirect, frameId, arrayLayoutBuffer, true);
+    }
+
+    /** A storage-page change does not change a region's model-view transform.
+     * Keep one matrix scope across its ordered page runs, with no geometry
+     * relocation, retained command cache or extra GPU storage. */
+    private int drawMappedRegion(List<RenderChunk> visible, int start, int end,
+                                 TerrainLayer expected, TerrainRenderListAccessor accessor,
+                                 long frameId, MeshRecord origin, int arrayLayoutBuffer) {
         GlStateManager.pushMatrix();
         Throwable failure = null;
         try {
-            GlStateManager.translate((float) (first.regionX - accessor.ice$viewEntityX()),
+            GlStateManager.translate((float) (origin.regionX - accessor.ice$viewEntityX()),
+                (float) (origin.regionY - accessor.ice$viewEntityY()),
+                (float) (origin.regionZ - accessor.ice$viewEntityZ()));
+            for (int index = start; index < end;) {
+                MeshRecord first = record(visible.get(index), expected);
+                int page = pageIndex(first.range);
+                int runEnd = index + 1;
+                while (runEnd < end) {
+                    MeshRecord next = record(visible.get(runEnd), expected);
+                    if (pageIndex(next.range) != page) break;
+                    runEnd++;
+                }
+                drawMappedRun(visible, index, runEnd, expected, accessor,
+                    false, frameId, arrayLayoutBuffer, false);
+                arrayLayoutBuffer = nativeBuffer(first.range);
+                index = runEnd;
+            }
+        } catch (Throwable error) {
+            failure = error;
+        } finally {
+            try { GlStateManager.popMatrix(); }
+            catch (Throwable restoreError) { failure = appendFailure(failure, restoreError); }
+        }
+        if (failure != null) rethrow(failure);
+        return arrayLayoutBuffer;
+    }
+
+    private void drawMappedRun(List<RenderChunk> visible, int start, int end,
+                               TerrainLayer expected, TerrainRenderListAccessor accessor,
+                               boolean useIndirect, long frameId, int arrayLayoutBuffer,
+                               boolean applyTransform) {
+        MeshRecord first = record(visible.get(start), expected);
+        if (first == null) throw new IllegalStateException("missing mapped terrain run");
+        if (applyTransform) GlStateManager.pushMatrix();
+        Throwable failure = null;
+        try {
+            if (applyTransform) GlStateManager.translate((float) (first.regionX - accessor.ice$viewEntityX()),
                 (float) (first.regionY - accessor.ice$viewEntityY()),
                 (float) (first.regionZ - accessor.ice$viewEntityZ()));
-            bindArrayBuffer(bufferId);
-            setupArrayPointers(0L);
+            int buffer = nativeBuffer(first.range);
+            if (arrayLayoutBuffer != buffer) {
+                bindArrayBuffer(buffer);
+                setupArrayPointers(0L);
+                arrayLayoutSets++;
+            } else {
+                arrayLayoutReuses++;
+            }
+            commandPageFirst = checkedInt(
+                (first.range.getOffset() - pageOffset(first.range)) / STRIDE);
             int count = end - start;
+            if (cpuDirection) {
+                drawDirectionalRanges(visible, start, end, expected, accessor, first);
+                return;
+            }
             if (count == 1) {
                 ArenaRange range = first.range;
-                int firstVertex = checkedInt(range.getOffset() / STRIDE);
+                int firstVertex = pageOffset(range) / STRIDE;
                 lastSubmissionStarted = true;
                 GL11.glDrawArrays(GL11.GL_QUADS, firstVertex, first.vertexCount);
                 drawCalls++;
-                first.lastDrawFrame = frameId;
+                return;
+            }
+            if (nativeShaderBatching) {
+                int pendingFirst = 0, pendingCount = 0;
+                for (int i = start; i < end; i++) {
+                    MeshRecord record = record(visible.get(i), expected);
+                    int firstVertex = pageOffset(record.range) / STRIDE;
+                    // These complete quad ranges already share one page and
+                    // transform. Joining adjacent storage preserves draw order.
+                    if (pendingCount > 0 && pendingFirst + pendingCount != firstVertex) {
+                        submitFixedRange(pendingFirst, pendingCount);
+                        pendingCount = 0;
+                    }
+                    if (pendingCount == 0) pendingFirst = firstVertex;
+                    pendingCount += record.vertexCount;
+                }
+                if (pendingCount > 0) submitFixedRange(pendingFirst, pendingCount);
                 return;
             }
             if (supportsIndirectCommands()) {
@@ -1006,10 +1246,6 @@ public final class LwjglTerrainArena {
             }
             if (useIndirect && drawIndirect(visible, start, end, expected,
                 first.generation)) {
-                for (int i = start; i < end; i++) {
-                    MeshRecord record = record(visible.get(i), expected);
-                    if (record != null) record.lastDrawFrame = frameId;
-                }
                 return;
             }
             if (!ensureCommandCapacity(count)) {
@@ -1017,11 +1253,10 @@ public final class LwjglTerrainArena {
                     multiDrawCapacityFallbacks, 1L);
                 for (int i = start; i < end; i++) {
                     MeshRecord record = record(visible.get(i), expected);
-                    int firstVertex = checkedInt(record.range.getOffset() / STRIDE);
+                    int firstVertex = pageOffset(record.range) / STRIDE;
                     lastSubmissionStarted = true;
                     GL11.glDrawArrays(GL11.GL_QUADS, firstVertex,
                         record.vertexCount);
-                    record.lastDrawFrame = frameId;
                     drawCalls++;
                 }
                 return;
@@ -1032,7 +1267,6 @@ public final class LwjglTerrainArena {
                 MeshRecord record = record(visible.get(i), expected);
                 commandGenerator.emit(record.mesh, expected, i - start,
                     fallbackCommandSink);
-                record.lastDrawFrame = frameId;
             }
             firstCommands.flip();
             countCommands.flip();
@@ -1042,7 +1276,7 @@ public final class LwjglTerrainArena {
         } catch (Throwable error) {
             failure = appendFailure(failure, error);
         } finally {
-            try { GlStateManager.popMatrix(); }
+            try { if (applyTransform) GlStateManager.popMatrix(); }
             catch (Throwable restoreError) {
                 failure = appendFailure(failure, restoreError);
             }
@@ -1050,14 +1284,54 @@ public final class LwjglTerrainArena {
         }
     }
 
-    private void drawLegacy(RenderChunk chunk, BlockRenderLayer layer,
-                            TerrainRenderListAccessor accessor) {
+    /** Fixed transforms are shared by the region; only visible face spans draw.
+     * Adjacent spans coalesce without crossing a skipped face, page or layer. */
+    private void drawDirectionalRanges(List<RenderChunk> visible, int start, int end,
+                                       TerrainLayer expected, TerrainRenderListAccessor view,
+                                       MeshRecord origin) {
+        double eyeX = directionalEye[0] - (float) (origin.regionX - view.ice$viewEntityX());
+        double eyeY = directionalEye[1] - (float) (origin.regionY - view.ice$viewEntityY());
+        double eyeZ = directionalEye[2] - (float) (origin.regionZ - view.ice$viewEntityZ());
+        int pendingFirst = 0, pendingCount = 0;
+        for (int i = start; i < end; i++) {
+            MeshRecord record = record(visible.get(i), expected);
+            TerrainFaceRanges faces = record.mesh.getFaceRanges();
+            int offset = pageOffset(record.range) / STRIDE;
+            int plan = faces == null ? 1 << 24 : faces.submissionPlan(eyeX, eyeY, eyeZ);
+            int submittedVertices = 0;
+            for (int spans = plan >>> 24; spans > 0; spans--, plan >>>= 6) {
+                int count = faces == null ? record.vertexCount : faces.spanCount(plan);
+                if (count == 0) continue;
+                submittedVertices += count;
+                int first = offset + (faces == null ? 0 : faces.spanFirst(plan));
+                if (pendingCount > 0 && pendingFirst + pendingCount != first) {
+                    submitFixedRange(pendingFirst, pendingCount);
+                    pendingCount = 0;
+                }
+                if (pendingCount == 0) pendingFirst = first;
+                pendingCount += count;
+            }
+            int omitted = record.vertexCount - submittedVertices;
+            if (omitted > 0) directionalCulledVertices = safeAdd(directionalCulledVertices, omitted);
+        }
+        if (pendingCount > 0) submitFixedRange(pendingFirst, pendingCount);
+    }
+
+    private void submitFixedRange(int first, int count) {
+        lastSubmissionStarted = true;
+        GL11.glDrawArrays(GL11.GL_QUADS, first, count);
+        drawCalls++;
+        shaderBatchDrawCalls++;
+        shaderBatchCommands++;
+    }
+
+    private void drawLegacyVertexBuffer(RenderChunk chunk, VertexBuffer vertexBuffer,
+                                         TerrainRenderListAccessor accessor) {
         GlStateManager.pushMatrix();
         Throwable failure = null;
         try {
             preRenderChunk(chunk, accessor);
             chunk.multModelviewMatrix();
-            VertexBuffer vertexBuffer = chunk.getVertexBufferByLayer(layer.ordinal());
             vertexBuffer.bindBuffer();
             setupArrayPointers(0L);
             lastSubmissionStarted = true;
@@ -1071,6 +1345,52 @@ public final class LwjglTerrainArena {
             }
             if (failure != null) rethrow(failure);
         }
+    }
+
+    /** OptiFine queues ranges; flush once per contiguous region, just as its
+     * ordinary VboRenderList does, without crossing any native/legacy boundary. */
+    private int drawLegacyRun(List<RenderChunk> visible, int start,
+                              BlockRenderLayer layer,
+                              TerrainRenderListAccessor accessor) {
+        RenderChunk first = visible.get(start);
+        int layerIndex = layer.ordinal();
+        VertexBuffer firstBuffer = first.getVertexBufferByLayer(layerIndex);
+        Object region = OptifineTerrainRegionBridge.region(firstBuffer);
+        if (region == null) {
+            drawLegacyVertexBuffer(first, firstBuffer, accessor);
+            drawCalls++;
+            return start + 1;
+        }
+        BlockPos position = first.getPosition();
+        int x = regionOrigin(position.getX()), z = regionOrigin(position.getZ());
+        int end = start + 1;
+        while (end < visible.size()) {
+            RenderChunk next = visible.get(end);
+            if (record(next, layer(layer)) != null) break;
+            BlockPos nextPosition = next.getPosition();
+            if (regionOrigin(nextPosition.getX()) != x || regionOrigin(nextPosition.getZ()) != z
+                || OptifineTerrainRegionBridge.region(next.getVertexBufferByLayer(layerIndex)) != region) break;
+            end++;
+        }
+        GlStateManager.pushMatrix();
+        Throwable failure = null;
+        try {
+            GlStateManager.translate((float) (x - accessor.ice$viewEntityX()),
+                (float) -accessor.ice$viewEntityY(), (float) (z - accessor.ice$viewEntityZ()));
+            lastSubmissionStarted = true;
+            for (int index = start; index < end; index++) {
+                visible.get(index).getVertexBufferByLayer(layerIndex).drawArrays(GL11.GL_QUADS);
+            }
+            OptifineTerrainRegionBridge.finish(region, accessor);
+            drawCalls++;
+        } catch (Throwable error) {
+            failure = error;
+        } finally {
+            try { GlStateManager.popMatrix(); }
+            catch (Throwable restoreError) { failure = appendFailure(failure, restoreError); }
+        }
+        if (failure != null) rethrow(failure);
+        return end;
     }
 
     /**
@@ -1089,12 +1409,11 @@ public final class LwjglTerrainArena {
             GlStateManager.translate(record.regionX - position.getX(),
                 record.regionY - position.getY(),
                 record.regionZ - position.getZ());
-            bindArrayBuffer(bufferId);
+            bindArrayBuffer(nativeBuffer(record.range));
             setupArrayPointers(0L);
-            int firstVertex = checkedInt(record.range.getOffset() / STRIDE);
+            int firstVertex = pageOffset(record.range) / STRIDE;
             lastSubmissionStarted = true;
             GL11.glDrawArrays(GL11.GL_QUADS, firstVertex, record.vertexCount);
-            record.lastDrawFrame = frameId;
             drawCalls++;
             chunkAnimatorCompatibilityDraws = safeAdd(
                 chunkAnimatorCompatibilityDraws, 1L);
@@ -1535,7 +1854,7 @@ public final class LwjglTerrainArena {
         MeshRecord record = meshes.get(vertexBuffer);
         if (record == null || record.chunk != chunk
             || record.layer != expected
-            || !allocator.isLive(record.range)) return null;
+            || !allocator.ownsLiveRange(record.range)) return null;
         BlockPos position = chunk.getPosition();
         return record.chunkX == position.getX()
             && record.chunkY == position.getY()
@@ -1642,39 +1961,16 @@ public final class LwjglTerrainArena {
     }
 
     private void closeBuffer(boolean contextValid) {
-        if (bufferId == 0) return;
         Throwable failure = null;
-        if (contextValid) {
-            int previous = Integer.MIN_VALUE;
-            try {
-                previous = preserveArrayBufferBinding();
-                bindArrayBuffer(bufferId);
-                if (mapped != null
-                    && !GL15.glUnmapBuffer(GL15.GL_ARRAY_BUFFER)) {
-                    throw new IllegalStateException(
-                        "terrain persistent mapping unmap reported corruption");
-                }
-            } catch (Throwable error) {
-                failure = appendFailure(failure, error);
-            } finally {
-                if (previous != Integer.MIN_VALUE) try {
-                    restoreArrayBufferBinding(previous);
-                } catch (Throwable error) {
-                    EarlyGlStateTracker.invalidate();
-                    failure = appendFailure(failure, error);
-                }
-            }
-            if (bufferHandle != null) try {
-                resources.retire(bufferHandle,
-                    LwjglRetirementFence.afterCurrentCommands(resources));
-            } catch (Throwable error) {
-                failure = appendFailure(failure, error);
-            }
+        try { uploadStream.close(contextValid); }
+        catch (Throwable error) { failure = error; }
+        for (int index = 0; index < bufferPages.length; index++) {
+            BufferPage page = bufferPages[index];
+            if (page == null) continue;
+            bufferPages[index] = null;
+            if (contextValid) failure = retirePage(page, failure);
         }
         bufferId = 0;
-        bufferHandle = null;
-        mapped = null;
-        persistent = false;
         mappingPoisoned = false;
         mappingFailure = null;
         lastUploadPersistent = false;
@@ -1682,11 +1978,75 @@ public final class LwjglTerrainArena {
         if (failure != null) rethrow(failure);
     }
 
+    private void retireEmptyPages() {
+        Throwable failure = null;
+        int remainingId = 0;
+        for (int index = 0; index < bufferPages.length; index++) {
+            BufferPage page = bufferPages[index];
+            if (page == null) continue;
+            if (allocator.isPageFree(index * pageBytes)) {
+                bufferPages[index] = null;
+                failure = retirePage(page, failure);
+            } else {
+                remainingId = page.nativeId;
+            }
+        }
+        bufferId = remainingId;
+        if (failure != null) rethrow(failure);
+    }
+
+    /** Allocation-pressure callback, also usable after a terrain backend exit.
+     * Only completed range retirements and genuinely empty pages are reclaimed;
+     * a range tentatively allocated by the caller keeps its page live. */
+    public long reclaimUnusedPages(long glContextGeneration) {
+        guard.check();
+        long before = budget.snapshot().getGpuUsed();
+        collectRetired(retired.size(), true);
+        retireEmptyPages();
+        // Ledger containers are visited before their referenced buffer payloads.
+        // Both passes are zero-timeout; a busy GPU simply retains ownership.
+        resources.collect(glContextGeneration, Integer.MAX_VALUE);
+        resources.collect(glContextGeneration, Integer.MAX_VALUE);
+        return Math.max(0L, before - budget.snapshot().getGpuUsed());
+    }
+
+    private Throwable retirePage(BufferPage page, Throwable failure) {
+        try {
+            resources.retire(page.handle, LwjglRetirementFence.afterCurrentCommands(resources));
+        } catch (Throwable error) { failure = appendFailure(failure, error); }
+        return failure;
+    }
+
+    private int pageIndex(ArenaRange range) {
+        return (int) (range.getOffset() / pageBytes);
+    }
+
+    private int pageOffset(ArenaRange range) {
+        return localOffset(range, pageBytes);
+    }
+
+    private int nativeBuffer(ArenaRange range) {
+        return bufferPages[pageIndex(range)].nativeId;
+    }
+
+    static int localOffset(ArenaRange range, long pageBytes) {
+        long offset = range.getOffset() % pageBytes;
+        if (offset < 0L || range.getLength() > pageBytes - offset) {
+            throw new IllegalArgumentException("terrain mesh crosses buffer page");
+        }
+        return checkedInt(offset);
+    }
+
     private void closeStaging() {
         Throwable failure = null;
         staging = null;
         CacheBudget.Reservation reservation = stagingReservation;
         stagingReservation = null;
+        if (reservation != null) try { reservation.close(); }
+        catch (Throwable error) { failure = appendFailure(failure, error); }
+        faceStaging = null;
+        reservation = faceStagingReservation;
+        faceStagingReservation = null;
         if (reservation != null) try { reservation.close(); }
         catch (Throwable error) { failure = appendFailure(failure, error); }
         fallbackCommandBytes = null;
@@ -1709,6 +2069,17 @@ public final class LwjglTerrainArena {
                                            BlockPos chunk, int regionX,
                                            int regionY, int regionZ,
                                            ByteBuffer staging) {
+        return normalizeIntoStaging(source, sourceBytes, sourceStride, bytes,
+            chunk.getX(), chunk.getY(), chunk.getZ(), MODEL_SCALE, MODEL_TRANSLATION,
+            regionX, regionY, regionZ, staging);
+    }
+
+    static ByteBuffer normalizeIntoStaging(ByteBuffer source, int sourceBytes,
+                                           int sourceStride, int bytes,
+                                           int originX, int originY, int originZ,
+                                           float scale, float translation,
+                                           int regionX, int regionY, int regionZ,
+                                           ByteBuffer staging) {
         if (staging == null || staging.capacity() < bytes) {
             throw new IllegalStateException("terrain staging budget");
         }
@@ -1729,20 +2100,28 @@ public final class LwjglTerrainArena {
             }
         }
         ByteBuffer output = staging.duplicate().order(ByteOrder.nativeOrder());
-        float dx = chunk.getX() - regionX;
-        float dy = chunk.getY() - regionY;
-        float dz = chunk.getZ() - regionZ;
-        for (int offset = 0; offset < bytes; offset += STRIDE) {
-            output.putFloat(offset, output.getFloat(offset) * MODEL_SCALE
-                + MODEL_TRANSLATION + dx);
-            output.putFloat(offset + 4, output.getFloat(offset + 4) * MODEL_SCALE
-                + MODEL_TRANSLATION + dy);
-            output.putFloat(offset + 8, output.getFloat(offset + 8) * MODEL_SCALE
-                + MODEL_TRANSLATION + dz);
-        }
+        normalizePositions(output, bytes, originX, originY, originZ,
+            scale, translation, regionX, regionY, regionZ);
         output.position(0);
         output.limit(bytes);
         return output;
+    }
+
+    static void normalizePositions(ByteBuffer output, int bytes,
+                                    int originX, int originY, int originZ,
+                                    float scale, float translation,
+                                    int regionX, int regionY, int regionZ) {
+        float dx = originX - regionX;
+        float dy = originY - regionY;
+        float dz = originZ - regionZ;
+        for (int offset = 0; offset < bytes; offset += STRIDE) {
+            output.putFloat(offset, output.getFloat(offset) * scale
+                + translation + dx);
+            output.putFloat(offset + 4, output.getFloat(offset + 4) * scale
+                + translation + dy);
+            output.putFloat(offset + 8, output.getFloat(offset + 8) * scale
+                + translation + dz);
+        }
     }
 
     static boolean hasVanillaBlockPrefix(VertexFormat format) {
@@ -1987,24 +2366,6 @@ public final class LwjglTerrainArena {
         target.putInt(baseInstance);
     }
 
-    private static long checksum(ByteBuffer value, int length) {
-        long result = 0xcbf29ce484222325L;
-        for (int i = 0; i < length; i++) {
-            result ^= value.get(i) & 0xffL;
-            result *= 0x100000001b3L;
-        }
-        return result;
-    }
-
-    private static long checksum(byte[] value) {
-        long result = 0xcbf29ce484222325L;
-        for (byte current : value) {
-            result ^= current & 0xffL;
-            result *= 0x100000001b3L;
-        }
-        return result;
-    }
-
     private static long safeAdd(long left, long right) {
         return right > Long.MAX_VALUE - left ? Long.MAX_VALUE : left + right;
     }
@@ -2047,18 +2408,14 @@ public final class LwjglTerrainArena {
         private final TerrainLayer layer;
         private final int vertexCount;
         private final int byteCount;
-        private final long checksum;
         private final FrameStamp generation;
         private final ArenaRange range;
         private final TerrainMesh mesh;
-        private final boolean persistentUpload;
         private final boolean retainLegacyCopy;
         private boolean legacyUploadExpected;
-        private long lastDrawFrame;
 
         private MeshRecord(RenderChunk chunk, int regionX, int regionY, int regionZ,
                            FrameStamp generation, TerrainMesh mesh,
-                           boolean persistentUpload,
                            boolean retainLegacyCopy) {
             this.chunk = chunk;
             this.regionX = regionX;
@@ -2069,12 +2426,10 @@ public final class LwjglTerrainArena {
             this.chunkZ = mesh.getChunkZ();
             this.layer = mesh.getLayer();
             this.vertexCount = mesh.getVertexCount();
-            this.byteCount = Math.toIntExact(mesh.getRange().getLength());
-            this.checksum = mesh.getChecksum();
+            this.byteCount = Math.multiplyExact(vertexCount, STRIDE);
             this.generation = generation;
             this.range = mesh.getRange();
             this.mesh = mesh;
-            this.persistentUpload = persistentUpload;
             this.retainLegacyCopy = retainLegacyCopy;
             this.legacyUploadExpected = retainLegacyCopy;
         }
@@ -2096,6 +2451,17 @@ public final class LwjglTerrainArena {
                     == current.getVertexFormatGeneration()
                 && generation.getViewFrustumGeneration()
                     == current.getViewFrustumGeneration();
+        }
+    }
+
+    private static final class BufferPage {
+        private final int nativeId;
+        private final RenderHandle handle;
+        private final long capacity;
+        private BufferPage(int nativeId, RenderHandle handle, long capacity) {
+            this.nativeId = nativeId;
+            this.handle = handle;
+            this.capacity = capacity;
         }
     }
 

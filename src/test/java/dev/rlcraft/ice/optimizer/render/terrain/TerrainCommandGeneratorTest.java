@@ -13,6 +13,21 @@ import java.util.Arrays;
 import org.junit.Test;
 
 public final class TerrainCommandGeneratorTest {
+    @Test public void reusedLargerSlotDrawsOnlyNewMeshVerticesAndUsesPageLocalOffset() {
+        GpuArenaAllocator allocator = new GpuArenaAllocator(448L, 896L, 4L, 1L, null, 448L);
+        allocator.allocate(448L);
+        allocator.allocate(112L);
+        ArenaRange slot = allocator.allocate(224L);
+        TerrainMesh replacement = TerrainMesh.metadataOnly(TerrainLayer.SOLID, 4, 28,
+            0, 0, 0, 1L, 2L, slot);
+        assertEquals(4, replacement.getVertexCount());
+        assertEquals(224L, replacement.getRange().getLength());
+        assertEquals(112, LwjglTerrainArena.localOffset(slot, 448L));
+        TerrainCommandBatch result = new TerrainCommandGenerator().generate(
+            Arrays.asList(replacement), TerrainLayer.SOLID);
+        assertEquals(4, result.getCommands().get(0).getCount());
+    }
+
     @Test
     public void payloadIsImmutableAndCommandsRetainExactTranslucentOrder() {
         ClientEpochs epochs = new ClientEpochs();

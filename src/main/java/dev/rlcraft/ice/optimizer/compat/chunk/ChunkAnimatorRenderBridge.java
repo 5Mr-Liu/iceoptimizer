@@ -2,7 +2,12 @@ package dev.rlcraft.ice.optimizer.compat.chunk;
 
 import dev.rlcraft.ice.optimizer.FatalErrors;
 import java.lang.reflect.Field;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.Map;
+import net.minecraft.util.math.BlockPos;
+import org.lwjgl.util.vector.Vector3f;
 
 /**
  * Allocation-free render-thread probe for ChunkAnimator's pending transforms.
@@ -24,6 +29,15 @@ public final class ChunkAnimatorRenderBridge {
     /** True means this chunk must pass through preRenderChunk and stay visible. */
     public static boolean requiresCompatibilityDraw(Object renderChunk) {
         return PROBE.requiresCompatibilityDraw(renderChunk);
+    }
+
+    /**
+     * Uses ChunkAnimator 1.2.1's own easing/lifecycle calculation without a GL
+     * matrix call. Older optional ABIs keep the original compatibility draw.
+     */
+    public static boolean tryOffset(Object renderChunk, BlockPos position,
+                                    float[] output) {
+        return PROBE.tryOffset(renderChunk, position, output);
     }
 
     public static String status() { return PROBE.status().name(); }
@@ -71,7 +85,16 @@ public final class ChunkAnimatorRenderBridge {
             Object pending = pendingField.get(handler);
             if (!(pending instanceof Map)) throw new IllegalStateException(
                 "ChunkAnimator timeStamps is not a Map");
-            return Probe.ready((Map<Object, Object>) pending);
+            MethodHandle offset = null;
+            try {
+                offset = MethodHandles.lookup().unreflect(handler.getClass()
+                    .getMethod("getOffset", Object.class, BlockPos.class))
+                    .asType(MethodType.methodType(Vector3f.class,
+                        Object.class, Object.class, BlockPos.class));
+            } catch (NoSuchMethodException olderVersion) {
+                // 1.2 has preRender only. Its pending chunks stay unbatched.
+            }
+            return Probe.ready((Map<Object, Object>) pending, handler, offset);
         } catch (Throwable failure) {
             FatalErrors.rethrowIfFatal(failure);
             return Probe.failed(failure);
@@ -92,6 +115,8 @@ public final class ChunkAnimatorRenderBridge {
         private final Map<Object, Object> pending;
         private volatile Throwable failure;
         private volatile long runtimeFailures;
+        private Object handler;
+        private MethodHandle offset;
 
         private Probe(Status status, Map<Object, Object> pending,
                       Throwable failure) {
@@ -104,8 +129,12 @@ public final class ChunkAnimatorRenderBridge {
             return new Probe(Status.ABSENT, null, null);
         }
 
-        private static Probe ready(Map<Object, Object> pending) {
-            return new Probe(Status.READY, pending, null);
+        private static Probe ready(Map<Object, Object> pending, Object handler,
+                                   MethodHandle offset) {
+            Probe probe = new Probe(Status.READY, pending, null);
+            probe.handler = handler;
+            probe.offset = offset;
+            return probe;
         }
 
         private static Probe failed(Throwable failure) {
@@ -122,6 +151,32 @@ public final class ChunkAnimatorRenderBridge {
                 failure = probeFailure;
                 if (runtimeFailures != Long.MAX_VALUE) runtimeFailures++;
                 return true;
+            }
+        }
+
+        boolean tryOffset(Object renderChunk, BlockPos position, float[] output) {
+            if (output == null || output.length < 3) return false;
+            output[0] = output[1] = output[2] = 0.0F;
+            if (status == Status.ABSENT) return true;
+            if (status == Status.FAILED || failure != null || renderChunk == null
+                || position == null) return false;
+            try {
+                if (!pending.containsKey(renderChunk)) return true;
+                if (offset == null) return false;
+                Vector3f value = (Vector3f) offset.invokeExact(handler,
+                    renderChunk, position);
+                if (value == null) return true;
+                if (!Float.isFinite(value.x) || !Float.isFinite(value.y)
+                    || !Float.isFinite(value.z)) return false;
+                output[0] = value.x;
+                output[1] = value.y;
+                output[2] = value.z;
+                return true;
+            } catch (Throwable probeFailure) {
+                FatalErrors.rethrowIfFatal(probeFailure);
+                failure = probeFailure;
+                if (runtimeFailures != Long.MAX_VALUE) runtimeFailures++;
+                return false;
             }
         }
 

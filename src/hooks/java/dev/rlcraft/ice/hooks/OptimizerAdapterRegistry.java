@@ -10,6 +10,7 @@ final class OptimizerAdapterRegistry {
 
     static {
         Map<String, OptimizerBytecodeAdapter> adapters = new HashMap<String, OptimizerBytecodeAdapter>();
+        adapters.put("nothirium-fog-compatibility", new NothiriumFogAdapter());
         adapters.put("foamfix-pbo-upload", new FoamFixTextureUploadAdapter());
         adapters.put("vanilla-texture-parameters", new VanillaTextureUploadAdapter());
         adapters.put("optifine-dynamic-lights", new OptifineDynamicLightsAdapter(
@@ -25,8 +26,31 @@ final class OptimizerAdapterRegistry {
         adapters.put("srp-model-static-branches", new SrpKirinStaticMeshAdapter());
         adapters.put("srp-parasite-navigator", new SrpParasiteNavigatorAdapter());
         adapters.put("srp-target-linear-select", new SrpTargetSearchAdapter());
+        adapters.put("srp-weakness-rules", new SrpWeaknessAdapter());
+        adapters.put("srp-config-rules", new SrpConfigRulesAdapter());
+        adapters.put("srpmixins-mob-cap", new SrpMobCapAdapter());
+        adapters.put("srpmixins-infestation-cache", new SrpInfestationCacheAdapter());
+        adapters.put("srp-climber-navigator", new SrpClimberNavigatorAdapter());
+        adapters.put("srp-light-search", new SrpLightSearchAdapter());
+        adapters.put("srp-heblu-pose-local", new SrpHebluPoseAdapter());
         adapters.put("minecraft-pending-tick-index", new MinecraftSaveTickAdapter());
-        adapters.put("minecraft-full-save-scope", new MinecraftSaveTickAdapter());
+        adapters.put("player-skull-item", new PlayerSkullItemAdapter());
+        adapters.put("minecraft-autosave-slices", new MinecraftAutosaveAdapter());
+        adapters.put("sound-filters-search", new SoundFiltersSearchAdapter());
+        adapters.put("sound-filter-parameters", new SoundFilterParametersAdapter());
+        adapters.put("librarian-capability-query", new LibrarianCapabilityAdapter());
+        adapters.put("levelup-processor-snapshot", new LevelUpProcessorSnapshotAdapter());
+        adapters.put("nuclearcraft-radiation-snapshot", new NuclearRadiationSnapshotAdapter());
+        adapters.put("loaded-chunk-snapshot", new LoadedChunkSnapshotAdapter());
+        adapters.put("fishing-biome-query", new FishingBiomeAdapter());
+        adapters.put("nbt-constant-keys", new NormalStringConstantAdapter());
+        adapters.put("otg-bo3-execution", new OtgBo3ExecutionAdapter());
+        adapters.put("otg-object-preparation", new OtgObjectPreparationAdapter());
+        adapters.put("otg-column-queries", new OtgColumnQueryAdapter());
+        adapters.put("recurrent-reflection", new RecurrentReflectionAdapter());
+        adapters.put("srp-architect-bucket", new SrpArchitectBucketAdapter());
+        adapters.put("srp-architect-query", new SrpArchitectQueryAdapter());
+        adapters.put("phosphor-local-propagation", new PhosphorLocalPropagationAdapter());
         adapters.put("lycanites-path-search-cache", new LycanitesNodeProcessorAdapter());
         adapters.put("lycanites-registry-single-probe", new LycanitesObjectManagerAdapter());
         adapters.put("lycanites-spawn-scan", new LycanitesSpawnScanAdapter());
@@ -65,6 +89,10 @@ final class OptimizerAdapterRegistry {
         adapters.put("dynamic-trees-connections", new DynamicTreesConnectionAdapter());
         adapters.put("otg-bo4-runtime", new OtgBo4Adapter());
         adapters.put("otg-bo4-column-layout", new OtgBo4ConfigAdapter());
+        adapters.put("otg-bo4-column-order", new OtgBo4ColumnOrderAdapter());
+        adapters.put("otg-biome-array-clear", new OtgArrayClearAdapter());
+        adapters.put("recurrent-cloud-field", new RecurrentCloudFieldAdapter());
+        adapters.put("recurrent-value-workspace", new RecurrentValueWorkspaceAdapter());
         adapters.put("otg-comma-parser", new OtgStringHelperAdapter());
         adapters.put("otg-function-name-cache", new OtgResourcesAdapter());
         adapters.put("otg-bo3-metadata-cache", new OtgBo3MetadataAdapter());
@@ -80,6 +108,13 @@ final class OptimizerAdapterRegistry {
         adapters.put("bettercaves-threshold-column", new BetterCavesCaveCarverAdapter());
         adapters.put("betterfoliage-optifine-colors", new BetterFoliageOptifineColorAdapter());
         adapters.put("qualitytools-stable-attributes", new QualityToolsAttributeAdapter());
+        adapters.put("entity-collision-boxes", new CollisionBoxAllocationAdapter());
+        adapters.put("entity-nearest-query", new RltNearestEntityAdapter());
+        adapters.put("minecraft-equipment-nbt", new EquipmentNbtAdapter());
+        adapters.put("minecraft-nbt-map-access", new NbtCompoundAdapter());
+        adapters.put("potioncore-entity-nbt", new PotionCoreNbtAdapter());
+        adapters.put("qualitytools-horse-inventory", new HorseArmorAccessAdapter());
+        adapters.put("srp-light-candidate-index", new SrpLightCandidateIndexAdapter());
         adapters.put("quark-item-sync-state", new QuarkItemSyncAdapter());
         adapters.put("vanilla-chunk-dispatch-policy", new VanillaChunkRenderAdapter(
             VanillaChunkRenderAdapter.Part.DISPATCH_POLICY));
@@ -110,6 +145,8 @@ final class OptimizerAdapterRegistry {
             GlStateTrackingAdapter.Part.OPENGL_HELPER));
         adapters.put("modern-gl-state-manager", new GlStateTrackingAdapter(
             GlStateTrackingAdapter.Part.GL_STATE_MANAGER));
+        adapters.put("modern-gl-state-boolean", new GlStateTrackingAdapter(
+            GlStateTrackingAdapter.Part.BOOLEAN_STATE));
         adapters.put("modern-renderlib-entity-emitter", new RenderLibRendererAdapter(
             RenderLibRendererAdapter.Part.ENTITY));
         adapters.put("modern-renderlib-tesr-emitter", new RenderLibRendererAdapter(

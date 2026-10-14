@@ -9,7 +9,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -41,7 +40,6 @@ public final class ChunkSaveCompressionBridge {
     private static final int QUEUE_CAPACITY = 64;
     private static final int INITIAL_COMPRESSION_WORKERS = 1;
     private static final int MAX_COMPRESSION_WORKERS = 4;
-    private static final long ORPHAN_NANOS = TimeUnit.SECONDS.toNanos(30L);
     private static final Object LOCK = new Object();
     private static final IdentityHashMap<NBTTagCompound, CompressionTask> TASKS =
         new IdentityHashMap<NBTTagCompound, CompressionTask>();
@@ -61,43 +59,74 @@ public final class ChunkSaveCompressionBridge {
     private ChunkSaveCompressionBridge() {
     }
 
-    /** Called only after AnvilChunkLoader has accepted the immutable NBT snapshot. */
-    public static void schedule(NBTTagCompound snapshot) {
-        if (snapshot == null || !OptimizerBridge.isEnabled(MODULE)) return;
-        CompressionTask task;
-        ThreadPoolExecutor pool;
-        synchronized (LOCK) {
-            cleanupLocked(System.nanoTime());
-            if (TASKS.containsKey(snapshot) || TASKS.size() >= MAX_TRACKED_TASKS) return;
-            pool = ensureExecutorLocked();
-            task = new CompressionTask(snapshot, generation);
-            TASKS.put(snapshot, task);
-        }
+    /** Registers ownership before vanilla makes the snapshot visible to FILE_IO. */
+    public static Object publish(Map<Object, Object> pending, Object position, Object value) {
+        NBTTagCompound snapshot = (NBTTagCompound) value;
+        CompressionTask task = register(snapshot);
+        Object previous;
         try {
+            previous = pending.put(position, snapshot);
+        } catch (Throwable error) {
+            cancel(snapshot, task);
+            throw error;
+        }
+        if (previous != snapshot && previous instanceof NBTTagCompound) {
+            cancel((NBTTagCompound) previous, null);
+        }
+        submit(task);
+        return previous;
+    }
+
+    /** Also used by isolated pipeline tests; production registers through publish. */
+    public static void schedule(NBTTagCompound snapshot) {
+        submit(register(snapshot));
+    }
+
+    private static CompressionTask register(NBTTagCompound snapshot) {
+        if (snapshot == null || !OptimizerBridge.isEnabled(MODULE)) return null;
+        synchronized (LOCK) {
+            if (TASKS.containsKey(snapshot) || TASKS.size() >= MAX_TRACKED_TASKS) return null;
+            CompressionTask task = new CompressionTask(snapshot, generation, 0);
+            TASKS.put(snapshot, task);
+            return task;
+        }
+    }
+
+    private static void submit(CompressionTask task) {
+        if (task == null || task.discarded) return;
+        try {
+            ThreadPoolExecutor pool;
+            synchronized (LOCK) { pool = ensureExecutorLocked(); }
             pool.execute(task);
             observeExecutor(false, false);
         } catch (RejectedExecutionException saturated) {
-            synchronized (LOCK) {
-                if (TASKS.get(snapshot) == task) TASKS.remove(snapshot);
-            }
-            task.discard();
+            cancel(task.snapshot, task);
         } catch (Throwable error) {
-            synchronized (LOCK) {
-                if (TASKS.get(snapshot) == task) TASKS.remove(snapshot);
-            }
-            task.discard();
+            cancel(task.snapshot, task);
+            FatalErrors.rethrowIfFatal(error);
             OptimizerBridge.failure(MODULE, error);
         }
     }
 
+    private static void cancel(NBTTagCompound snapshot, CompressionTask expected) {
+        CompressionTask task;
+        synchronized (LOCK) {
+            task = TASKS.get(snapshot);
+            if (task != null && (expected == null || expected == task)) TASKS.remove(snapshot);
+            else task = expected;
+            ThreadPoolExecutor pool = executor;
+            if (task != null && pool != null) pool.remove(task);
+        }
+        if (task != null) task.discard();
+    }
+
     /**
-     * Runs on vanilla's FILE_IO thread. Waiting here never stalls a game main
-     * thread, and writes still occur in AnvilChunkLoader's original sequence.
+     * Runs on vanilla's save consumer, including explicit synchronous flush.
+     * Writes retain AnvilChunkLoader's original order.
      */
     public static boolean tryWrite(java.io.File saveDirectory, ChunkPos position,
                                    NBTTagCompound snapshot) {
-        if (saveDirectory == null || position == null || snapshot == null
-            || !OptimizerBridge.isEnabled(MODULE)) return false;
+        if (saveDirectory == null || position == null || snapshot == null) return false;
         CompressionTask task;
         synchronized (LOCK) {
             task = TASKS.remove(snapshot);
@@ -114,7 +143,7 @@ public final class ChunkSaveCompressionBridge {
             if (!(region instanceof RegionFileRawWriteAccessor)) return false;
             ((RegionFileRawWriteAccessor) region).ice$writeCompressed(
                 position.x & 31, position.z & 31, result.bytes, result.length);
-            if (ACTIVATED.compareAndSet(false, true)) {
+            if (!ACTIVATED.get() && ACTIVATED.compareAndSet(false, true)) {
                 OptimizerBridge.activate(MODULE,
                     "区块 NBT 已在有界专用 Worker 并行压缩，并由原 FILE_IO 顺序写盘");
             }
@@ -169,7 +198,24 @@ public final class ChunkSaveCompressionBridge {
             pool = executor;
             executor = null;
         }
-        if (pool != null) pool.shutdownNow();
+        if (pool != null) {
+            for (Runnable queued : pool.shutdownNow()) {
+                // FILE_IO may have claimed this task from TASKS before it
+                // left the executor queue, so reset() could not discard it.
+                // shutdownNow() prevents run() from releasing its waiter.
+                if (queued instanceof CompressionTask) ((CompressionTask) queued).discard();
+            }
+        }
+    }
+
+    /** F6 stops accepting new work; vanilla still consumes already accepted saves. */
+    public static void pause() {
+        ThreadPoolExecutor pool;
+        synchronized (LOCK) {
+            pool = executor;
+            executor = null;
+        }
+        if (pool != null) pool.shutdown();
     }
 
     static int initialWorkerCountForTest() {
@@ -184,7 +230,7 @@ public final class ChunkSaveCompressionBridge {
     }
 
     static boolean discardedTaskCompletesForTest() throws InterruptedException {
-        CompressionTask task = new CompressionTask(new NBTTagCompound(), generation);
+        CompressionTask task = new CompressionTask(new NBTTagCompound(), generation, 0);
         task.discard();
         return task.completed.await(0L, TimeUnit.NANOSECONDS);
     }
@@ -235,31 +281,18 @@ public final class ChunkSaveCompressionBridge {
         }
     }
 
-    private static void cleanupLocked(long now) {
-        if (TASKS.size() < MAX_TRACKED_TASKS / 2) return;
-        Iterator<Map.Entry<NBTTagCompound, CompressionTask>> iterator =
-            TASKS.entrySet().iterator();
-        while (iterator.hasNext()) {
-            CompressionTask task = iterator.next().getValue();
-            if (task.isDone() && now - task.createdNanos >= ORPHAN_NANOS) {
-                iterator.remove();
-                task.discard();
-            }
-        }
-    }
-
     private static CompressedResult compress(NBTTagCompound snapshot) throws IOException {
         BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
             COMPRESSION_BUFFER_BYTES, MAX_COMPRESSED_CHUNK_BYTES);
+        PooledDeflaterOutputStream compressed = pooledDeflaterStream(bytes);
         try (DataOutputStream data = new DataOutputStream(
-            new BufferedOutputStream(pooledDeflaterStream(bytes),
-                COMPRESSION_BUFFER_BYTES))) {
+            new BorrowedBufferedOutputStream(compressed, compressed.inputBuffer()))) {
             CompressedStreamTools.write(snapshot, data);
         }
         return new CompressedResult(bytes.buffer(), bytes.length());
     }
 
-    private static OutputStream pooledDeflaterStream(OutputStream output) {
+    private static PooledDeflaterOutputStream pooledDeflaterStream(OutputStream output) {
         DeflaterHolder holder = DEFLATERS.get();
         if (holder.deflater == null) holder.deflater = new Deflater();
         DeflaterLease lease;
@@ -339,18 +372,32 @@ public final class ChunkSaveCompressionBridge {
     private static final class CompressionTask implements Runnable {
         private volatile NBTTagCompound snapshot;
         private final long taskGeneration;
-        private final long createdNanos = System.nanoTime();
         private final CountDownLatch completed = new CountDownLatch(1);
         private volatile boolean discarded;
-        private volatile boolean resultPressure;
         private volatile CompressedResult result;
+        private boolean running;
+        private int reservedBytes;
 
-        private CompressionTask(NBTTagCompound snapshot, long taskGeneration) {
+        private CompressionTask(NBTTagCompound snapshot, long taskGeneration, int reservedBytes) {
             this.snapshot = snapshot;
             this.taskGeneration = taskGeneration;
+            this.reservedBytes = reservedBytes;
         }
 
         @Override public void run() {
+            synchronized (this) {
+                if (discarded || running || completed.getCount() == 0L) return;
+                // Reserve on dequeue, not publication: queued saves do not occupy
+                // 16 MiB each. Completed saves retain only their actual buffer.
+                // Refusing before serialization cannot cause duplicate compression.
+                if (!reserveResultBytes(MAX_COMPRESSED_CHUNK_BYTES)) {
+                    snapshot = null;
+                    completed.countDown();
+                    return;
+                }
+                reservedBytes = MAX_COMPRESSED_CHUNK_BYTES;
+                running = true;
+            }
             try {
                 NBTTagCompound value = snapshot;
                 if (!discarded && value != null) {
@@ -367,9 +414,13 @@ public final class ChunkSaveCompressionBridge {
                 FatalErrors.rethrowIfFatal(error);
                 if (!discarded) OptimizerBridge.failure(MODULE, error);
             } finally {
-                snapshot = null;
-                completed.countDown();
-                observeExecutor(false, resultPressure);
+                synchronized (this) {
+                    snapshot = null;
+                    running = false;
+                    if (discarded || result == null) releaseReservation();
+                    completed.countDown();
+                }
+                observeExecutor(false, false);
             }
         }
 
@@ -379,10 +430,8 @@ public final class ChunkSaveCompressionBridge {
 
         private synchronized void publish(CompressedResult compressed, boolean current) {
             if (!current || discarded) return;
-            if (!reserveResultBytes(compressed.reservedBytes)) {
-                resultPressure = true;
-                return;
-            }
+            RESULT_BYTES.addAndGet(compressed.reservedBytes - reservedBytes);
+            reservedBytes = compressed.reservedBytes;
             result = compressed;
         }
 
@@ -397,14 +446,16 @@ public final class ChunkSaveCompressionBridge {
         private synchronized void discard() {
             discarded = true;
             snapshot = null;
-            CompressedResult value = result;
-            if (value != null) {
-                RESULT_BYTES.addAndGet(-value.reservedBytes);
-                result = null;
-            }
+            result = null;
+            if (!running) releaseReservation();
             // reset()/shutdown() can remove a queued Runnable before run() gets
             // its finally block. Never strand vanilla's FILE_IO fallback.
             completed.countDown();
+        }
+
+        private void releaseReservation() {
+            RESULT_BYTES.addAndGet(-reservedBytes);
+            reservedBytes = 0;
         }
     }
 
@@ -524,6 +575,8 @@ public final class ChunkSaveCompressionBridge {
     private static final class DeflaterHolder {
         private Deflater deflater;
         private boolean inUse;
+        private final byte[] outputBuffer = new byte[COMPRESSION_BUFFER_BYTES];
+        private final byte[] inputBuffer = new byte[COMPRESSION_BUFFER_BYTES];
     }
 
     private static final class DeflaterLease {
@@ -568,8 +621,15 @@ public final class ChunkSaveCompressionBridge {
         private boolean closed;
 
         private PooledDeflaterOutputStream(OutputStream output, DeflaterLease lease) {
-            super(output, lease.deflater, COMPRESSION_BUFFER_BYTES);
+            super(output, lease.deflater, 1);
             this.lease = lease;
+            this.buf = lease.holder == null ? new byte[COMPRESSION_BUFFER_BYTES]
+                : lease.holder.outputBuffer;
+        }
+
+        private byte[] inputBuffer() {
+            return lease.holder == null ? new byte[COMPRESSION_BUFFER_BYTES]
+                : lease.holder.inputBuffer;
         }
 
         @Override public void close() throws IOException {
@@ -585,6 +645,13 @@ public final class ChunkSaveCompressionBridge {
                 failure = appendFailure(failure, cleanupFailure);
             }
             if (failure != null) throwCloseFailure(failure);
+        }
+    }
+
+    private static final class BorrowedBufferedOutputStream extends BufferedOutputStream {
+        private BorrowedBufferedOutputStream(OutputStream output, byte[] buffer) {
+            super(output, 1);
+            this.buf = buffer;
         }
     }
 

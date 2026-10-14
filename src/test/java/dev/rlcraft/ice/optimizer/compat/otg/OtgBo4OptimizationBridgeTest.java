@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.compat.otg;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import dev.rlcraft.ice.optimizer.ClientOptimizerConfig;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
@@ -55,5 +56,40 @@ public class OtgBo4OptimizationBridgeTest {
         second[0][0] = 9;
         assertEquals(2, OtgBo4OptimizationBridge.columnBlockIndex(this, first, 0, 1));
         assertEquals(9, OtgBo4OptimizationBridge.columnBlockIndex(this, second, 0, 1));
+    }
+
+    @Test
+    public void disablingTheModuleBypassesAndInvalidatesAWarmPrefixTable() {
+        short[][] sizes = new short[16][16];
+        sizes[0][0] = 2;
+        assertEquals(2, OtgBo4OptimizationBridge.columnBlockIndex(this, sizes, 0, 1));
+
+        OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).configure(false, 3);
+        sizes[0][0] = 9;
+        assertEquals(9, OtgBo4OptimizationBridge.columnBlockIndex(this, sizes, 0, 1));
+
+        OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).configure(true, 3);
+        sizes[0][0] = 13;
+        assertEquals(13, OtgBo4OptimizationBridge.columnBlockIndex(this, sizes, 0, 1));
+    }
+
+    @Test
+    public void runtimePauseBypassesAWarmTableWithoutDisablingItsBreaker() {
+        boolean previouslyPaused = OptimizerRegistry.isRuntimePaused();
+        OptimizerRegistry.setRuntimePaused(false);
+        try {
+            short[][] sizes = new short[16][16];
+            sizes[0][0] = 2;
+            assertEquals(2, OtgBo4OptimizationBridge.columnBlockIndex(this, sizes, 0, 1));
+            OptimizerRegistry.setRuntimePaused(true);
+            assertTrue(OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).isOperational());
+            sizes[0][0] = 9;
+            assertEquals(9, OtgBo4OptimizationBridge.columnBlockIndex(this, sizes, 0, 1));
+            OptimizerRegistry.setRuntimePaused(false);
+            sizes[0][0] = 13;
+            assertEquals(13, OtgBo4OptimizationBridge.columnBlockIndex(this, sizes, 0, 1));
+        } finally {
+            OptimizerRegistry.setRuntimePaused(previouslyPaused);
+        }
     }
 }

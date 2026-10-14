@@ -17,7 +17,8 @@ public final class TerrainUploadContext {
 
     public static void begin(BlockRenderLayer layer, RenderChunk chunk,
                              CompiledChunk compiledChunk) {
-        if (layer == null || chunk == null || compiledChunk == null) {
+        if (dev.rlcraft.ice.optimizer.OptimizerRegistry.isRuntimePaused()
+            || layer == null || chunk == null || compiledChunk == null) {
             CURRENT.remove();
             return;
         }

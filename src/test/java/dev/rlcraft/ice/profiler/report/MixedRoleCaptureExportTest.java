@@ -32,7 +32,7 @@ import org.junit.rules.TemporaryFolder;
 public class MixedRoleCaptureExportTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
-    @Test public void splitRolesRoundTripV4WithUniqueSequencesAnchorsAndOneCopyOfSamples() throws Exception {
+    @Test public void splitRolesRoundTripV5WithUniqueSequencesAnchorsAndOneCopyOfSamples() throws Exception {
         StackTraceRepository stacks = new StackTraceRepository(8, 8);
         int client = stacks.intern(trace("net.minecraft.client.renderer.EntityRenderer", "renderWorld"));
         int server = stacks.intern(trace("net.minecraft.world.chunk.storage.AnvilChunkLoader", "func_75820_a"));
@@ -62,7 +62,7 @@ public class MixedRoleCaptureExportTest {
         Set<Integer> referenced = new HashSet<Integer>();
         Set<Long> sequences = new HashSet<Long>();
         try (DataInputStream in = new DataInputStream(new GZIPInputStream(new FileInputStream(new File(report, "mixed.icecap"))))) {
-            assertEquals("ICECAP", in.readUTF()); assertEquals(4, in.readInt()); assertEquals("mixed", in.readUTF());
+            assertEquals("ICECAP", in.readUTF()); assertEquals(5, in.readInt()); assertEquals("mixed", in.readUTF());
             in.readLong(); in.readLong(); assertEquals(0, in.readInt()); // no timeline
             assertEquals(2, in.readInt());
             int samples = 0;

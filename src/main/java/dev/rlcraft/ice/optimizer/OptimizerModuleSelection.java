@@ -24,6 +24,27 @@ final class OptimizerModuleSelection {
             case SRP_POSE_CACHE: return source.srpPoseCache;
             case SRP_PARTICLE_COLLISION: return source.srpParticleCollision;
             case SRP_SPAWN_FILTER: return source.srpSpawnFilter;
+            case SRP_MOB_CAP: return source.srpMobCap;
+            case SRP_INFESTATION_CACHE: return source.srpInfestationCache;
+            case SRP_LIGHT_SEARCH: return source.srpLightSearch;
+            case SRP_WEAKNESS_RULES: return source.srpWeaknessRules;
+            case ENTITY_COLLISION_BOXES: return source.entityCollisionBoxes;
+            case ENTITY_NEAREST_QUERY: return source.entityNearestQuery;
+            case VANILLA_EQUIPMENT_NBT: return source.vanillaEquipmentNbt;
+            case POTION_CORE_NBT: return source.potionCoreNbt;
+            case OTG_BO3_EXECUTION: return source.otgBo3Execution;
+            case OTG_OBJECT_PREPARATION: return source.otgObjectPreparation;
+            case OTG_COLUMN_QUERIES: return source.otgColumnQueries;
+            case RECURRENT_REFLECTION: return source.recurrentReflection;
+            case PHOSPHOR_LOCAL_PROPAGATION: return source.phosphorLocalPropagation;
+            case LIBRARIAN_CAPABILITY_QUERY: return source.librarianCapabilityQuery;
+            case LEVELUP_PROCESSOR_SNAPSHOT: return source.levelupProcessorSnapshot;
+            case NUCLEARCRAFT_RADIATION_SNAPSHOT: return source.nuclearcraftRadiationSnapshot;
+            case FISHING_BIOME_QUERY: return source.fishingBiomeQuery;
+            case SRP_ARCHITECT_QUERY: return source.srpArchitectQuery;
+            case NBT_CONSTANT_KEYS: return source.nbtConstantKeys;
+            case SOUND_FILTERS: return source.soundFilters;
+            case VANILLA_AUTOSAVE_SLICES: return source.vanillaAutosaveSlices;
             case VANILLA_CHUNK_DISPATCH: return source.vanillaChunkDispatch;
             case VANILLA_CHUNK_SORT: return source.vanillaChunkSort;
             case VANILLA_CHUNK_VBO_UPLOAD: return source.vanillaChunkVboUpload;
@@ -58,6 +79,9 @@ final class OptimizerModuleSelection {
             case OTG_BO4_IO: return source.otgBo4WriteSuppression;
             case OTG_CONFIG_PARSER: return source.otgConfigParser;
             case OTG_BO4_LAYOUT: return source.otgBo4Layout;
+            case OTG_BIOME_ARRAY_CLEAR: return source.otgBiomeArrayClear;
+            case RECURRENT_CLOUD_FIELD: return source.recurrentCloudField;
+            case RECURRENT_VALUE_WORKSPACE: return source.recurrentValueWorkspace;
             case OTG_SYNC_FILE_CACHE: return source.otgSynchronousFileCache;
             case SKULL_PROFILE_ASYNC:
                 return source.allowIncompletePlayerSkullProfileLookup && source.skullProfileAsync;

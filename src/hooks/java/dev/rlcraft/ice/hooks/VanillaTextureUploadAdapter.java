@@ -6,6 +6,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
@@ -81,6 +82,14 @@ final class VanillaTextureUploadAdapter implements OptimizerBytecodeAdapter {
         guard.add(new JumpInsnNode(Opcodes.IFNE, afterSetup));
         upload.instructions.insertBefore(filterBlur, guard);
         upload.instructions.insert(clamp, afterSetup);
+        LabelNode originalUpload = new LabelNode();
+        InsnList pixels = new InsnList();
+        for (int slot = 0; slot < 9; slot++) pixels.add(new VarInsnNode(slot == 1 ? Opcodes.ALOAD : Opcodes.ILOAD, slot));
+        pixels.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "tryUploadLevel", "(I[IIIIIZZZ)Z", false));
+        pixels.add(new JumpInsnNode(Opcodes.IFEQ, originalUpload));
+        pixels.add(new InsnNode(Opcodes.RETURN));
+        pixels.add(originalUpload);
+        upload.instructions.insert(pixels);
         ClassWriter writer = new ClassWriter(reader,
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);

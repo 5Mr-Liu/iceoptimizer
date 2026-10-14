@@ -5,7 +5,6 @@ import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.client.ModernRendererRuntime;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
-import dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState;
 import dev.rlcraft.ice.optimizer.render.frame.RenderPass;
 import dev.rlcraft.ice.optimizer.render.particle.LwjglFbpPacketRenderer;
 import dev.rlcraft.ice.optimizer.runtime.MonotonicTokenCounter;
@@ -47,13 +46,6 @@ public final class FbpParticleRenderBridge {
                 renderer = runtime.fbpPacketRenderer();
                 if (renderer != null) renderer.prepare(runtime.resourceGeneration(),
                     runtime.glContextGeneration());
-                if (sample != null && sample.lifecycleState()
-                    == BackendLifecycleState.OUTPUT_VALIDATE) {
-                    LwjglFbpPacketRenderer.Validation validation =
-                        LwjglFbpPacketRenderer.validateFormat();
-                    runtime.recordValidation(OptimizationModule.FBP_PARTICLE_ADAPTER,
-                        validation.isEquivalent(), validation.getDetail());
-                }
                 modern = sample != null && sample.usesModernArm()
                     && renderer != null
                     && runtime.isShaderPackSafeForNativeVertexFormats();

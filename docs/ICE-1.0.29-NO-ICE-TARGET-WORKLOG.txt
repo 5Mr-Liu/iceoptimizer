@@ -1,0 +1,665 @@
+ICE 1.0.29 — no-ICE +50% target (in progress, NOT ACHIEVED)
+========================================================
+2026-10-12
+
+Acceptance: identical pack, graphics, distance and gameplay semantics; at least
+50% native FPS geometric-mean gain over the pack with ICE absent, with no
+per-scene P95/P99 regression. Current user scope: terrain and ordinary gameplay;
+combat investigation and fixture development were stopped on 2026-10-12.
+The large improvements over ICE 1.0.25/1.0.27 do not satisfy this target.
+
+Frozen rollback baseline:
+ .refactor-backups/1.0.29-noice-target/baseline-1.0.28
+ optimizer SHA256 A00F8F2AA8A43319B676F1336358262BA748521B894C76E2169CBA95CA2A5D10
+Original game installation and source save are not modified.
+
+1.0.28 runtime ABBA diagnostic:
+ build/fps-target/live-129-runtime-diagnostic-1
+ 150 s warmup, 35 s per arm, 5 s switch settling, stationary source view.
+ active / paused / paused / active FPS:
+ 135.9243 / 141.3438 / 148.7414 / 156.3019.
+ Entity population drift is significant. This does not establish a reliable
+ net gain/loss. A paused runtime retains transformed classes and owned buffers;
+ it is NOT the no-ICE acceptance baseline.
+
+45 s JFR in late moving-camera warmup, before timing:
+ 751 client stack samples (counts, not precise timing percentages).
+ 232 inclusive RenderGlobal.setupTerrain; 71 RenderChunk.getRenderChunkNeighbour
+ leaf samples; 58 inclusive RenderChunk.isBoundingBoxInFrustum.
+ 44 animated terrainChunk trampoline leaf samples; 26 getAnimatedSprites leaf
+ samples. Investigate repeated dispatch/metadata/visibility collection.
+ Data: active-warm.jfr, active-warm-full-samples.json, active-warm-full-client.txt.
+ JFR print's default depth is only five; use --stack-depth 128 for attribution.
+
+Candidate build 2:
+ optimizer SHA256 6F8F2DEAF5B16BA8CDA022D44F90B20E9DE5A6100640523608B0D8D52A962EB4
+ - Core visibility callbacks use concrete Java functional callbacks, preserving
+   old bridge installation ABI and isolated-core loading.
+ - Real RenderChunk compiled data uses its virtual getter directly.
+ - OptiFine animated-sprite getters bind an inlineable typed lambda once per
+   class; unusual classloader/access combinations retain reflection fallback.
+ - Final terrain draw unions sprite sets before visibility/catch-up work.
+   Scratch is bounded; nested draw callbacks have separate scratch. Early
+   collection and the final draw catch-up boundary are both retained.
+ - Added cross-classloader callback/invalid installation checks and a semantic
+   test for duplicate sets, unavailable atlas, retry, and stale-layer unions.
+ Full build 2: 1,233 regular tests (71 absent optional samples skipped), zero
+ failures/errors; 10 final-artifact startup checks pass. Full-game benefit has
+ NOT yet been established. Build 1 failed only stale 1.0.28 version constants;
+ constants and linkage expectations are corrected in build 2.
+
+Gameplay fixture development:
+ - Disposable clone only: identical 31x31 platform at 513.5,80,411.5; ordinary
+   survival, diamond Protection IV armor/Sharpness V sword, existing skills.
+   No invulnerability, AI disable, tick skipping or damage suppression.
+ - Survival follows local waypoints; combat spawns seeded zombies on a fixed
+   server-tick schedule, using ordinary controller attacks/cooldown/line of sight.
+ - Record walk distance, attacks, server-side hits/deaths/damage and minimum HP.
+   Insufficient activity or death invalidates the run. Compare tool now exits
+   nonzero on incomplete, mismatched, inactive, pilot or invalid gameplay runs.
+ - First no-ICE combat pilot completed 35 s, 20 attack attempts, minimum HP13.267,
+   184 hurt ticks, 22.857 m of movement/knockback, 142.522 FPS. Screenshot exposed
+   an unsynchronized selected hotbar slot: attacks were unarmed. DO NOT use this
+   pilot as an acceptance result. Added server HeldItemChange packet, held-sword
+   assertion, and initial clear weather; formal runs must use the updated fixture.
+
+Current diagnostic:
+ build/fps-target/live-129-terrain-diagnostic-1, candidate build 2.
+ Directional culling active/off/off/active; same world, stationary view.
+ This isolates saved vertex work versus extra direction-split draw submissions.
+
+Outstanding: complete candidate comparisons, replace further measured negative
+ optimizations, verify ordinary gameplay, repeat no-ICE comparisons.
+ No +50% claim is made.
+
+08:17 update — build 3 and first combat pair:
+ Build 3 SHA256 B1B7356570AED56495F463ACDB9BA5455BD2EA84F810D9D013EDA0EEFF742FC3
+ Exact adapted VboRenderList/RenderList emitters certify their final sprite
+ boundary, so addRenderChunk need not scan each chunk a second time. Unknown
+ subclasses retain the early fallback. Both adapter orders retain final catch-up
+ before the native early return. Full build: 1,235 tests, 71 skips, zero failures;
+ 10 final-artifact startup tests pass.
+ Directional ABBA build 2 FPS 133.902/139.716/162.048/171.388 shows substantial
+ time drift; it does NOT establish directional culling's independent benefit.
+
+ Frozen formal gameplay fixture:
+ build/fps-target/129-gameplay-fixture-v1/ice-live-benchmark.jar
+ SHA256 86CC796001D84038BAFB402322195FEEA23DFDFC90E8886A8354B8583D6FD1F2
+ Read-only agent SHA256 02E59A606A76F9B854F625D9B7281FCD07A1D52A67F25137E4ABC7783FE99941
+ Both combat runs used 120 s warmup, 60 s sample, 1920x1080, 15 chunks, same
+ graphics/world hashes, active display throughout, no profiler mod.
+ no-ICE-combat original-1: 218.506 FPS; P95/P99 10.5797/13.0674 ms.
+ 1.29 build3 candidate-1: 143.268 FPS; P95/P99 13.8647/18.3480 ms.
+ Observed ratio -34.43%; this is a FAILED result, not target completion.
+ Activity: 14 zombies each; kills 14/12; player hits 4/37; walk/knockback distance
+ 2.14/38.26 m. Screenshot shows parasite interference in the candidate run.
+ Camera, position and combat exposure differ greatly, so the whole FPS difference
+ cannot be assigned to renderer changes. Keep the result and repeat; comparison
+ tool now rejects such a heavily divergent pair for causal acceptance.
+
+ Build 4:
+ SHA256 FD19D8FF9E7B590A81DA2EBFFEE6DF7E486A74BEA67BA29A9847F5D70E0FE43F
+ Terrain range ownership uses a directly published allocator witness instead of
+ repeated boxed-id HashMap lookups. Free/reset/close invalidate it; uncertain
+ mutations retain live-map validation. Equivalent-value frees now release the
+ actual published range reservation. Tests cover reuse, foreign owners, reset,
+ close, equivalent frees and uncertain post-removal publication.
+ Full build/test/artifact checks pass. Local shuffled live/freed-range probe:
+ map 8.761 ns/check, witness 2.147 ns/check, identical answers. This is local CPU
+ evidence only, not an FPS result. Build 4 survival comparison is pending.
+
+ Added opt-in diagnostic Java-agent timers for complete render sections and ICE
+ boundaries. These runs are explicitly pilot-only and excluded from acceptance.
+ StableCreative clears source potions and sets midday/clear weather once before
+ warmup, avoiding potion expiry across diagnostic ABBA arms; normal ticks remain.
+
+08:28 update — survival pair and build 5:
+ no-ICE survival original-1: 195.455 FPS; P95/P99 11.2321/13.8106 ms.
+ build4 survival candidate-1: 155.661 FPS; P95/P99 12.1524/14.4614 ms.
+ Both completed 1,200 server ticks, ordinary survival, no damage or invulnerability;
+ walked 168.37/153.29 m. FPS -20.36%, so this is another FAILED result. GPU sample
+ medians both 1.722368 ms; prioritize remaining CPU work. Route endpoints and
+ camera phases differ, so retain scene/activity evidence and require repetition.
+
+ Build 5 SHA256 E2EB6366E0564CD05F86ABBA1288D2A82AAB47BDE8B7A76C171836744C5AB191
+ HUD barrier/texture-barrier callbacks are Java Runnable/IntConsumer targets,
+ retaining the old MethodHandle installation ABI for external bridges. Outside
+ HUD, texture barriers avoid querying the GL mirror. Active HUD barriers retain
+ the same ordering and exception behavior. Full build/test/artifact checks pass.
+ Real core+runtime no-HUD dispatch pair: build4 6.690/6.362 ns, build5 3.211/3.320 ns.
+ This tiny local reduction alone cannot explain or solve the remaining FPS gap.
+
+ Native correctness: current TerrainOrderedRangesNativeProbe passed 64 mixed
+ order sequences, 24 views, page/rebuild/external replacement/name lifecycle and
+ budget release for both upload modes. An initial invocation of the historical
+ TerrainSubmissionNativeProbe failed its obsolete bindless draw-count assertion;
+ that tool targets the removed shader batcher, not the current fixed-range path.
+ Fresh original FontRenderer versus build5: all 72 pixel hashes match exactly.
+ A first comparison command referenced a missing old font-7-original log; it is
+ superseded by fresh 129-hud-native-original/new.txt runs and an explicit 72-case
+ count/hash check. No invalid command output is counted as a successful proof.
+
+ Final loaded ClippingHelper bytecode already contains a mod-supplied positive-
+ vertex plane test. Do not claim a new eight-corner-to-positive-vertex speedup
+ against this pack's actual baseline. Diagnostic sections run now uses build5.
+
+2026-10-12 08:49 — Remaining regressions and rejected multidraw experiment
+The formal target remains unmet. Section pilots use build5 and frozen sections-v1
+fixture; they are diagnostic only and are NOT included in acceptance FPS.
+No-ICE static/rotation terrain inclusive time: 1.920/2.074 ms per frame.
+Build5 static/rotation terrain: 2.574/2.634 ms. Entities: no-ICE 0.402/0.470,
+ICE 1.039/0.755 ms. Loaded entity populations differ, so the complete entity
+cost difference cannot be assigned to ICE without drawn-entity counts.
+HUD: no-ICE 0.228/0.241, ICE 0.260/0.253 ms. Terrain and entities remain first.
+
+Stable-creative build5 direction ON/OFF/OFF/ON pilot, 25 s each, same camera:
+FPS 162.733 / 162.108 / 160.164 / 158.335.
+GPU median ms 2.114 / 1.909 / 1.921 / 2.168. No demonstrated FPS benefit here.
+Terrain section ms 2.359 / 2.296 / 2.292 / 2.421. V1 section timing includes
+5 s settling, unlike FPS; this is corrected in v2, do not treat windows as exact.
+
+Build6 ordered glMultiDrawArrays trial passed exact pixels in all 12 views,
+but was rejected for performance. Loading-contended results were superseded
+by exclusive native runs after the live game exited. Same shuffled 640-mesh
+fixture, 3.93 M vertices, persistent staging, ordinary resident VBO storage:
+build5 all-arena individual/optimized: 0.674/0.520 ms; mixed: 0.677/0.587.
+build6 all-arena individual/optimized: 0.665/0.803 ms; mixed: 0.633/1.320.
+Build6 source copied to build/fps-target/LwjglTerrainArena-build6-rejected.java
+then removed from production. No gain from this trial is claimed.
+
+Build7 candidate reuses array layout only within one render invocation across
+exact RenderChunk instances sharing one buffer. External VBO, animation and
+unknown chunk classes invalidate reuse. Original ordering and transforms stay.
+Counters record real layout setup/reuse. Awaiting native and full-game evidence.
+Sections-v2 adds actual RenderManager.renderEntity calls and starts the timing
+clock at the measured frame, after ablation settling. Model pose ABBA uses the
+live cache configurePoseBatching method and verifies its actual field; changing
+only the restart-required config would NOT switch the active cache.
+
+2026-10-12 09:08 — Live evidence capture, memory pressure, ongoing capacity probe
+Build7 SHA B13E6FA05D5ED3AF83FC4547BB4DD67F2B90F521AC75E02DEA92FB8E9F6494BC.
+Full test/build/startup SUCCESS in 1m25s; same 1239 regular tests/71 skipped,
+10 artifact startup tests. Frozen jar at build/fps-target/129-build7/.
+Native exact-RenderChunk layout probe passed all 12 pixel comparisons:
+new all-arena 0.516 ms / mixed 0.582; frozen build5 0.522 / 0.577.
+Savings are small/noisy; not yet credited as an effective FPS improvement.
+Current ordered native regression also passed (129-build7-terrain-ordered-native.txt).
+
+Build5 model pose ON/OFF/OFF/ON sections-v2 pilot:
+FPS 164.535 / 166.236 / 161.964 / 155.650.
+Entity draw mean microseconds 39.560 / 39.279 / 38.148 / 47.178;
+counts 40654 / 42215 / 51886 / 47960 across 25 s per arm.
+Natural visible entity composition varies; no decisive causal conclusion yet.
+
+New test-only tools: TerrainSceneCapture + TerrainSceneData capture/read actual
+visible order, arena-owned vertex bytes, region offsets, current matrices and
+retained opaque occluders. CapturedOcclusionProbe replays these through actual
+production software visibility code. Tools are not packaged in release artifacts.
+First capture from live-129-terrain-capture-1 (build7, sections-v3) contains:
+SOLID 1016 visible chunks, 14,220,416 owned vertex bytes; CUTOUT_MIPPED 969 chunks,
+31,496,976 owned bytes; TRANSLUCENT 482 chunks, 9,549,344 owned bytes.
+The SOLID scene has only 290 valid retained occluder entries and 53,488 faces.
+Replay priority128: zero hidden, p50 0.1055 ms. Full2048: zero hidden, 0.2019 ms.
+Adding exact raw-geometry bounds for owned but unretained meshes raises known
+queries to 480, still zero hidden (0.1071/0.2307 ms). This does NOT include unknown
+legacy meshes; those remain visible. Do not claim coverage of all 1016 targets.
+
+Sections-v3 capture occurred before static timing (15 s settle), but a previously
+empty CUTOUT layer first appeared during rotation and got captured then. Therefore
+these FPS results remain diagnostic and cannot be accepted as clean comparison.
+Source fixed in sections-v4: arm capture only after ALL measured scenes finish,
+wait 10 s for visible layers, then disarm and shut down. Current v4 frozen fixture
+at build/fps-target/129-sections-fixture-v4/; old fixtures preserved.
+
+Live build7 capacity evidence: arena used 256,499,600 bytes, max268,434,432,
+physical258,473,024, unified GPU budget used268,015,936 of256MiB. 3230 owned meshes,
+655 free ranges, 29052 allocation rejections, 17209 upload rejections. Terrain
+remains heavily mixed with legacy VBOs. Need distinguish capacity from fragmentation
+and admission/retirement costs. No capacity default has been changed.
+A fresh build7 isolated run live-129-capacity-768-1 is being prepared/launched
+with ONLY its copy's gpuCacheBudgetMiB changed256→768, warm90/sample30,
+stableCreative+sections-v4+post-measurement capture. Acceptance still requires
+same-package no-ICE baseline +50%, and valid survival/combat repeated evidence.
+
+Offline indexed submission experiment (TerrainIndexedDispatchProbe): instrumented
+probe-only classloader replaces candidate glDrawArrays by identical quad-index
+DrawElementsBaseVertex; frozen rejected build6 multidraw becomes indexed MDI.
+Original probe arm stays DrawArrays. 12 views exact pixels pass, exclusive:
+current single indexed0.508/0.570 ms; rejected-build6 indexedMDI0.509/0.569 ms
+(all arena/mixed). It removes the build6 multi-array penalty but does not yet beat
+build5 enough to justify production changes. LWJGL2 lacks MultiDrawElementsBaseVertex;
+initial compile failure corrected to supported GL43 indexed indirect API.
+Sources: Khronos glMultiDrawElementsBaseVertex/Vertex Rendering reference.
+
+2026-10-12 09:19 — Cost-aware face selection implemented, not yet accepted
+Build8 SHA94BF4304A2753D835C9BC2311FA10C6B6089217FBA68F3005F030E5FF1DB3B83,
+full build/test/artifact checks SUCCESS1m15s. Three meaningful tests added:
+small internal omission keeps one full draw, large omission can pay for another
+draw, prefix-only omission remains useful and uncertain camera retains geometry.
+TerrainFaceRanges now precomputes a 64-bit profitable-direction-mask table at
+upload. Runtime derives current six direction bits and either emits selected
+ranges or retains the full mesh. Unknown faces always remain. Initial extra-call
+cost is 2048 saved vertices; no per-frame vertex scan or extra allocation.
+Awaiting native/current-client comparison before crediting a performance gain.
+
+CapturedTerrainSubmissionProbe replays ONLY the captured arena-owned SOLID
+geometry through fixed pipeline with color/depth, textures disabled. It proves
+submission geometry equivalence, NOT full game's textured visuals/FPS:
+256MiB capture:328 owned of1016 visible. Full327 calls/507872verts0.1161ms;
+always-direction728calls/252688verts0.1494ms; cost2048:361calls/418884verts0.1143ms.
+768MiB post-measure capture:1013 owned of1132 visible. Full1008calls/2585548verts
+0.3840ms; always-direction2049calls/1252872verts0.4412ms; cost2048:
+1206calls/2008592verts0.3750ms. cost4096:1014calls/2520136verts0.3657ms.
+All thresholds0,128,256,512,1024,2048,4096 exactly match full geometry pixels.
+Order fixed in this exploratory threshold sweep; repeat/alternate before precise
+percentage claims. Compared pixels are color/depth without captured atlas.
+
+768MiB live pilot static148.417FPS, terrain2.508ms, entities0.934ms. GPU budget
+used804276032/805306368, arena787186960,7360meshes, allocation rejects7497,
+upload rejects1542. Larger capacity reduced rejected uploads but still saturated.
+Camera position drifted to511.038845,76.825755,410.018232 versus reference
+513.409500,76.825755,411.159743; reject as strict FPS comparison. Defaults unchanged.
+New no-ICE sections-v4 pilot static194.445FPS with exact reference camera,
+rotation still running. Original-v4 prepared directory hash same source save;
+copy ran during earlier768 warmup only, not any measured interval.
+
+2026-10-12 09:43 — Full client build8 still fails no-ICE target
+Frozen sections-v4 static/rotation no-ICE:194.4446/189.4388FPS;
+build8:144.2385/146.1612FPS, exact same reference camera. Static P95/P99:
+no-ICE11.3851/13.5691ms; build8 12.6777/15.0451ms. Diagnostic pilots,
+not final acceptance runs. Build8 entity calls/frame +9.7% but mean cost
+30.555→56.320us; terrain section1.9671→2.4615ms. Composition not yet matched.
+No +50% claim; candidate still slower than absent ICE.
+Textured partial-geometry replay, rotating arm order after1600 interleaved warm
+frames,17 rounds: cost0 .502770ms;128 .499355;256 .495505;512 .473188;
+1024 .464258;2048 .447969;4096 .421064;full .426473. Exact pixels all arms.
+White texture/lightmap replay only: not the game's atlas or gameplay FPS.
+
+Build9 SHA A6AC786C6C5638BB270DB2F486AE3BBB5D82361738E0EDBCED1627777E3C568F,
+full build/test/artifact checks SUCCESS1m8s. Adds contiguous full-range merging
+within the same page+region, preserving original order, and report-only live
+vertex/tail byte totals. Native12 exact views and ordered lifecycle probes pass.
+Frozen at129-build9. No measured client gain yet.
+
+Entity adapter ON/OFF/OFF/ON build8 sections-v5 pilot:
+FPS161.4273/161.9607/160.0118/146.6516. Modern entity counters stop during OFF,
+but DO NOT resume in final ON; controller still reportsMODERN, cache360entries.
+This is not a valid reversible ABBA. Pig mean24.109/20.706/20.688/26.648us;
+hippogryph104.399/78.623/78.886/93.982us; wither skeleton318.210/302.874/
+305.632/327.131us. Changing world composition and non-resumed candidate prohibit
+causal FPS conclusions. New sections-v6 counts candidate/preflight/cache/begin
+admission decisions to locate this behavior; strictly diagnostic only.
+No-ICE sections-v5 type profile running; build9-v6 fresh clone prepared.
+Comparator now rejects differing entityAblation/captureTerrain metadata too.
+ModelPoseBatchProbe extended with opt-in TRUE compiled display-list baseline,
+rotating three-arm order and pixel check. Previous state-batch comparison was
+not a no-ICE display-list baseline. Execution still pending while client samples.
+
+2026-10-12 10:14 — Model submission root-cause experiments and honest rejection
+Build9-v6 entity diagnostic completed: ON/OFF/OFF/ON FPS145.7993/153.4196/
+162.9970/159.2299. First ON 146840 state-batch begins, final ON121576;
+OFF candidate admission0, so this run DOES restore the adapter successfully.
+Final modern cumulative draws4803248. Scene composition still changes, so
+no direct no-ICE or precise causal FPS gain credited. First arena live vertices
+255880912bytes, unused allocated tails526624bytes: capacity is not mainly wasted tails.
+
+No-ICE sections-v5 static184.6746FPS/P9510.8398/P9913.6999; entity type profile
+contains pigs/squid/items, unlike the earlier build8 hippogryph/wither skeleton
+view. Natural population differences explain part of the earlier entity mean
+cost gap. Do not attribute that entire gap to renderer code.
+
+Build10 SHA D112AB60307A7EEB8B26BFDC776EB2AAAAFA2A0D1A674AB755E33B20F9E0DE7D:
+unit-axis sparse multiplication preserves dense float bits, randomized tests,
+full build SUCCESS1m18. No end-to-end gain established.
+ModelPoseBatchProbe now includes actual GL-compiled display-list geometry and
+raw native transforms for the no-ICE arm, alternating order and14pixel cases.
+Offline build10 palette8parts17.663us vsdisplay-list.722us;32parts35.713vs2.648;
+128parts124.374vs9.702 (small repeated quad workload, not a gameplay FPS ratio).
+Native attribution: glGetFloat modelview at every tree mean31.1425us, glGetInteger
+matrix mode1.4509us. First blocking state read drains queued driver work.
+
+Build11 relative-pose experiment SHA B2D62C604FA1994CCA552A82D7BC5C49049FFB1F8C5C7CCBE5D49A82D89C6832:
+keeps native base matrix in shader, tracks per-parent relative matrices, correctly
+materializes even singular parents at first state boundary, then ordinary arrays.
+Full build SUCCESS1m3. Fourteen native pixel cases pass (including untracked raw
+non-identity modelview base); no gain: matrix-mode query inherits the stall,
+mean30.9881us. Palette128parts136.858us vsdisplay-list9.820us. Rejected from
+current source, together with unproven sparse-axis change, not silently retained.
+Full experiment sources saved129-relative-rejected-source; frozen11main+early
+classes/jar retained. Reverted only these five model/matrix files from exact
+frozen1.28 source; all other1.29 improvements through build9 preserved.
+
+Current pending build13: model entity/TESR controller uses existing bounded
+workload-aware paired CPU/GPU selection, instead of unconditional Modern.
+Timer-query support now required for these measured paths; other backends retain
+their prior policy. Activation policy tests updated to require rejection of slow
+measured candidates and retention of fast ones, not just fewer draw calls.
+Build12 exposed old unconditional-activation expectations (2tests failed), fixed
+for the intentional policy change. Also found the current original-list shortcut
+never advanced OUTPUT_VALIDATE. Added validation-only actual call-site path;
+it rechecks controller state so a stale traversal cannot emit a duplicate draw.
+ModelBackendRecoveryProbe extended to exercise progress and duplicate prevention.
+Full build13 and native recovery verification pending. No live benefit claimed.
+
+Gameplay fixture v2: transparent enclosed combat arena, one setup relocation of
+existing occupants (none moved in first run), records each player damage source.
+No-ICE v2 completed1200ticks,14spawns,25attacks,12kills,167.5606FPS;
+41playerhits:35external (30LavaCow parasites +5onFire). Still confounded.
+Inspected local Fish's Undead Rising1.4.2 bytecode/config: parasite host death
+handler constructs new Random; host list includes zombie/husk etc, not zombie
+villager. Merely seeding a zombie's RNG or walls cannot control that event.
+Fixture v3 used vindicators but player died after4seconds; INVALID, no FPS result.
+Fixture v4 uses ordinary zombie villagers with iron helmets, same14-wave schedule,
+normal mod events/AI/damage, no suppression/healing/invulnerability during samples.
+Fresh no-ICE v4 clone preparing/running; latest candidate and survival pairs still
+required. Original game/source save remain unchanged. Target NOT ACHIEVED.
+
+2026-10-12 10:36 — Build13 frozen; stricter gameplay and terrain checks
+Build13 full test/build/verifyArtifactStartup SUCCESS1m0s:1243 regular tests,
+71 skipped,0 failures, plus10 artifact tests. Native model recovery probe PASS:
+OUTPUT_VALIDATE progresses; stale traversal sample cannot duplicate a draw;
+resource cleanup remains correct. Frozen jar129-build13 SHA256:
+AA35A84D76EB3D0DCA7DAE42EABC7356A27D42E39CCE9284435F61B866E15561.
+No live gain yet established. Survival candidate13 currently warming/measuring.
+No-ICE survival fixturev4 completed1200ticks,153.2855m,0hurt,active throughout:
+190.9459558FPS;P9511.1033ms;P9913.4324ms;GPUmedian1.753088ms.
+
+Combat fixturev4 player died after28seconds;INVALID,no FPS acceptance result.
+Fixturev5 retains ordinary zombie villagers/AI/damage, gives a vanilla offhand
+shield and uses ordinary right-click blocking between cooldown attacks. Two
+opponents approach from a front fan every200ticks (12total), avoiding the old
+four-opponent surround. No heals/invulnerability/AI suppression in samples.
+Abort now writes invalid-gameplay.txt with damage sources/activity and explicit
+accepted_performance_result=false. v5 is frozen but not yet live validated.
+
+Captured terrain bindless whole-layer shader replay:1301/2073600 pixels differ;
+1180 differ by1,1 by2,120 by>4,max174. STRICT correctness rejects this route.
+Optional allowPixelMismatch flag exists ONLY in offline probe to diagnose timing;
+not production and not acceptance. First timing .829667ms fixed/.1.045194ms
+bindless was run alongside a loading/warming client:GPU contention invalidates
+its speed comparison. Repeat exclusively before drawing performance conclusions.
+Production remains ordered fixed-function ranges. PNGs and raw logs retained.
+
+Inspection of actual transformed no-ICE ClippingHelper confirms a mixin already
+uses the positive-support vertex with double arithmetic. Replacing its old
+8-corner bytecode would not optimize the executed path. EarlyMatrix tracker
+also already skips matrix arithmetic when no authoritative scope is known.
+Do not credit duplicate optimizations. Target NOT ACHIEVED.
+
+2026-10-12 10:50 — Real model sampling defect fixed; equipment confound found
+Build13 survival:167.1739594FPS vsno-ICE190.9459558;P9511.9636vs11.1033;
+P9913.9867vs13.4324;GPUmedian1.744896vs1.753088. Both completed1200ticks.
+This is NOT a clean algorithm effect: distances124.3964vs153.2855 differed19%.
+Read saved player NBT: candidate helmet+leggings both Quality Tools heavy,
+each -10% movement multiplicative; baseline had neither. Candidate sword thin
+(-5%damage,+10%attack speed), baseline vicious(+15%damage,-.5reach). This
+confirms the fixture's fresh equipment generated unrelated random qualities.
+Previous gameplay fixtures cannot be strict gameplay-equivalent acceptance.
+Comparator now warns on missing gear/attribute evidence and >10% walk gap.
+
+Build13 entity/TESR recorded0measurements/0modern draws and timed out3times.
+Root cause: original single-list shortcut skipped eligibleDraws accounting;
+all first Legacy ABBA samples were rejected as empty. Validation itself advanced.
+Build14 adds allocation-free original-work observation at that existing hook;
+no cache lookup, no modern draw, outline/overflow/dormant paths remain excluded.
+Full build14 SUCCESS1m25s; regular1244tests/71skipped expected (XML recount pending).
+SHA256 D1E74E35B0C4204904C63049EDBB4CA5B2E218E506D81B56CEA00703C69FE8B1.
+Extended native recovery probe now uses real GL timer queries and the production
+CPU/GPU completion path for original callList -> accepted Legacy sample -> next
+Modern arm (both entity/TESR). PASS, original pixels unchanged, no resource leaks.
+Synthetic manual recordMeasurement no longer stands in for this first sample.
+
+Exclusive captured bindless replay repeated with no client:fixed.431296875ms,
+bindless.5440625ms (+26.15%time), same1301pixel mismatch. Reject this experiment.
+Lossless integer coordinate probe found0eligible whole meshes across SOLID,
+CUTOUT_MIPPED,TRANSLUCENT: real coordinates include254.00002 etc due model-scale
+stitch adjustment. Do not discard precision to claim bandwidth savings.
+
+No-ICE combatv5 completed1200ticks,12spawn,27attacks,37hits,12kills,
+0player/externaldamage,217.1910FPS/P9510.1943/P9912.3294. This validates shield
+script activity/survival, NOT final comparison because equipment randomized.
+Fixturev6 explicitly starts with ordinary Quality Tools empty Quality compounds
+(no modifier), verified from installed helper bytecode/actual ordinary items.
+Player armor/sword/shield and opponent helmets fixed, mod AI/events/damage intact.
+Records initial gear/enchantments/quality, initial/min/max movement/attack/armor/
+maxhealth attributes, active effects and measured effect tick counts.
+Frozenv6 fixture SHA E9258DAD4F0D13B5142F2B5CCAD5CA783344CDE772B2729ED58FFC59A58178A1.
+Candidate14combatv6 running; no-ICEcombatv6 and bothsurvivalv6 clones prepared.
+VAO per-page vertex-layout caching is offline experiment only, timing still pending.
+Target NOT ACHIEVED; no latest production FPS benefit credited.
+
+[2026-10-12 11:15 +08:00] build14 live measurements and build15 bootstrap correction
+- build14 full build/artifact startup succeeded; XML: 1244 regular cases, 71 skipped, zero failures, plus 10 artifact cases.
+- Combat v6: candidate 175.30056 FPS / P95 12.0757ms / P99 14.3167ms; no ICE 223.32422 FPS / 10.6008 / 12.9798. Ratio -21.50%, but NOT a clean causal estimate: 14 vs 12 spawn edge case and different Infernal effects/external fire damage. Candidate entity backend accepted 32 paired samples, measured -20.988% median improvement and +7.101% P95 regression, correctly chose LEGACY. No 50% achievement.
+- Renderer-runtime-off v6 diagnostic: 173.43384 FPS / P95 12.5111 / P99 15.25; runtime report empty but dedicated renderer bytecode adapters still installed. display_active_all_frames=false: invalid formal result. Cannot infer benefit from this run.
+- Captured terrain VAO-only replay exact pixels: full captured geometry .447809ms -> .426502ms; partial capture .137363ms -> .113178ms. Tool experiment only; absolute .02ms-scale saving, no live FPS claim and no production VAO implementation.
+- Fixture v7 frozen SHA256 1C6ED7E52EDE9DCD27ECE4C80802EBF5EB06FBDF3B56CDB4974AA648DBA71FEB. Controls benchmark world random inputs at setup and opponent spawn, records effective opponent abilities/attributes, and prevents extra wave after tick1200. Preserves mod callbacks, AI and damage. Fixed normal equipment quality retained.
+- Candidate build14 survival v7 completed: 160.15323 FPS, P95 11.9608ms, P99 14.797ms, 1200 server ticks, distance153.285506m, min health20, display active throughout. Matching no-ICE survival v7 started PID13960 at11:13:56.
+- build15 source: early bootstrap policy reads only explicit general.settings.modernRenderer=false and skips renderer-only targets; shared/unknown targets retained. Missing/unreadable/ambiguous config retains prior behavior. No late client/config linkage. Setting now requires restart. Full build/test running. Performance benefit remains unproven.
+
+[2026-10-12 11:24 +08:00] controlled survival pair / bootstrap / allocator candidate
+- Matching v7 survival: no ICE177.71610 FPS versus build14 160.15323 (-9.8825%); P9511.4942->11.9608ms, P9914.6222->14.7970ms. Both1200ticks,153.285505625m, identical final position/camera, normal fixed gear, no player hits. Natural entity counts198-231 versus217-251 and rendered terrain1109 versus1027 still differ. Independent live runs, no CI/no 50% claim.
+- build15 SHA256 B6017F46001FC45DE3FF131486A84666090599E532A2FFB41DB5D8BFFA4FFF3A. Full build1m7s,1248 regular tests/71skipped/0fail plus artifact startup checks. Renderer-cold-off v7 survival PID2380: log explicitly confirms skipped dedicated hooks at11:20:29, world connected11:22:51, warm120/sample60. Other independent optimizations still installed.
+- Consulted current Celeritas primary source https://github.com/GTNewHorizons/Celeritas (nh-main); CachedBatch checks section order and camera cell bounds; storage owns invalidation. Research only, no external source copied into ICE implementation. ICE mixed ownership/Animator callbacks prevent blindly reusing this cache design.
+- build16 adds a conservative raw free-span upper bound to allocator. Only complete scans tighten bound; successful coalescence/growth raises it, reset clears it. Requests larger than proven bound skip the linear scan. Allocation choice/order, residency checks and ABA safety unchanged. Three regression cases added for rejected-fit scans, coalescence/reset, fresh growth and incomplete first-fit scans.
+- build16 SHA2561456990026B189DA8B19D28CBF45D58C8B489D955D944CD3355BB9C2F042E9C3. Full build1m7s,1251 cases/71skipped/0fail plus artifact startup. Initial CPU microprobe ran while game warmed, so its timing is provisional: failed11289.305->10.665ns, mixed112.29->173.97ns, identical offset digest654613504. Requires exclusive repeat before accepting any performance conclusion. Not a live FPS result.
+
+[2026-10-12 11:37 +08:00] cold renderer ablation and ongoing follow-up
+- Cold-off build15 survival v7:198.58839999 FPS (+11.7447% vs noICE177.71609916; +24.0% vs active-renderer build14). P9511.2099ms / P9912.9369ms, identical distance/final view,1200ticks,0hits,active all. Natural entities205-268 and terrain1019 differ from noICE198-231/1109. Single run is evidence of renderer regression, NOT validated stable +11.7% and NOT goal achievement.
+- Exclusive allocator mixed-trace ABBA: build15 failed7012.76/7065.52ns, successful65.095/63.63ns; build16 failed5.99/5.7ns, successful114.675/113.245ns. Revised17 computes largest span only after a failed allocation. Mixed17 still106-111ns successful; separate success-only JVMs show baseline102.42/104.505ns versus17 110.725/102.555ns. Workload/JIT profile dependence is material; do not claim normal-path regression eliminated from a single microtrace. Both offset digests654613504. Full build17 succeeded1m8s; same1251 cases/71skipped/0fail plus artifact checks. No live17 FPS result yet.
+- NoICE combat v7 INVALID at50sec: player died/overlay, only796server ticks,18attacks/7kills;15Geist hits and7onFire hits. Mod death events spawned Geists and benchmark targeted only villagers. Not accepted as performance data.
+- Fixture v8 extends normal controller target selection to hostile IMob plus Lycanites Geist; no damage/AI/event suppression, no runtime healing. Frozen SHA256 DB033524F1C7C259845C4A43A918FA8B40EDF08804EE114A14FBDE076A898940. Current cold-off build15 combat v8 PID17416 in prewarm load; fresh noICE v8 clone prepared.
+- State-query diagnostic fixture v1 (gameplayv7) SHA256 A38ACA3E5D46563F062ACB4AFFD09147CF12498EB0616CF75E41AAEC3A6BCC10 adds opt-in inclusive timing for HUD, software terrain and model GL state queries, terrain direction/buffer state and allocator. Fresh build15-renderer-on diagnostic clone prepared; not launched. Timing hooks are test-only, never production artifact.
+
+[2026-10-12 11:43 +08:00] gameplay v8 and spatial-layout hypothesis
+- Cold-off build15 combat v8 (folder live-129-combat-build15-v7-1, arm records v8) completed:212.7012184 FPS, P9510.2008ms/P9912.567ms,1200ticks,12spawn/12kills,26attacks,0player/external hits,minHP20,display active all. Matched noICEv8 PID12776 started11:41; no relative benefit claimed yet.
+- Frozen build17 SHA256 C559043D12FF58A7DA99A7420E605330A651087731B771B6BC417A928B09873D. Main source currently17, diagnostic/default pending runs use explicit frozen15.
+- TerrainSpatialLayoutProbe on capacity768 captured geometry: SOLID region+page runs939, region-only lower bound136, optimistic packed143 with72,395,344 visible bytes/11pages; CUTOUT_MIPPED936->161,152,108,880bytes/21pages; TRANSLUCENT482->118,68,280,240bytes/10pages. Sum visible data exceeds256MiB default arena. Simulation excludes nonvisible geometry, updates and copying; not an implementable free gain or live FPS result.
+- CapturedTerrainSubmissionProbe now has opt-in ice.spatialReplay: duplicates owned mesh data into frozen per-region pages in original submission order, compares original/packed with and without directional culling. Compiled, GPU replay pending until the live game exits. Test-only upper bound; no production relocation/cache algorithm yet.
+
+[2026-10-12 11:59 +08:00] attribution and exact rectangle descriptor experiments
+- State-cost build15 diagnostic completed (test instrumentation enabled, NOT a formal paired FPS result):154.9181FPS, frame6.451924ms. Inclusive per-frame terrain layer2.469134ms / ICE terrain draw2.269994ms, client tick.901053ms, visibility.543583ms, entities.486116ms, HUD.252808ms. HUD state queries.006332ms, software terrain state.005997ms, model reauth0, direction state.000660ms, buffer state.000401ms; state queries are NOT the millisecond-scale primary cause. Allocator fit.047196ms/frame across20786calls. Detailed CSV retained in live-129-state-cost-build15-1.
+- Native spatial replay exclusive:1013owned of1132visible SOLID meshes. Original full .436159ms/1008draws vs packed .426269ms/125draws (same2,585,548vertices); directional original .439633ms/1206draws vs packed .330614ms/694draws (same2,008,592vertices). All exact pixels with white atlas/lightmap. Excludes original/legacy geometry, full atlas, live updates and packing cost. No full-game FPS claim.
+- TerrainQuadDescriptorProbe proves CPU bit-exact reconstruction of72-byte descriptors retaining per-vertex color/light: SOLID642486/646387quads(99.3965%),72,395,344->46,695,904bytes; CUTOUT1085563/1358115(79.9316%),152,108,880->108,686,360bytes; TRANSLUCENT596508/609645(97.8451%),68,280,240->44,419,920bytes. Optional uniform48 estimates41,705,608 /93,695,408 /43,432,992 bytes respectively. These are format statistics, not GPU correctness or speed.
+- QuadDescriptorNativeRenderer + ice.quadReplay test path compiled. Uses instanced GL_QUADS for compact descriptors, exact original-order fallback ranges for other geometry, original region transforms. GPU test pending; shader currently only captured no-fog/white-texture replay, not production-ready full fixed pipeline.
+- build17 native TerrainOrderedRangesNativeProbe passed:64mixed plans,24camera views, exact pixels, stream growth, external storage/name lifetimes and complete external fallback.
+- NoICEcombatv8 INVALID after1130ticks:12kills/33attacks,42player hits (Geist7,fire30,wither4,zombie1). No FPS credited. v9 adds one ordinary long fire-resistance potion via vanilla ItemStack.onItemUseFinish during setup before warmup, both arms; no measured healing/effect injection. SHA256 E63765A047FE37B7112D50716D3B126C808AC131F256FF82A68F55E2D4BB168F. NoICEv9 PID3456 connected11:57:20,warm120/sample60; cold-off build15 v9 clone ready. Original source game/save untouched.
+
+[2026-10-12 12:06 +08:00] v9 baseline and rejected instanced quad path
+- NoICEcombatv9 completed:231.2740326FPS, P9510.5347ms/P9912.9644ms,active all,1200ticks,12spawn/12kills,27attacks,1zombie player hit,0external,minHP19.7084. Initial effect confirms normal fire_resistance:0 potion consumed before warmup. Cold-off build15 counterpart PID22888 connected12:04:27,warm120/sample60.
+- QuadDescriptorNativeRenderer first native instanced path FAILED exact pixel gate:159 differing pixels/max channel174 on1920x1080 frozen owned-only white-texture SOLID. Separate modelview/projection multiply worsened to627pixels. Diagnostic-only allowPixelMismatch timing:original.4278125ms/1008calls vs instanced descriptors.6171406ms/336calls (both2,585,548vertices), about44%slower. Rejected; no production integration.
+- Shader texture-buffer vertex pulling alternative and optional invariant gl_Position compiled into test helper. Properties ice.quadPulling=true / ice.quadInvariant=true plus ice.quadReplay=true and ice.texturedReplay=true. Not run yet; GPU tests deferred until live combat exits. Source retains initial instancing mode for comparisons. Artifact17 unchanged.
+
+[2026-10-12 12:09 +08:00] latest completed comparison / no accepted +50% result
+- Both combatv9 runs completed1200ticks/12spawns/12kills and1player hit, no external player damage. NoICE231.27403265FPS -> renderer-cold-off build15 223.210FPS (-3.486819%); P9510.5347->10.3855ms(-1.42%); P9912.9644->12.7898ms(-1.35%). Attacks27/29, player distance1.987898/1.988142m. Enemy profiles differ only in effective maxHealth (~21-23) and vanilla spawnReinforcements; world+entity seeding after construction does not fix constructor/global mod random state. Final camera and natural entities also differ. Comparator exits2 with profile warnings. Not clean proof of causal benefit; certainly not +50%.
+- Vertex pulling exact check with invariant gl_Position also FAILED:255pixels/max167. Default MVP pulling diagnostic:159pixels/max174; original.4181016ms/1008calls vs pulling.4066391ms/336calls (~2.74%local faster), same2,585,548vertices. It removes the instanced candidate's large regression but the marginal speedup and output differences do not justify production integration. Descriptor data remains CPU-bit-exact; fixed versus programmable transform invariance is separate. Reference: https://registry.khronos.org/OpenGL/specs/gl/GLSLangSpec.4.20.pdf (ftransform fixed-transform guarantee).
+- Current production source/frozen candidate is build17 only: bootstrap renderer-off hook omission; prior14 model measurement recovery; allocator failed-fit bound with cold refresh. Quad shaders, spatial packing and VAO work remain test-only. Main default renderer configuration has NOT been claimed validated beneficial or changed to a release preset. No original installation/save edits and no new release rollout.
+- No live benchmark game is running after cold-offv9 completion. Full raw scene reports and native probes remain under build/fps-target. Next work: distinguish remaining main-path terrain cost and client-tick cost; consider real spatial placement only with bounded update/ownership proof; shader experiments must resolve correctness and substantial benefit before integration. Goal remains active, unmet.
+
+2026-10-12 12:32 -- Continuing no-ICE target, build18 region transform reuse
+- Detailed build17 diagnostic (test-only method instrumentation): survival150.15761FPS, P9512.5811ms/P9915.0383ms; not a formal performance comparison. Per-frame inclusive terrain2.543910ms: mapped runs.671190ms/884.51calls, legacy runs1.360050ms/1501.43calls, array layout.390353ms/2350.48calls (nested inside run costs). Upload.100357ms, allocator.050130ms, arena endFrame.041546ms. Budget268,393,536/268,435,456bytes;60,867reservation rejections. This identifies substantial legacy fallback and page/run overhead; does not justify treating GL state queries as the main cost.
+- Warm-only JFR (50sec, stopped before measurement) kept in live-129-terrain-detail-build17-1/terrain-warm.jfr;747 client samples. setupTerrain292 inclusive, clienttick156, RenderChunk neighbour76; OTG.getOTGBiomeIds33 leaves. Sampling counts are not exact timing percentages. Initial JFR temp repository unavailable; configured repository inside isolated clone successfully. No system temp permissions changed.
+- New native sharedTransformReplay uses original captured buffers, vertices and order; only shares the fixed matrix scope over consecutive identical regions across page boundaries. Exact pixels passed. Full path.4302078->.4220594ms, directional2048 .4424672->.3309266ms, same1008/1206draws and2,585,548/2,008,592vertices respectively. Offline owned-SOLID/white-texture snapshot only; NOT full-game FPS.
+- Implemented that algorithm in LwjglTerrainArena: exact vanilla chunks in one consecutive region share push/translate/pop; storage-page runs and directional commands remain ordered. External/subclass/animated/unowned boundaries retain separate paths. No extra geometry or GPU allocation, no spatial relocation.
+- Full build18 test/build/verifyArtifactStartup SUCCESS1m32s;1251regular cases,71skipped,0fail/0error, plus artifact startup checks. Native ordered-range regression passes existing mixed plans/lifetimes and new120exact pixel cases spanning vanilla cross-page runs, region switches, subclass/legacy barriers and caller matrix/stack restoration.
+- Frozen build18: build/fps-target/129-build18/ice-rlcraft-optimizer-1.0.29.jar SHA256 92415D57A9D918F56F5E4B00F7696ED33C9F0B2EB7CC412A86EFBAC18649D57E. Main source now18. No original game/world changes or release rollout.
+- Also tested native display-list geometry/cache alternative (tools only, Khronos glspec30 confirms geometry is copied during compilation).1013meshes compile~262ms;2pixels differ by1LSB. Diagnostic explicit mismatch timing:original.4447234ms, per-mesh lists.5293781ms, region references.5328406ms despite118calls. Slower and extra copied storage, REJECTED; not production. Source tools/TerrainDisplayListReplay.java, logs129-captured-display-lists*.txt.
+- Fresh uninstrumented v9 survival noICE is running, build18 survival and combat clones ready. Fixture explicit frozen129-gameplay-fixture-v9. Existing combat v9 noICE/cold-off results remain the earlier comparators, with stochastic opponent-attribute mismatch recorded. Goal remains unmet/active; no claim of50percent benefit.
+-12:40 uninstrumented survival v9 pair complete: noICE182.06877199FPS vs build18 183.46551FPS (+0.767148%). P9512.2375->11.4533ms (-6.41%), P9914.8034->13.6513ms (-7.78%), serverP9518.7214->17.1776ms. Exact same1200ticks/153.285505625m/finalposition/camera,0hits,allactive,terrain1025 both; naturalentities229-277 vs228-255. No comparator warnings. Single pair cannot establish stable +0.77%; 50% clearly unmet. Build18 combat v9 now running; fresh build17 survival v9 ready for direct previous-candidate comparison.
+- Test-only terrain-detail fixture v2 adds shared-region scope timer and avoids double-counting build18 drawMappedRun overload delegation. Frozen v2 fixture AE6D313E075CDE21C2F842D291F6B24092BC43353777C094D67ACF804FF090A5; agent A455B58C7D106228F3E0BBF280BC0732B6F7B95D5B3AE4D4308BBFB685C8871E. Formal tests still use frozen gameplayv9, no agent.
+- Checked OTG/OptiFine/ScalingHealth actual bytecode for next decisions, no extra production patches. RenderChunk neighbour lookup already caches valid adjacency; do not reimplement based on sampling alone. ScalingHealth uses independent static Random for health scaling, explaining residual fixed-world-seed combat variation. Arena reserveGpu can invoke pressure reclamation; blindly pre-rejecting against current available bytes could suppress recovery, so no unsafe precheck patch applied.
+- D free~3.65GB after preparing build17 survival. Before more full clones, reclaim only generated duplicate snapshots with verified/recoverable archival; original installation and benchmark reports must be preserved.
+-12:46 build18 combat v9 complete:186.80062858FPS vs noICEv9 231.27403265 (-19.229744%). P9510.5347->11.8732ms (+12.71%), P9912.9644->14.2538ms (+9.95%). Both1200ticks/12kills/27attacks, fixturehits31->32, playerhits1->2;active all. Opponent profiles differ (12 warnings); final position/camera/terrain differ512->577. This is failed target evidence, not clean causal attribution of19.23% to the algorithm. Entity backend dormant LEGACY after29samples/no candidatework; no model pose batch draws. Arena~268MB full/3335owned meshes. Build17 uninstrumented survival v9 launched pid16920 for direct previous-candidate comparison.
+
+2026-10-12 12:54 -- build18 comparison complete; indexed CUTOUT candidate
+- Direct v9 survival comparison: build17 161.45974032793484FPS -> build18 183.46550925682502 (+13.629261%); P9511.5858->11.4533ms, P9913.8431->13.6513ms. Same153.285505625m/finalposition/camera/gear,0hits,allactive;1201vs1200server ticks, terrain1033vs1025, naturalentities206-247vs228-255. One run each; no stable-gain/CI claim. NoICE182.06877199 means build18 remains only+0.767148% in that pair. Full task target NOT achieved.
+- All four games launched this turn have exited. No game/Java process is running at12:54. Production code/frozen artifact remains build18 SHA92415D57A9D918F56F5E4B00F7696ED33C9F0B2EB7CC412A86EFBAC18649D57E. New index/display-list experiments are tools only.
+- Added tools/TerrainVertexDedupProbe.java: open-addressed full28-byte raw vertex identity, preserves every quad index and verifies all reconstructed bytes. SOLID1013meshes:2,585,548vertices/2,410,847unique,72,395,344bytes ->72,674,812indexed (select only smaller70,904,984,~2% saving). TRANSLUCENT524:2,438,580/2,424,022unique,68,280,240 ->72,749,776 (select smaller68,081,524). These layers do not justify general indexing.
+- CUTOUT_MIPPED1015meshes:5,432,460vertices/2,947,871unique,152,108,880bytes ->93,405,308bytes (38.593% saving);1012meshes smaller (selected93,405,232). CPU reconstruction exact. This is a materially useful capacity candidate for dense foliage/cutout geometry; no shader/coordinate/attribute quantization.
+- Added tools/TerrainIndexedNativeRenderer.java and indexedReplay in CapturedTerrainSubmissionProbe. Packs unique raw vertices by original source page, one element buffer, uses GL_QUADS/DrawElementsBaseVertex preserving primitive order, all fixed-function attributes unchanged. Runtime-only prototype, no upload timing/lifetime/compat proof yet.
+- Exclusive white-texture CUTOUT replay original.890396875ms/998draws -> indexed.813834375ms/1015draws (-8.60% layer time), exactpixels. Patterned atlas/lightmap with alpha test:24rotatedviews exactpixels; original.9553609375ms ->indexed.882515625ms (-7.63%). Payload82,540,388vertexbytes +10,864,920indexbytes. Real atlas/fog/shader packs, live rebuilds and full-game FPS remain untested. No production admission based on these local numbers alone.
+- Next substantial candidate: bounded lossless indexing only for beneficial ordinary CUTOUT meshes, while keeping solid/translucent paths. Must account encoded payload/alignment, separate original draw index count from unique vertex count, preserve element-buffer/VAO state around foreign paths, handle every fallback/animated draw, capture/rebuild/retirement and budget ownership. Existing TerrainIndexedDispatchProbe only used identity indices; it did NOT test deduplication, so its older result does not settle this candidate.
+- Also consider build18 with higher arena coverage: previous768MiB test predated cross-page region matrix reuse. Default256MiB is full and diagnostic legacy runs dominate. Any larger-budget comparison needs complete matching settings/evidence; no production default budget changed.
+- Before preparing additional full clones, archive/deduplicate ONLY generated snapshots with a verified recovery path; D free3,625,517,056bytes. Original game/save and all measurement evidence unchanged.
+
+2026-10-12 13:24 -- build19 exact indexed CUTOUT production candidate; first live result negative
+- Implemented bounded TerrainVertexIndexBuilder full raw28-byte vertex identity, <=131072 input vertices/<=65536 unique, unsigned16 indices. Accept only >=12.5% allocation savings, 112-byte alignment retained. Only exact ordinary RenderChunk CUTOUT_MIPPED on OpenGL3.2+, native batching and no retained shader shadow copy. Separate logical draw/index count from physical unique vertex count; all array/indirect paths reject indexed meshes. Original primitive ordering, FP normalization and attributes retained.
+- Indexed payload shares original arena pages/retirement rules, supports mapped/compatibility fallback, restores VAO-local EBO plus standard/fixed primitive restart flags. Index buffer offset/base vertex account per-page offsets. Heap/direct scratch budget ownership and released reservations covered.
+- Full test/build/verifyArtifactStartup SUCCESS1m13:1256 test cases,71 skipped,0fail/errors; startup verification passed. TerrainIndexedArenaNativeProbe390pixel cases exact across ordinary/persistent uploads,mixed formats/cross pages/legacy barriers,EBO/VAO/restart/matrix states,queued old draws and indexed<->plain replacement; shadow and noGL3.2 fallback; budgets zero. Existing native ordered ranges suite also passed.
+- Frozen build19 SHA256 BB1800965947B74FC7D308CC9DBFE0446C53CF183F6623F1B2AA8CFEE660AB8D. No original game/install changes. Candidate is NOT approved as a useful FPS optimization.
+- Uninstrumented survival v9:164.5684396173228FPS, P9511.7214,P9913.9107,server17.7114,GPU1.695744. Vs noICE182.06877199: -9.611935%; vs18 183.46550926 also slower. Same1200ticks,153.285505625m,position/camera,gear,0hits,allactive; naturalentities211-231 vs229-277 baseline. One run each, do not overattribute the difference or claim stable gain. Arena3955owned vs18 3396;13799indexed uploads/599244240 cumulative savedbytes,13.41MB live indices. More cached geometry did not establish FPS benefit. Combat19v9 PID3112 launched13:20, connected13:23:05;warm120/sample60 underway.
+- Reclaimed duplicate JAR disk storage in12 completed isolated snapshots using SHA256-matched NTFS hardlinks; exact contents retained and logged completed-mods-deduplication.jsonl. Reported matched bytes7,221,998,225. These snapshots are immutable; new launch guard refuses existing benchmark-process.json to prevent overwriting hardlinked fixture/artifact/evidence. Never modify shared JARs in place. All worlds/logs/results and original installation unchanged.
+- Terrain capture v2 stores actual compact bytes/native offset; reader expands raw vertices into nonoverlapping virtual replay offsets while retaining nativeOffset/storageBytes/indexed. v1 remains unchanged. Format probe verifies exact bytes,v1 offsets,virtual separation and invalid-index rejection. Frozen formal v9 fixtures are unchanged and do not capture terrain.
+- Added test-only LiveCombatRandom + GameplayRandomInstrumenter: controlled RNG input before fixture zombie constructor attributes; ScalingHealth increaseEntityHealth uses per-fixture-entity RNG instead of its unrelated global stream. Normal mobs retain original RNG; algorithms,AI,damage and mod callbacks unchanged. Actual two input bytecodes checked, one 2-instruction insertion each. End-to-end repeatability NOT yet validated; no formal claims from it yet.
+- Frozen gameplayv10 fixture 2C4A423E828A5AF014F625F9369E5B485AC585192E8D7AB9086DD867686BB61F; agent966BD4E6764BF59CC1352C0B74F28D588B4DEB5AB4AD1A8E7B6A8C50F2067FFC. New start switch DeterministicCombat selects gameplay agent, no section timers. Comparator checks matching mode/hash. Sources since freeze additionally add index encode diagnostic section29; next diagnostic fixture must freeze separately.
+- Next: finish19v9 combat, reclaim completed snapshot OTG text storage via non-destructive NTFS compression (D free3.65GB; OTG folders~1.95GB each), repeat a contemporaneous noICE survival baseline and profile19 upload/draw costs. Do not assume the single negative run proves indexing alone caused it. Goal+50% still active and unmet.
+
+2026-10-12 13:46 -- candidate19 rejected and removed; production build20 restored plain terrain
+- Combat19v9 finished normally:200.33290762590462FPS,P9510.8023,P9913.4335,server17.9464,GPU1.3476. Against noICE231.27403265:-13.378556%,P95+2.54%,P99+3.62%.1200ticks,12spawns/12kills,26attacks/30fixturehits,2playerhits,allactive. All12opponent profiles differ from noICE; finalcamera/position/terrain452vs512 differ. No causal isolation or stable benefit claimed.
+- Fresh noICE survival v9-2 (PID13996, now exited)194.2070409762706FPS,P9510.9649,P9913.3211,server18.0975,GPU1.7500;231-260entities,terrain1029. Same1200ticks/153.285505625m/gear/finalposition+logicalcamera,0hits,activeall.19candidate164.56843962 now -15.261342%, P95+6.90%,P99+4.43%. Both noICE runs outperform19; no CI inferred. Screenshots reviewed: no obvious geometry corruption, but interpolation phases yield different rendered yaw despite same logical summary yaw; do NOT claim full-game pixel identity.
+- New exclusive CPU TerrainVertexIndexCostProbe on1015 captured CUTOUT meshes: plain copy+normalize14.857ms,encode only71.1081ms,encode+normalize74.5453ms.23iterations,8warmup/15samples,interleaved modes. Local preparation ~5x slower; not itself full-frame causal proof or an excuse to keep failed FPS candidate.
+- Removed candidate19 synchronous indexing from all production upload/draw/fallback/metadata/counters. No indexed classes in resulting optimizer JAR. Encoder,5tests and native probe moved to tools/experiments/indexed-cutout-build19; complete edited terrain snapshot in129-build19/source-snapshot.zip. Region matrix sharing and previous useful paths retained. normalizePositions extraction remains arithmetically unchanged; no indexing runs. Build20 is a rollback/cleanup, not a new measured FPS improvement.
+- Retirement helper initially failed an exact anchor before writing, causing one expected compile failure while retirement was incomplete (full-129-build20-incomplete-retirement.log preserved). Corrected anchor, then full test/build/verifyArtifactStartup SUCCESS1m3s;1251cases71skipped0fail/error; existing native ordered ranges suite passed (mixedplans,sharedregion120pixelcases,legacy/subclass barriers,matrix/restoration/lifetimes). Final build20 source is validated.
+- Production20 hash appended below. build/libs and frozen129-build20 are current. Original game/world not modified; no release rollout.19artifact is rejected for production; do not recommend installing it.
+- Additional candidate limitation: NV_primitive_restart client state also affects DrawArrays (Khronos NV extension specification checked);19 tested only core/fixed restart, so universal extension-state compatibility was never established. Report states limitation; removed production path avoids shipping it.
+- Reports docs/ICE-1.0.29-BUILD19-COMPARISON.txt and comparison logs contain failures/qualifiers. Existing v10 deterministic combat fixture remains frozen but NOT end-to-end validated. v3 diagnostic fixture frozen:fixture A7C13404B589E99A9CC415B39E2A62CBE56ADF035E929B2D3E1A75648EB797C5,agent55E8010850B98F382DBA87C10AE89F1513548047ADF476614C0FF8E8606B4015;section29 times encode for archived19,18/20 support remains.
+- Storage: completed v8 original OTG folder NTFS-compressed with sample hashes unchanged:1,932,676,199bytes stored475,401,906. Stopped only own next v7 compact.exe deliberately to run exclusive CPU/baseline; script's v7 exit/failure log reflects that stop, contents remain intact/partially compressed. D now~1.7GB free. OTG125907files:16618.BO4=1.77GB,101657.nbt only~10MB. Compression helper now defaults *.BO4 to avoid wasting time on tiny NBT. Run only with no Java, only completed isolated snapshots; preserve all data. For more clones need compress further completed copies, then ensure no background compaction during formal measurement.
+- Next prioritize testing build18/20 with higher arena coverage (e.g. optimizer gpuCacheBudgetMiB768; renderer gpuBudgetMiB512 was already in prior test) now that same-region page changes share matrices. Prior capacity experiment predates18. Need fresh noICE baseline/quality and multiple comparable runs; no new default budget change yet. Full indexed19 CPU/draw diagnostic is possible with frozen19 andv3 if needed, but it is not in production.
+- Another concrete research hotspot: OTGEngine.getOTGBiomeIds does containsKey+get per cached lookup, and ClientFogHandler.getBiomeConfig calls it inside69x69 fog loops. Bytecode saved129-otg-engine-bytecode.txt and129-otg-fog-bytecode.txt. blendFogColors uses entity.posX/Z (tick position, not interpolated), getDifference is nontrivial only on border rows/columns; interior sums are exact integer RGB. Potential per-invocation lookup hoisting / exact cached aggregate, but consider dynamic biome/config/world invalidation and preserve numeric order. Nothing implemented or credited. Earlier JFR33leaf/747client samples implies limited potential, not50% by itself.
+- All games and Java/compact processes stopped after checks. Goal remains active/unmet; this turn made substantive progress and is NOT a blocked turn. Do not mark complete/blocked just because50% is difficult.
+- Frozen build20 SHA256: CECB74DE86510FA283E67BFF7F69BB79A15F95A59903FA091BEDA61A1782EF99
+
+2026-10-12 14:31 -- capacity20 failed, combatv10 confounded, linear occlusion22 candidate
+- This goal turn made substantive progress; goal remains active/unmet, not blocked. No original game/save changes or release rollout. No subagents.
+- Completed BO4-only NTFS compression of8 completed old snapshots (combat129-originalv7,build15v7,build14v6,originalv6,survivalbuild14v6,originalv6,combatoriginalv5,originalv4); all helper sample hashes passed. Contents unchanged. Three fresh clones prepared. D free~1.9GB after cloning.
+- Build20 capacity768 survivalv9 PID10372 completed176.53286081370922FPS,P9512.1377,P9914.1460; against recentnoICE194.20704098=-9.100690%,P95+10.70%,P99+6.19%. Same153.285505625m/finalposition/logicalcamera/gear/zero hits/allactive,1201vs1200ticks,entities216-237vs231-260. GPU804738112/805306368bytes,7532owned. Larger budget is NOT accepted; default remains256MiB. Actual terrain capacity comes from global GPU budget, not assumed512 renderer cap.
+- v10 combat noICE PID2636 completed202.3196461606558FPS,P9511.4404,P9914.1896; candidate20capacity768 PID3496 completed196.70960926441256FPS,P9511.7494,P9914.3654. Observed -2.772858% but CONFOUNDED:1200ticks/12spawns both,12vs11kills,26vs29attacks,2vs15playerhits; candidate6Geist+7wither external hits. Positions/camera/terrain370vs972 differ. All numerical opponent attributes matched; profile7 differed only dsurround a/f flags. Comparator warning retained. Do not compute acceptance aggregate from this pair.
+- RenderChunk frustum investigation: Fermium bounding-box correction scans section entities; JFR was hot. But actual OptiFine BFS marks/checks visited before frustum, so a same-traversal result cache lacks justification; NO frustum change made. Read-only disassembly files129-fermium-renderglobal-patch-bytecode.txt,129-spawner-events-bytecode.txt,129-kill-spawn-trigger-bytecode.txt retained.
+- New CurrentFrameTerrainOcclusion algorithm stops heap extraction when remainingQuads==0 and scans remaining heap entries linearly. Same per-query raster proof; exhausted/untouched queries remain visible; final order preserved. Tight-budget subset may differ conservatively; no cross-frame visibility reuse. New diagnostics count read-only tail passes/stops. SoftwareOcclusionRaster exposes package-local remaining cells for tests.
+- First attempt Build21 worst-case rectangle-area sum rejected real priority-mode shortcut501/501 calls, added cost. Archived129-build21-rejected jar/source. SHA9905021D9DAF0A5E0AE6D9F02EA4DB35F9D6B9B38512317CD6B253E8F33F0219. Full1254tests71skip0fail/startup passed but NOT performance accepted. Old Build20 CurrentFrameTerrainOcclusion+SoftwareOcclusionRaster source frozen129-build20/occlusion-source; baseline compiled129-occlusion-tail-baseline-classes.
+- Build22 removes admission sum; queries linearly until normal cell budget exhausted. Full test/build/verifyArtifactStartup SUCCESS1m6s,1254tests71skip0fail,3new differential/conservative tests100random scenes. Frozen22E13F1C5F09FD51D3524A2F6CF5E1604045B1B9D49D1176556FD02A6498C1C8E9; build/libs current22. Full game22 NOT measured yet.
+- CapturedOcclusionProbe now optional warmups/samples/yaw, exact survivor indices, tail counters. Exclusive ABBA4000warm/1001samples real1132sections/422known: priority baseline.0647/.0662ms vs22.0601/.0605, local mean.00515ms/7.87% lower; larger2048-face mode.2/.1982vs.175/.1748. Actual open sample hides0 so adaptive backoff makes full-frame impact smaller still. No FPS credit. Initial short-warm501 measurements for21 kept separately; do not mix with v2 long-warm22 timing.
+-24yawviews x2modes exact survivor-list comparisons passed48/48, someviews3hidden, others0. Files129-occlusion-tail-views and summary. No full-game pixel-identity claim.
+- Lycanites KillSpawnTrigger.onKill actual chance source is player.getRNG(), not victim/world RNG. Tools v11 adds per-tagged-victim deterministic death stream without changing chance/callback/AI/damage or cancelling/deleting creatures. Ordinary victims retain original stream. Agent verifies exactly1 insertion in kill trigger in addition to zombie/health, 3actual sites pass. begin() checks all3installed. Additional spawn selection randomness remains possible; v11 end-to-end NOT validated.
+- Frozenv11fixture69A9285FFA2975D757378B0908AB854D1FF4740ADBE5BC1C8A6136D333D284EA; agent60C2CA8524D5FDC8BFF6556F371C6A01AB7CE5EDC3B6F58B4CCF9C812724D2DB. Sources updated fixtureversion11. Full fixturebuild passed. Probe invocation first used incorrect ScalingHealth filename; corrected actual1.3.42+147 and passed. v9/v10 frozenfixtures unchanged.
+- Report docs/ICE-1.0.29-BUILD20-22-COMPARISON.txt; all three comparison logs/results retained. All3games and CPUprobes ended; no Java/compact at14:30:55. Next: reclaim more completed isolated BO4 disk storage (need~3.56GB perclone), run22survivalv9 versusnoICE and v11combat pair, verify death outcomes before FPS inference. Never launch completed snapshots (JARhardlinks); new clone only. Goal50% still unmet.
+
+2026-10-12 14:57 -- Build23 allocation candidate and queued Build22 comparisons
+- Goal remains active/unmet. This goal turn is making progress, not blocked. Original game/save unchanged.
+- Completed BO4 compression of8v9 completed snapshots (survival original/build17/build18/build19, combat original/cold-off/build18/build19); content sample hashes all passed. Prepared fresh Build22survivalv9, noICEcombatv11 and Build22combatv11 clones. No completed snapshot relaunched. D free~2.3GB after copies.
+- Candidate23 reuses a live allocation immediately for an exactly equal-size mesh replacement. Existing ordered GPU copy/glBufferSubData path; no CPU mapping of draw buffer. Failure uses existing reused-upload invalidation. Adds exact-size reuse diagnostic. May introduce implicit synchronization; remains UNACCEPTED pending upload timing/full game, not assumed faster.
+- Full23 test/build/verifyArtifactStartup SUCCESS1m42s,1254regular cases/71skipped/0fail/errors. Frozen129-build23-candidate SHA7BCFAFA6AAD2AFC560E301985A3E69896FD4B68A3577AC9A692A7113191EC214; source snapshot saved. build/libs now23candidate; formal queued games use explicitly frozen22.
+- Native standard/default real-GL probes pass equal-address reuse, queued-old-draw pixels unchanged, ordinary/persistent uploads, mixed-order/fallback/page/storage cases and120shared-region-view pixel comparisons. Logs129-build23-native-order[-default].txt. Correctness only, no FPS credit.
+- CapturedTerrainSubmissionProbe now measures drained-queue CPU submission separately from GPU-completion throughput. Exclusive capturedSOLID1013owned/1132visible/48pages, patterned texture/lightmap: shared current no-direction .4890859ms vs optimistic packed .4840453; directional .3880141 vs .3927828. CPU submit .078875 vs .0309625 and directional .10425 vs .0522375ms. Exact pixels for captured geometry. Absolute CPU saving~.052ms, GPU throughput no improvement; not sufficient evidence to implement dynamic relocation or claim full-frame benefit. Log129-spatial-vs-shared-cpu.txt.
+- Added tools/TerrainReplacementNativeProbe.java (not yet compiled/run) for identical-size queued-draw replacement ABBA across ordinary/persistent uploads and8/128/1024quads. Measures4updates+endFrame, excludes explicit completion wait; synthetic stress only. Need compare frozen22allocation source compiled separately vs23current. Existing ordered native probe is independent pixel oracle.
+- Build22 survivalv9 launched14:53:11 PID15912, connected14:55:59, warm120/sample60. Do not launch another game/probe or heavy IO while it runs. Next formal arms: noICEcombatv11 then Build22combatv11; both clones already prepared, use frozenv11fixture+agent and -DeterministicCombat.
+- Read-only investigation: terrain backend is direct-activated from capability; existing adaptive samples/shadow qualification only coverSOLID. Merely enabling that policy could wrongly applySOLID results toCUTOUT/TRANSLUCENT, so no policy change yet. OTG fog still a candidate but same-output and config/lifetime guarantees unresolved; no speculative cache added.
+
+2026-10-12 15:04 -- Build22 survival result; Build23 upload ABBA
+- Build22 survivalv9 complete174.10549593015486FPS vs noICE194.2070409762706 = -10.350575%. P9511.0755vs10.9649 (+1.01%);P9913.2388vs13.3211 (-0.62%). Same1200ticks/153.285505625m/finalposition/camera/gear/zero hits/display active. Entities191-218vs231-260, terrain1019vs1029; independent worlds, one comparison/noCI. Target fails. Log129-survival-build22-v9-comparison.txt.
+- Build22 arena diagnostic:38416successful uploads,12540rejects,all38416persistent/0subdata;3460owned meshes,255849552used/268434432capacity,3MiB staging; cumulative3.485GBuploaded across30361frames. These are cumulative startup/warm/sample counters, not sample-only rate.
+- Exclusive Build22allocation vs23 ABBA native stress completed, logs129-replacement-[1-baseline,2-candidate,3-candidate,4-baseline].txt. Ordinary4-update p50 mean8/128/1024quads: .01035/.01695/.0608ms -> .00435/.010/.0528 (-58/-41/-13.16%). Persistent .043/.05055/.0983 -> .0411/.04735/.0930 (-4.42/-6.33/-5.39%). P95lower all, persistent8 P99essentiallyunchanged+.16%. Synthetic local cost only, no wholeFPS credit; firsttrace scissor1x1at0,0 minimizesfragmentwork. Follow-up probe now configurable centered scissor for queuedGPUload; not run yet.
+- Ordinaryupload was materially cheaper than persistentcopy in this trace. New UNBUILT24source changes only LwjglTerrainUploadStream to coherent persistent staging and removes explicit peruploadglFlushMappedBufferRange. Retains3slots, samecopies/fences/byteownership/fallback, residentdrawbuffers unmapped. Baseline source saved129-build23-candidate/upload-source. GL_ARB_buffer_storage coherent-client-write ordering supported by Khronos docs; still needs independent native readback, queueddrawpixels, ABBA timing and fullbuild. Source24dirty; build/libs remains23candidate.
+- NoICEcombatv11 launched15:00:28 PID18388, connected15:03:02. All3actualhook installs logged. Warm120/sample60; Build22combatv11 clone ready. Do not run compiler/probe/heavyIO while formalgame active.
+
+2026-10-12 15:25 -- User scope correction; terrain submission is the active priority
+- User explicitly stopped combat research: main stutter is not combat. No further combat fixture work, randomness fixes or combat runs. Focus terrain/render submission and ordinary gameplay frametimes. No-ICE +50% goal remains unmet; current work is not blocked.
+- Build24 coherent persistent upload experiment rejected: queued-load 128-quad P95 .0895/.0814ms baseline vs .2502/.2162 candidate, P99 .1827/.179 vs .8097/.7537. Native pixel/readback correctness passed but performance failed. Restored noncoherent Build23 upload source (SHA1476D55C2595A676333930822291F56A63DE646C9E5338032CE11652D8D6BF4A). Experiment archived129-build24-rejected, no24productionJAR.
+- Current built artifact remains23candidate SHA7BCFAFA6AAD2AFC560E301985A3E69896FD4B68A3577AC9A692A7113191EC214. Full1254tests/71skip/0fail and verifyArtifactStartup pass. Build23 native upload savings are synthetic only; no23full-game FPS claim.
+- Already completed combatv11 noICE210.041732FPS vs22 181.675709FPS; differing Champions attributes and natural entities invalidate clean causal comparison. Not accepted as evidence of improvement. Current tool-only v12 hooks were tested before scope correction, now inactive; no v12game requested or planned.
+- All games exited by15:13; no game process pending at15:25. Original installation and saves untouched.
+- Detailed instrumented17 terrain shows legacy submission1.360ms/frame, mapped.671ms and layout.390ms nested. Millions of method instrumentations bias absolute cost; locator only. Investigating production mixed submission overhead before proposing another algorithm. Prior VAO/spatial replay savings were small and do not establish a full-game benefit.
+
+2026-10-12 15:36 -- Single-pass submission rejected; SOLID admission experiment
+- Build25 experimental cursor consumed exact vanilla chunks once, joined adjacent spans and preserved region/page/legacy/foreign boundaries. Production native correctness probe passed mixed order, storage/name lifecycle and120cross-page/view pixel cases. Source archived129-build25-rejected; restored exact Build23 LwjglTerrainArena source. No25productionJAR.
+- Exclusive production-loop native ABBA (1024meshes,1000warm,701CPU samples and31completion samples) logs129-single-pass-[1-baseline,2-candidate,3-candidate,4-baseline].txt. Non-directional all-native CPU~.053->.041ms, but directional mixed-layer costs lack stable gains; significant drift between baseline endpoints. Added142lines and a retained cursor are not justified by this small/inconsistent result. Directional timing ran with culling active; initial pixel comparison used blending and thus tested order rather than directional admission. No FPS credit.
+- New unaccepted Build26 experiment restricts arena upload/ownership to SOLID, retaining untouched original alpha-layer emission. This tests whether structural admission avoids taking over layers without directional vertex reduction and frees limited arena capacity for SOLID. Only ModernTerrainBridge upload/render early branches changed from23; backup129-build23-candidate/admission-source. Same source geometry/settings; not a release-default decision.
+- Completed BO4 compression of129-capacity-768-1 and129-survival-build22-v9-1; helper hashes unchanged, D free5.0GB before new clone. Build26 full checks and isolated survivalv9 clone preparation underway. No combat work.
+
+2026-10-12 15:45 -- Build26 ordinary-gameplay comparison started
+- Full26 test/build/verifyArtifactStartup passed1m15s,1254tests/71skip/0fail/error. Frozen129-build26-solid-only SHA442BF5E979E3E48050363CD6431289B2111DA7DD862776BA9F5A8C19611779ED. Source/artifact26 is an unaccepted admission experiment;25cursor restored before build.
+- Compressed completed survival20capacity768, noICEv9-2 and13v4 BO4 files with unchanged sample hashes. Prepared fresh26solid-onlyv9 andnoICEv9-3 clones, all copies/compression ended before launch; D free~2.0GB. No original game/save changes.
+-26ordinary survival started15:44:57 PID32932, explicit frozenv9fixture+agent, warm120/sample60. No concurrent game/compile/nativeprobe/heavycopy during run. FreshnoICEv9-3 remains unlaunched and ready for comparison after26exits.
+- User-facing Chinese evidence report docs/ICE-1.0.29-TERRAIN-SCOPE-CORRECTION.txt. Its full-game26 result remains pending, not accepted.
+
+2026-10-12 15:58 -- Build26 rejected by fresh ordinary-gameplay baseline
+-26solid-only survivalv9 completed172.454381FPS,P9511.8194/P9914.1825,GPUmedian1.658880ms. FreshnoICEv9-3 completed195.793544FPS,P9510.8098/P9913.2845,GPUmedian1.739776ms. Observed FPS -11.920292%,P95+9.34%,P99+6.76%. Same153.285505625m route/finalposition/camera/gear,allactive,0playerhits;1201vs1200ticks,entities204-236vs226-255. Independent worlds/single pair, no causalCI.50%gatefailed. Log129-solid-only-build26-v9-comparison.txt.
+- Candidate26 had0arena upload rejects,3418owned SOLIDmeshes,239794912usedbytes,18842arena uploads vs30369legacy uploads,cumulative28801frames. Eliminating admission pressure did NOT improve whole-game performance. Reject26; archive markedREJECTED.txt. ModernTerrainBridge restored from23admission-source. No release to original game. All full-game processes exited15:56.
+- Restoring production23 full test/build/verifyArtifactStartup in progress, logfull-129-build23-restored.log. Current pre-completion built JAR may still26 until build finishes; source23. No single-pass25cursor in source.
+- Added normal-frame interval analysis129-normal-frametime-components.txt. EarliernoICEv9-2 vs22:frame5.149144->5.743644ms,render3.926052->4.468237ms,outside1.223092->1.275407ms. Most observed difference inrender, notcombat; scenevariance still applies.
+- Tools-only new prototype tools/experiments/directional-gap/TerrainFaceRanges.java minimizes the existing2048vertex-per-extradraw cost by bridging cheap interior gaps; prefix/suffix omissions remain free. Never removes a required face. byte[64] upload-time plans. NOT integrated or compiled/tested yet atthisentry. TerrainGapPlannerProbe exhaustively checks minimum estimatedcost over64conservative supersets for65536randomplans. CapturedTerrainSubmissionProbe adds productionFacePlanner andfacePlannerViewChecks (24yawexactpixels); needed because older replay reimplemented the old planner instead of callingproductionmethod. No FPS credit for thisprototype.
+- User explicitly stopped combat; no further combat code/research/testing thisscope. Goalactive/unmet, substantiveprogress, notblocked.
+
+2026-10-12 16:03 -- Restored23 verified; gap planner remains tools-only
+- Full restored23 test/build/verifyArtifactStartup SUCCESS1m31s. Finalbuild/libs SHA7BCFAFA6AAD2AFC560E301985A3E69896FD4B68A3577AC9A692A7113191EC214 exactly matches frozen23. Production source and compiled artifacts coherent;26rejected,25rejected,24rejected. No unbuilt production changes.
+- Gap prototype compiled129-gap-candidate-classes; unchanged baseline129-gap-baseline-classes.65536independent exhaustive plan-oracle cases pass, preservingrequiredfaces/minimum2048-cost-modelestimate. CapturedproductionFacePlanner ABBA4runs completed withno game/Gradleconcurrency, all24rotatedviewpixels perrunexact withpatternedtextures/lightmap/alphatest.
+- Captured1013owned SOLID/1132visible/48pages:draws1206->1017,vertices2008592->1674324. Sharedregioncompletion p50baseline .3794625/.3891375ms vsprototype .33193125/.330634375ms (mean.3843->.3312828125,-13.8%). CPUsubmit p50baseline .0991625/.0983125ms vsprototype .113075/.1091875ms (mean.0987375->.11113125,+.01239375ms). No full-gameFPSclaim. Existingreplay formerlyreimplementedoldcostformula; newproductionFacePlanner switch uses actualproductionmethod for both overrides, so thiscomparison measures changedplanner.
+- Prototype NOT integrated becauseCPUcostregressed despitelowerdraw/vertex counts. Plausiblenextfix: precompute contiguous span plans so mostnewlypartiallyculledmeshes avoid7face iteration; verifywithCPUandGPUmeasurementsbeforeintegration. Current prototype byte[64]permesh; anylargerplanstorage needsboundedheapaccounting. Do not changeproductionfrom23uncritically.
+- Allgame/native/GradleJava processes exited by16:02; no pending tool sessions. Dfree~1.95GB, fullclone~3.56GB; reclaimcompletedtestBO4storage withvalidatedhelperbeforemoreclones, notduringFPSsampling. Originalgame/saveunchanged. Userexplicitlystoppedcombat; do notrestorethisbranchfromoldgoalobjectivewording. Goalactive/unmet; turnmadesubstantiveprogress, notblocked.
+
+2026-10-12 16:33 -- Build27 precomputed conservative spans, correctness complete / full-game pending
+- User scope remains terrain/HUD/ordinary gameplay; no combat research or tests. The historical goal combat wording is superseded by the explicit user correction.
+- Build27 integrates minimum-cost conservative face-gap merging with packed contiguous spans. Upload-time byte[64] plans plus shared128-entry span table avoid per-draw seven-face scanning. Fixed2048 extra-draw vertex cost unchanged. No required faces omitted; cheap internal gaps retained when cheaper than another draw. Ordinary and persistent uploads preserved.
+- Terrain range metadata charged640bytes via a dedicated GpuArenaAllocator constructor; default/entity allocations remain512. Initial global640 accounting attempt caused2ModelMeshStorageTest failures and was corrected, not suppressed. Final full test/build/verifyArtifactStartup SUCCESS1m3s:1258 tests,71skip,0failure/error. Logfull-129-build27.log. Frozenjar/source:129-build27-candidate, SHA48244818251FA3D678D6F3413FE4B4AE4D904333BA87DA0C326E7353888DDD27.
+- Independent oracle65536 minimum-cost conservative plans +128packed topologies passed. Production directional native probe288 exact-pixel cases (24yaw,3cull/frontface states,2replacements,2uploadmethods), omitted257024vertices per uploadmethod. Prior mixed/order/sharedregion native probe120views also passed. No timing claims from correctness probes.
+- Exclusive native ABBA fast-span runs:draws1206->1017,vertices2008592->1674324. CPU median means .098769->.098669ms, essentially unchanged; previous mask-only prototype +.012ms regression removed. Candidate GPU-completion median .328822/.328859ms, baseline around.38ms. Local result only, no full-frame FPS credit.
+- Full27 ordinary v9 clone ready. Renderer-cold-off27 diagnostic clone preparation continuing; modernRenderer=false will omit dedicated renderer hooks at boot. This arm is NOT the no-ICE acceptance baseline. NoICEv9-3 remains195.793544FPS reference, with scene-variance caveats. Full27 FPS still pending/unaccepted; original installation/save unchanged.
+- New read-only MatrixMirrorCostProbe compiled, not yet run. Measures unknown/known matrix mirror CPU overhead around real GL calls. No production matrix-tracker edits made. All evidence must distinguish native microbenchmark from whole-game performance.
+
+2026-10-12 19:24 -- Build27 full-game result fails target; cold-off diagnostic running
+- Completed full27 ordinary survivalv9 at16:37, process32140 exited.195.7935436403116 noICE FPS ->181.28197472088536 full27 (-7.411669%).P9510.8098->11.6917ms,P9913.2845->13.6401ms, GPUmedian1.739776->1.720320ms. Same route153.285505625m, finalposition/camera/gear/options/fixture;1201vs1200ticks,entities204-236vs218-257,allactive,0hits. Independent live worlds/singlepair,noCI. Comparison129-gap-build27-v9-comparison.txt. Whole-game50%gate failed; do not call27 accepted or publish it as beneficial.
+- Current source/build remains frozen27 candidate for diagnosis. It improves native captured directional submission but full-game net loss remains. Source23 available as prior baseline; current27 local algorithm gain alone does not establish acceptance.
+- MatrixMirrorCostProbe realGL2048chunkoperations: native_only CPUmedian.0673ms,unknown_mirror.0833ms,known_mirror.6063ms. Only diagnostic/lowerbound, not actual transformedgame or per-frame cost. Inspection finds complete matrix seed only at initialization/resume, invalidated at HUD foreign callbacks; cannot assign.54ms/frame without runtime evidence. No production matrix edits.
+- Fresh frozen27 modernRenderer=false v9 ordinary diagnostic launched19:20 PID23796, warm120/sample60, no concurrent Java/compiler/probe/copies. This omits renderer hooks at boot but retains other ICE modules; NOT noICE acceptance arm. Original game/save untouched. Combat research/testing remains stopped per human correction.
+- Added tools/GlWrapperCostProbe.java (not yet compiled/run), using production GlStateTrackingAdapter over realGL matrix wrapper bodies with installed actualHUD bridge and inactive HUD scope. Will distinguish wrapper/hook overhead from matrix-mirror-only probe; does not reproduce all OptiFine/Mixin transforms or prove FPS gain.
+
+2026-10-12 19:38 -- Ordinary-play diagnostics complete; evidence gates hardened
+- Cold-off27v9 PID23796 completed19:26 and exited.159.45934777273203FPS,P9512.6883/P9914.9098,GPUmedian1.847296ms. NOT an attributable comparison: initial effect potioncore:rust:0 differs from baseline empty; finalposition differs1.295m andyaw89.082degrees.1201ticks,153.300693534m,entities202-243,allactive,0hits. Log confirms dedicated renderer hooks omitted19:20:38. Do NOT conclude cold-off is18.56% slower due to renderer policy; comparison NOT_EVALUABLE.
+- compare-live-fps.py now rejects ordinary survival finalposition differences>1m andyaw/pitch>5degrees; yaw wraps modulo360. Missing/nonfinite/malformed views fail. Three targeted regression tests tools/test_compare_live_fps.py pass, including actual invalidcold-off evidence. Recomputed full27 comparison still targetFAILED (exit0 means comparison completed); cold-off now3warnings/NOT_EVALUABLE exit2. View gate only screens final view, does not prove full-route equivalence.
+- Production-adapter GlWrapperCostProbe: actual GlStateTrackingAdapter over real native matrix wrapper bodies, actual HUD delegate installed but no active scope.2048groups original wrappers .0687ms median/.0894p95; hooks withunknownmatrix .0936/.1224; knownmatrix .6771/.8364. Includes HUD/model barriers absent in initialmatrix-onlyprobe, but excludes OptiFine/othertransformers. Unknownoverhead .0249ms, not a plausible entire.4ms/render explanation alone. No production tracking changes. Logs129-gl-wrapper-cost.txt and129-matrix-mirror-cost.txt.
+- Examined actual OptiFine getRenderChunkOffset bytecode (129-optifine-offset-bytecode.txt): neighbour fetch, Y bound, fog distance then caller's frame-visited check. Tools-only TerrainVisitedGateProbe models visited-first predicate.4096randomgraph/scenario oracles preserve exact ordered terrain/entity/tile lists AND every visited stamp, including seeded visits/frustum rejects/intoverflow. Bounds checks13713180->3589554. But realistic direction-filter enabled model median .164056->.167013ms,p95.176261->.180091; disabledfilter .339109->.307706. No production integration; no liveFPS claim. It is not a complete OptiFine/Mixin equivalence test.
+- Read actual OTGEngine getter (129-otg-engine-bytecode.txt). Existing containsKey+get; absent world returns FRESH BiomeConfig[2048], which must not become a shared mutable array. Tools-only OtgBiomeLookupProbe executes actualjar getter vs single-get then cold null/containsKey fallback.4096oracle cases preserve arrayidentity/nulls/missingfresharrays/collisions/removals/replacements. Hit6.375->3.983ns median,7.088->4.577p95. No frame/world config cache, no production hook, no whole-frame gain claim. This is too small by itself to explain mainstall; larger fog-loop changes require separate semantic proof and measurement.
+- Current source/build remains27 UNACCEPTED whole-game candidate (not reverted/promoted). Whole27 SHA48244818251FA3D678D6F3413FE4B4AE4D904333BA87DA0C326E7353888DDD27. Frozen23 remains priorbaseline. Original game/save untouched. AllJava processes/probes exited; no pending exec sessions atthisentry. Dfree~1.7GB; reclaim verified completed snapshot BO4 storage before fresh game clones, neverduringmeasurement.
+- This goal turn made progress: full27 FPS evidence, invalidcold-off evidence, measured adaptercost, rejected visited-first model, exact getter prototype, and strengthened performance evidence gates.50%goal remainsACTIVE/unmet, notblocked. User combat correction continues to override historical objective wording. Next substantive work should target ordinary terrain/fog/HUD work with measured costs, and any new whole-game claims require fresh matched noICE baseline/repeats (time/scene drift exists); do not resurrect rejected25/26 or claim native-only results asFPS gains.
+
+2026-10-12 20:02 -- User broadens goal; complete rendering methods become the main research direction
+- Latest human instruction: "其实也没必要了，你可以修改目标，去寻找更好的方法去优化，而不是只盯着负优化的这些内容". Active execution scope is now docs/ICE-ACTIVE-OPTIMIZATION-GOAL.txt. Search/implement/validate more effective whole-path methods, permitting replacement of the present adapter architecture; do not keep spending turns only on tiny regressions. Terrain/normal play remain central, HUD remains covered by measured priority. Combat work stays stopped. Existing no-ICE comparison and +50% aspiration are not declared achieved or silently dropped.
+- Goal API exposes status updates only, not objective-text edits. No false complete/pause/blocked status was used to replace its historical wording. The latest user instruction and the new execution-goal document take precedence over obsolete combat/task wording.
+- Coarse diagnostic tooling built and verified: skips millions of tiny model/terrain inner-method timers, retains whole phases and upload/endFrame, adds OTG fog events and atlas animation timers. tools/CoarseSectionsProbe.java verifies transformed real classes with ASM BasicVerifier; compare-live-fps.py now compares coarseSections metadata; 3 comparator tests passed. Frozen fixture129-coarse-sections-v1 SHA D4A9ADDF263C60280760DB54E11F7A796A9A6EF798242F496FD87B407695FCFC; agent SHA211C3E03E53F09081BF21A583D86E9FD4ED87206DE323A31C744BAECF161C531.
+- Runtime active/paused ABBA27 diagnostic live-129-runtime-build27-abba-1 finished19:53:24, process28552 exited. Four 25s phases, masks0/4/4/0, FPS172.6282/163.6165/178.9632/181.7816. Position/camera identical; natural entities drift. ALL phases display_active_all_frames=false; NOT a formal FPS acceptance comparison. Runtime pause also retains hooks/resident arena data, so it is NOT no ICE. Do not infer clean causal improvement from these numbers.
+- Coarse work locator: terrain_layer2.164/2.306/2.268/2.236ms perframe, HUD.240/.231/.235/.249; fogcolor.02995/.02945/.02950/.03149, fogdistance.13181/.13713/.13392/.13590; atlas.372/.411/.372/.354ms. Nested sections cannot be added to parents. Instrumented/inactive-window run: relative priorities only, not unbiased acceptance timings. Fogdistance called5times/renderedframe; coloronce.
+- Tools-only OtgFogMemoProbe.java compiled and ran exclusively after game exit.4096rawbit aggregate comparisons passed under grid/config identity+field/world/table/radius/position changes; force-refresh/unknown IDs/nullconfig decline. Original two-loop numerical model vs validated aggregate memo p50 reuse1 .023647->.020417ms (P95.037297->.114920 WORSE), reuse8 .022633->.007292ms, stationary .022372->.005470ms. Actual handler callback side effects/lifetimes and FPS unproven. No production integration; deprioritized under new direction.
+- Online primary-source research: Celeritas nh-main README advertises Forge1.12.2 Java8/LWJGL2, source-only distribution/limited testing. Read whole-path sources from official GTNH repository snapshot (not third-party binaries): RenderSectionManager, SectionLattice, RenderListManager, RenderRegionManager, ChunkBuilder, CachedBatch and1.12.2cloned-section cache. Flat sliding lattice/sentinels, packed metadata, region256sections, explicit invalidation, cached batches and synchronized result publication are architectural references. Async path includes join; not automatically free. Selected source files are research only, not copied into production. Zip SHA7ECCE628D72786D77304F144B6CDD5B3758BEE6EF85FBECD8A2F859856B7B4D6 under renderer-method-research-20261012.
+- Nothirium author page confirms1.12.2Forge but lists OptiFine SmartAnimations/customblocklayer andtexture-animation compatibility limits. Existing Dregora hasOptiFineG5,ChunkAnimator,RenderLib,FermiumASM andmultiplemixins; full replacement compatibility/performance UNTESTED. Do not install into original game or treat removal ofvisualfeatures as equivalent performance. GitHub tree API was rate-limited; primary sourcezip fetch succeeded, no authentication workaround.
+- Production remains Build27 SHA48244818251FA3D678D6F3413FE4B4AE4D904333BA87DA0C326E7353888DDD27, whole-gameUNACCEPTED. New direction is concrete research/implementation work, not a claimed FPS gain. All benchmark/game/probe processes completed, no pending exec session. No subagents, no combat work, no original game/save changes.
+
+2026-10-12 20:40 -- Complete renderer replacement shows potential; verification remains open
+- Nothirium official 0.4.9-beta (Modrinth s9WsUXE1) downloaded and official SHA512 verified. SHA256 A86E5AA4FD09B6FD782DA9D797CA9E4AB32DE4453CF762E1AA3212DFB9E27D12. Used only isolated C-drive snapshots, no original installation change; no borrowed ARR implementation in ICE.
+- Complete unprofiled v9 comparison: noICE/noNoth 198.28756313753433 FPS vs noICE+Noth 342.84616206530757 (+72.903513%). P95 10.6938->8.2072 ms, P99 12.7821->10.5863; server P95 17.5235->20.2925, GPU median1.754112->1.937408. Same1201ticks,153.285505625m route, endpoint/camera/gear/noeffects/0hits/allactive. Naturalentities237-268 vs222-266. Only one pair, noCI/repeats; external renderer benefit NOT ICE success. Rendermean3.873944->1.803134ms, outsiderender1.169237->1.113626ms.
+- Paths C:/Users/32884/.codex/scratch/ice-fps-target/live-129-{original-cdrive-v9-1,nothirium-v9-1}; logs129-nothirium-v9-comparison.txt,129-nothirium-input-diff.json,129-nothirium-frame-components.json. 222common top-levelmodJAR hashes identical; candidate onlyextraNoth. Bothscreenshots show terrain, but endpoint renderedangles differ despite identical logicalyaw. Interpolation suspected, NOT yetproven. Noth fragmentshader also smoothsteps LINEARfog; cannot assumevisualequivalence.
+- prepare-live-fps-benchmark.ps1 now accepts explicit BenchmarkRoot with absolute path/safe containment/source-destination separation. start tool accepts absolute snapshot and records prelaunch SHA256inventoryofmods, metadatahash. Applied successfully to C scratch; same-drive pairedcomparison. Dfree reclaimed by NTFScompression of completed live-129-runtime-build27-abba-1 BO4files,1750668878->398067174bytes, sampleshashunchanged, no deletion.
+- CapturedTerrainSubmissionProbe singleLayerReplay tools-onlyprototype consolidates ownedSOLID meshes intooneVBO/standard16byteMDIcommands, preservingorder/offsets. CPUmedian full .079363->.024813ms,directional.102675->.039263; completionfull.480383->.584211,directional.332591->.424241. CPUbenefitdoesnotmean netgain.2232/2073600pixels differ,maxchannel158,only855adjacenttostrongreferencegradient. Notaccepted/production; excludesbuffercreation/livestorage. Logs129-single-layer-replay.txt,129-single-layer-pixel-analysis.txt.
+- New fixture FixedFinalCapture: survival only, afteralltimingends fixescurrent/previous/lasttickpose and waits2renderframes; emits actualpose proofandfixed-view.png. No measurementsincludepostcapture; no combatwork. Frozen129-fixed-view-fixture-v1 benchmark79EA3B4473708C5D79F00DF80926F62F1EA93598A6948A85460A687058E26F0E,agent3200256B9D2585119B80765717523181B89C5B22DA98ADF5F5C2C11288414E8A. Syntaxchecks/3comparatorregressionspassed; livecapturecurrentlypending. Newfixturecontains unchangedolderv12gameplaysource, notv9; bothnewdiagnosticarmssamefixture.
+- Coarse+fixed candidate PID16864 launched20:35, world20:38:06,warm120/sample60,in C:/Users/32884/.codex/scratch/ice-fps-target/live-129-nothirium-coarse-fixed-1. Freshbaseline live-129-original-coarse-fixed-1 ready, sameinitiallevel.dat/optionshashes, noICE/noNoth. Launchbaselineonlyaftercandidateexits. Do not runcompilers/probes/copies/heavyIOduringgame. Alloldprocessesexited, nootherpendingexec.
+- Researchreport docs/ICE-RENDERER-REPLACEMENT-RESEARCH-20261012.txt created. Completepathverification now drivesimplementationdecision. Goal remainsACTIVE/unmet, no blocker; combatworkstaysstopped. Production27unchanged/unaccepted.
+
+2026-10-12 20:59 -- Whole-renderer coarse pair and fixed-function control complete
+- Candidate noICE+Noth AUTO PID16864 completed20:41:06/exited20:41:09. noICE/noNoth baseline PID13916 started20:41/world20:43:45/completed20:46:45/exited20:46:48. Same frozen129-fixed-view-fixture-v1, warm120/sample60, coarse section agent, survival route, FixedFinalCapture. Bothpilot_only=true, allactive, no startingeffects. Baseline200.18000799693297FPS vsNoth374.36437992424595 (+87.013870%); P9510.7608->7.4810, P9913.1001->9.6468ms. NOT formalunprofiledrepeat/acceptance.
+- Coarse inclusive ms/frame baseline->Noth: terrain_layer1.897919->.054122, terrain_visibility.458245->.381514, camera_and_render3.779242->1.544535, entities.372557->.165108, HUD.238392->.209026. Fogdistance.128508->.129551. Atlasms/call1.658639->1.662332 unchanged; perframe.331479->.177623 falls mainlybecausehigherFPSdenominator. Clienttickms/call6.669732->6.646815. Do not sum nestedphases orclaimatlasalgorithmgain. PrimarysourceMixinRenderGlobal confirms wrappers includeactualNothsetup/render, notemptyreturnonly.
+- FixedFinalCapture livepassed: allcurrent/previous/lasttickposition andcurrent/previousyaw/pitch matchacrossarms, requested_pose_preserved=true. Screenshots visuallychecked: majorangle discrepancyresolved; actualterrain/HUD present, butdistanttreeslessvisiblewithNothAUTO. LINEARsmoothstep/cylindricalfog areknownshaderdifferences; screenshotsalonecannotattributeeverythingtofog. Worldtime9658baselinevs9680Noth, entities210-243vs220-250,1200vs1201ticks. No pixel-equivalenceclaim.
+- Fresh Noth GL15 fixed-function control preparedfromoriginal usingexplicit Cbenchmarkroot, configrenderEngine=GL15. PID31636 launched20:49/world20:52:17/completed20:55:17/exited20:55:20. Samev1fixture/agent, warm120/sample60/coarse/fixedcamera. FPS286.2874458866349vsbaseline200.180008 (+43.015004% diagnostic),P959.2747,P9911.5021,GPUmedian1.404928,serverP9521.4818. terrain_visibility.273374ms/frame,terrain_layer1.021987,camera_and_render2.502376,HUD.214785. Allactive,0hits,noeffects,1200ticks,same153.285505625m/endpose,entities229-281,worldtime9634. ConfigreadbygameconfirmedGL15; runtimeclassobservationnotyetavailableinthisv1fixture. Distanttreesvisuallyclosertooriginal; notcompletevisualcertification.
+- Three-arm sourceworld/options/fixture/agentSHAcheckedidentical; NothAUTO/GL15modinventoriesidenticalandonlyextraNothvsbaseline. Actualfixedposefieldsmatchall3. Reports129-nothirium-coarse-fixed-comparison.txt,129-nothirium-gl15-coarse-fixed-comparison.txt,129-nothirium-coarse-fixed-sections.json. BothcomparatorscorrectlyNOT_EVALUABLEduepilot; no50%acceptanceclaim.
+- Launcher nowfreezes config/ice-optimizer.cfg andnothirium.cfg initialcontent+SHA inbenchmark-input-renderer-configs.jsonandmetadatahash. GL15isthefirstarmusingthismetadata; no retroactivealteringoldruns. PowerShellsyntaxpassed.
+- tools/LiveFpsBenchmark.java nowreadspublicNothbackendclass/name/engine andactualsectioncountersaftertimingandfixedcapture; avoidsinterpretinglegacy0/0. NotshippedinICE. Actual0.4.9JARpublicAPIsverifiedwithjavap (129-nothirium-backend-api.txt). Built/remappedaftergameexit, frozen129-backend-observation-fixture-v2 benchmarkD2DB51849B7DD4C7C4FDC94489C2603607987BCC0DEF04D9EA9C764FE9B87FDB, agent3819C6C4F710274782E0E1BC9B9C4343F4843D3EC9E2AA1AC882FC23B9D0AD52. Newruntimeobservationfieldsnotyetliveverified.3comparatorregressiontestspass. v1frozenfixturesremainunchanged.
+- Executiongoaldocupdated20:59. Fullreportdocs/ICE-RENDERER-REPLACEMENT-RESEARCH-20261012.txt. Mainlinecomplete terrainmanagement/submission; verifyvisualfogandordinarynaturalterrain/static/rotation/movement, thenchooseoptionalbackendintegrationorselfimplementation. Do notblindlycopyARRNothsourceorclaimsmallsharedVBOprobeexplainswholeFPS. No combatwork. Fullgameoriginalinstallation/savesandproduction27unacceptedartifactunchanged.
+- All game/probe/build/clone processes and execsessions complete atthisentry; no pending run. Goal remainsACTIVE/unmet, meaningfulprogress/no blocker. No subagents used. Next tests should usefreshmatchedclonesandfrozenv2onbotharms; do notmixv1/v2asformalpair. No furthercompleted-snapshotmutation.
+
+2026-10-12 22:44 -- Coexistence and fog correction integrated; repeated composite target observed
+- Implemented startup discovery using actual Nothirium coremod manifest/class entries, shared renderer ownership exclusions, and no ModernRendererRuntime allocation under external ownership. Independent modules retained; no configuration rewrite.
+- Corrected fog math through independently authored, exact-pair fingerprint adaptation. Native oracle probe now resets fixed-function current color/secondary color/fog coordinate to prevent cross-arm state pollution. Production rewrite passes 96 cases with zero coverage difference and max channel delta 1. No borrowed dependency classes/shaders bundled.
+- Fixed-camera fixture v3 freezes explicit yaw/pitch at render boundaries and records inputs. Earlier v2 pitch-drift run is not_evaluable and cannot be retroactively promoted. Frozen v3 SHA256 27CD04FB9FCA962E05255FB69576EB2F13ED3F62427714BFB0E2A5F87C996DB6.
+- Two independently repeated matched pairs, candidate/baseline/baseline/candidate order, 120s warm + 3x60s scenes, all active and unprofiled. Build28+independent fog shim+Nothirium vs noICE/noNoth: geometric gains 64.281095% / 60.048400%, all frame P95/P99 improved. One static pair is 47.84%; six-ratio aggregate 62.150937% is not a universal floor. Records in 129-build28-two-pair-evidence.json.
+- Build29 integrates shim into normal adapter/module/target registry and verifies visibility adapter installation before rewriting shaders. Frozen optimizer SHA256 0E5E751E25ACFADB44AC6FF3EC145AB4C5224813A878DFBCE13D0060AC7F3891. Full build: 1133 passed / 130 skipped / 0 failed regular tests; 10 artifact checks passed. Native probe uses production ShaderRewrite.
+- Final isolated live run live-129-integrated-build29-fixed-camera-v3-1 PID22696 completed22:37:19 and exited. No experimental shim JAR. GL43Optifine/FogUtil and effective shader adaptation explicitly logged. FPS static312.502430, rotation316.552, movement311.033. Against faster baseline2 aggregate+59.728751%, scenes+47.46/+78.86/+54.51%, all frame tails improved. Against baseline1 +69.302216% is same candidate reused, not another independent run. GPU p50 higher, serverP95 mixed; keep those facts visible.
+- Static screenshots manually reviewed for terrain/tower/tree horizon/fog/HUD; no obvious missing terrain. Natural entities/animations differ, not pixel-equivalence proof. Long sessions/block updates/dynamic lighting/other hardware remain uncovered. Combat remains stopped. Original game/mods/options/world untouched.
+- Final details, artifact, installation dependencies and bounded claim in docs/ICE-1.0.29-EXTERNAL-RENDERER-INTEGRATION.txt; README/install guidance updated. Source and tested candidate frozen under 129-build29-integrated-candidate. This fulfills the measured fixed-three-scene composite target on this machine, not an ICE-only or all-scenes 50% guarantee. No subagents or external publication.

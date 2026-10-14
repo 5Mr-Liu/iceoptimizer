@@ -1,0 +1,150 @@
+ICE 1.0.27：负优化替换与三方对照
+日期：2026-10-11
+
+结论
+地形和长段 HUD 字形在真实 OpenGL 离线测试中有净收益，不只是减少调用次数。
+地形相对 1.0.26 约省 40–44%，相对同数据的原提交路径约省 9–20%。
+128 字形缓存文本相对 1.0.26 约省 71–73%，相对原立即绘制约省 56–58%。
+32 字形接近原路径；1–4 字形仍比原始绘制多约 0.2–0.3 微秒，不能宣称全部场景正收益。
+同时移除了 OTG 注册时的全量预读和未合批模型的逐件 VAO 替换。
+
+这不是游戏整体 FPS 测试。未启动游戏、替换 mods 或修改存档。
+测试设备：NVIDIA GeForce RTX 4060 Laptop GPU，驱动 592.82，OpenGL 4.6。
+运行环境：Java 8u492，LWJGL 2 隐藏 Pbuffer，Windows。
+
+一、替换了什么
+
+1. 地形
+   原 1.0.26 每层建立偏移/间接命令流，使用兼容顶点着色器、跨 VBO
+   bindless 命令，并可追加 GPU 遮挡计算。这些工作已退出 Arena 的生产提交路径。
+   新路径在同一 region/page 内共用固定管线变换，按当前眼点筛选已分类的单面实体面；
+   相邻且连续的可见顶点区间合并，直接按原顺序提交。每层只取一次方向判断状态。
+   无需每层上传偏移/命令，不把 region 变换变成每顶点的附加读取和运算。
+   保留方向剔除、Arena 所有权、持久上传、范围退休、资源预算、F6 暂停后原数据绘制。
+   保留当前视图的保守 CPU 遮挡过滤；没有把额外 GPU 栅格/计算 pass 搬回热路径。
+   不跨外部 VBO、兼容动画或透明层顺序重排。完全未持有的 VBO 列表交还原渲染器。
+   旧 terrainShaderBatching 配置键保留 ABI，含义改为上述有序区间算法。
+   原固定管线 indirect/multi-draw 实现仍保留给显式旧路径及独立比较。
+
+2. HUD
+   保留字体排版缓存、纹理/颜色边界、绘制顺序和原四顶点 strip 的语义。
+   已验证的字形数组用 FloatBuffer 整段复制，只在需要平移时修改 x/y；
+   短缓存文本暂存不可变数组引用，在真正追加其它图元时才物化，减少无用复制。
+   最多 8 个图元的小批次直接绘制；大批次共用静态索引 (0,1,2),(2,1,3)，
+   将同一纹理/状态段的多个独立字形 strip 变成一次三角形绘制，保持原对角线和绕序。
+   支持 buffer_storage 时使用三页 coherent 持久映射环，只在整页耗尽时封口/加 fence。
+   fence 未完成不等待、不覆盖；尝试其它页，无安全页时按原图元精确回放。
+   一旦封口，即使后来的小批次还能放下也不能继续追加，避免 fence 漏覆盖。
+   页大小偏好 256 KiB，仍受实际预算约束；小预算/无扩展保留可用的上传回退。
+   共享索引也计入预算；清理、上下文失效、分配/映射异常均走已有资源账本。
+   保存/恢复 client vertex-array 状态并暂时禁用 Primitive Restart，避免外部 restart
+   index 恰好命中字形索引；没有在每次 flush 使用同步 glIsEnabled 查询。
+   单次不可确定的绘制失败只消费队列一次，不重复绘制透明内容。
+
+3. 单个模型部件
+   ModelStateBatchBridge 的整树/多根部件合批、pose palette 和捕获缓存保留。
+   不在活动批次中的 callList 直接使用已经编译的原 Display List。
+   删除逐件 runtime/cache 查询及 bind VAO/draw/restore 替换；待发布新网格时
+   同样使用当前 Display List，继续由帧边界处理批量消费者需要的网格发布。
+
+4. OTG
+   注册表本来就是 name -> file 索引，无需再读取全部文件、解析依赖图、预读所有 NBT。
+   注册 hook 保留二进制签名，执行 O(1) 返回；实际请求继续进入已有按需文件/元数据缓存。
+   保留文件变更认证、BO3/BO4 解析执行、元数据独立可变副本与缓存失效。
+   旧 otgObjectPreparation 配置键仅保留兼容含义；不再绕过关闭的文件缓存去预读。
+
+二、三方测量方法
+
+“当前版本”是修改前冻结的 1.0.26 main classes；源码和 class 文件保存在：
+  .refactor-backups/1.0.27-algorithms/baseline/
+新版本使用最终 build/classes/java/main，不使用探索原型或计数插桩类。
+两轮独立 JVM，外层运行顺序为 current/new、new/current。
+每个 JVM 内原路径与优化路径交错测量；原始逐轮数组和 SHA-256 均保留。
+
+地形原路径：同一 Arena、同一份几何与可见列表，render(false,false) 逐件提交。
+它不等于关闭整个模组或重新生成一套 Minecraft 世界，也不是整包 vanilla FPS。
+640 meshes，3,932,160 vertices，1280x720，实体/镂空/透明三层，透视、纹理、
+lightmap、雾、深度和混合；纯 Arena 及 50% 外部 VBO 两种所有权场景。
+600 次交错预热，15 轮，每轮每臂 64 帧，使用 6 个移动视角。
+计时含提交及末尾 glFinish；不是单独的 GPU timestamp。
+
+HUD 原路径：同一不可变字形几何执行原 GL_TRIANGLE_STRIP 立即绘制。
+当前/新版本使用 GlyphLayout.record + 生产 flushTracked；双方都不计字体解析/查表。
+每轮 4096 次提交，6 轮预热、11 轮交错测量；分别记 CPU 提交及含 glFinish 的时间。
+因此这是缓存字形提交比较，不是整个 FontRenderer 或整个 HUD 帧耗时。
+
+三、最终测量结果（两轮中位数范围，越小越好）
+
+地形，ms/帧，包含 glFinish：
+                           原提交路径         1.0.26           1.0.27
+纯 Arena                  0.701–0.734       1.038–1.043      0.588–0.591
+50% 外部 VBO              0.709–0.735       1.096–1.105      0.657–0.658
+同 JVM 配对的新版相对原路径节省：纯 Arena 18.8%、19.9%；混合 9.5%、10.6%。
+纯 Arena 方向剔除仍去掉 1,179,648 顶点，混合去掉 589,824 顶点（首个视角）。
+
+HUD 缓存文本，微秒/批，CPU 提交：
+字形数                    原立即绘制         1.0.26           1.0.27
+1                         0.098–0.117       5.396–5.917      0.352–0.372
+4                         0.316–0.329       7.132–7.991      0.590–0.596
+32                        2.248–2.366       9.397–10.239     2.273–2.298
+128                       9.006–9.277       13.366–14.355    3.896–4.000
+
+HUD 128 字形，含 glFinish：原路径约 9.0–9.3 us；1.0.26 为 13.47–14.45 us；
+1.0.27 为 3.91–4.01 us。收益没有被推迟到计时区间后的 GPU 等待抵消。
+新版正常检查/预热/计时合计 74,539 次 flush 中，32 字形的忙页回放为 17/38 次，
+128 字形为 430/481 次；这些回放包含在成本里，不等待 GPU，也不丢弃图元。
+1–4 字形的封装成本尚未归零；32 字形对原路径的微小差异不足以宣称稳定提速。
+
+模型：4 顶点部件、15 轮交错 CPU 提交，原 Display List 7.8 ns/件，
+旧逐件 VAO 28.7 ns/件，新 callList 生产桥 8.1 ns/件。
+绝对收益只有约 20 ns/件，不能解释游戏整体的大幅帧率变化；未测真实复杂模型的全帧收益。
+
+OTG：注册 64 个未请求 BO3，文件缓存关闭，旧版仍预读 64 个，新版预读 0 个。
+一次冷入口观察约 169.6 ms -> 0.9 ms，包含类加载和文件系统开销，不作为稳定加载提速倍数。
+主要证据是删除了全部未请求文件的 I/O；按需设置/元数据及独立副本测试继续通过。
+
+四、正确性与验证
+
+- Gradle build、verifyArtifacts、optimizerBundleZip 成功。
+- 普通测试 1,222 项：0 失败/错误，19 项按环境条件跳过；另 10 项最终 JAR 隔离启动检查通过。
+- 地形每轮两场景各 6 个视角，新版与原路径 RGBA 逐字节完全一致。
+  1.0.26 的兼容着色器在这些视角存在少量边缘差异，最大通道差 3–81；新版没有这些差异。
+- 地形持久/普通上传、跨页碎片、64 种随机混合顺序、24 种平移/旋转、VBO 换存储/换名称、
+  未持有列表原样返回、暂停/恢复及暂停时 vanilla 替换全部通过，资源预算归零。
+- HUD 128 个不重叠且非平行四边形的带纹理字形验证原 strip 三角形拓扑；
+  4096 次无中间等待的分页复用、混合图元顺序、扩容、小 GPU 预算回放均像素完全一致。
+- 原生 Forge 事件取消、异常、外部非零 VAO/VBO/EBO、颜色/法线/lightmap 数组均保持。
+  glBufferData、glBufferStorage、glMapBufferRange、glDrawArrays、glBegin 故障注入通过，
+  未重复绘制，资源预算归零。封口页不能追加小批次另有回归测试。
+- 模型 84 组像素/状态比较，包含新单件桥和仍保留的 pose/多部件路径，通过。
+
+五、保留与尚未证明的范围
+
+保留 NBT 单遍比较、实体碰撞/寻路/目标选择、按需 OTG 缓存、BO3/BO4 执行、透明排序、
+AO/矩阵工作区、纹理参数去重、保存顺序和资源退休。除上述四项外没有改动这些实现。
+没有把 FBP、纹理/PBO、整模型 pose batching 或独立 HZB 一概判为负优化；本轮也不新增其
+整包净收益结论。以前的 MODERN 状态和“调用变少”本身仍不能证明游戏更快。
+没有对其它显卡/驱动、ShaderPack、真实存档行走或端到端游戏 FPS 做新测量。
+不能据此承诺整包提升 40%，也不能声称所有短 HUD 或所有可选后端的负优化已清零。
+
+六、复现与交付
+
+主对照：
+  tools/run-renderer-algorithm-comparison.ps1
+  tools/TerrainAlgorithmNativeProbe.java
+  tools/HudAlgorithmNativeProbe.java
+  build/algorithm-validation/final/*.log
+  build/algorithm-validation/final/class-hashes.txt
+
+追加正确性/其它入口：
+  tools/TerrainOrderedRangesNativeProbe.java、tools/TerrainPauseNativeProbe.java
+  tools/HudBoundaryNativeProbe.java、tools/HudNativeCallInstrumenter.java
+  tools/ModelAlgorithmNativeProbe.java、tools/OtgDemandPreparationProbe.java
+  build/algorithm-validation/terrain-lifecycle.log、terrain-pause.log、hud-boundary.log
+  build/algorithm-validation/model-algorithms.log、otg-current.log、otg-new.log
+  build/algorithm-validation/build-complete.log
+
+安装产物：build/libs/ice-rlcraft-optimizer-1.0.27.jar
+优化器安装包：build/libs/ice-rlcraft-optimizer-bundle-1.0.27.zip
+Profiler 对应版本：build/libs/ice-rlcraft-profiler-1.0.27.jar
+本次仅构建，未安装到游戏或发布远端。

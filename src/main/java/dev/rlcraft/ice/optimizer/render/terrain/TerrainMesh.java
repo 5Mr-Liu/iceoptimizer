@@ -13,6 +13,7 @@ public final class TerrainMesh {
     private final int chunkZ;
     private final long sequence;
     private final long checksum;
+    private TerrainFaceRanges faceRanges;
 
     public TerrainMesh(ChunkMeshPayload payload, ArenaRange range) {
         if (payload == null || range == null || range.getLength() != payload.getByteCount()) {
@@ -45,7 +46,7 @@ public final class TerrainMesh {
         long bytes = (long) vertexCount * (long) strideBytes;
         if (layer == null || vertexCount < 0 || strideBytes <= 0
             || sequence < 0L || range == null || bytes < 0L
-            || bytes != range.getLength()) {
+            || bytes > range.getLength()) {
             throw new IllegalArgumentException("terrain mesh metadata");
         }
         this.payload = null;
@@ -71,4 +72,6 @@ public final class TerrainMesh {
     public int getChunkZ() { return chunkZ; }
     public long getSequence() { return sequence; }
     public long getChecksum() { return checksum; }
+    public TerrainFaceRanges getFaceRanges() { return faceRanges; }
+    void setFaceRanges(TerrainFaceRanges value) { faceRanges = value; }
 }

@@ -1,0 +1,110 @@
+ICE 实体逻辑与 NBT 优化审查方案（2026-10-10）
+
+范围与结论
+本轮为只读代码/字节码/录制审查和方案整理，没有修改生产代码或游戏实例。
+当前实体逻辑与保存管线还有可明确减少的工作：寻路工作区、局部实体查询、SRP 刷怪缓存维护、装备 NBT 比较/复制，以及保存队列的重复压缩。
+重点应是减少扫描、序列化和无效工作，不以降低 AI 更新频率、跳过实体 tick、减少保存或增加收益门禁实现优化。
+
+现有记录证据
+现有最新一轮是 20 个 20261010-09* 会话，对应 1.0.20；不是刚交付的 1.0.22 游戏结果。当前 1.0.22 源码另行审查。
+393821 个原始栈样本按 timestampNs/threadId 去重为 294871 个；810 个唯一时间线区间覆盖约 831.92 秒。
+SERVER_MAIN 共 52328 个样本，其中 RUNNABLE 39113。调用链包含实体更新 8361、AI/寻路 2445、SRP 1711、NBT 442、区块保存 501。
+更具体的命中：RLTweaker getCollisionBoxes 1300，WorldRadiusUtil 638，WalkNodeProcessor 1387，EntityAITasks 1197。
+SrpSpawnFilterBridge.tryFilter 529 个样本均在 ICE 开启区间，其中 127 个包含 Caffeine 读后维护、ForkJoinPool 调度和 unpark。
+装备 ItemStack.areItemStacksEqual 94 个样本中有 92 个进入深层 NBT.equals；PotionCore 151 个服务端样本中有 76 个包含 NBT 读写。
+QualityTools 仅 10 个主线程样本，本轮没有命中 QT→copy→serializeNBT 链。其代码开销确实存在，但不能称为这批记录已证实的主要根因。
+FILE_IO 497 个 RUNNABLE 样本中，404 包含压缩、356 包含 NBT，二者大量重叠。
+1063 个长服务端 tick 的覆盖区间共有 11951 个样本，世界生成 6286、实体 910、AI 319、NBT 103、区块保存 282。
+这些都是调用链采样数，分类可能重叠，不是精确函数耗时或耗时百分比。最后一次录制包含退出世界，不能将退出等待解释为持续游玩负载。
+记录还包含触发区间优先采样及后期栈截断，不能由这些数字换算绝对 CPU 时间；810 个区间中 291 个平均服务端 tick 超过 50ms。
+堆实际使用约 2726–5506 MiB，中位 4453 MiB；committed=7168 MiB 不是实际活对象量。GC 累计 12843ms，其中首个初始化区间 3430ms。减少寻路常驻数组与 NBT 临时对象能针对分配压力，但这些数据不支持将多数长 tick 都归因于 GC。
+原 section NBT 编码 133 个样本中，131 个在 F6 暂停、2 个在混合区间；不能据此认定开启状态仍在无谓回退。
+证据与复现：.refactor-backups/entity-nbt-audit/summary.txt、evidence.json、timeline.json、analyze.py。
+
+一、直接削减 ICE 自身实体热路径成本
+代码：src/main/java/dev/rlcraft/ice/optimizer/compat/srp/SrpSpawnFilterBridge.java:20、39、161
+当前编译后的刷怪列表仍经 Caffeine 弱键/淘汰缓存读取，每次又逐项核对源列表身份；记录已命中缓存读后维护唤醒线程。
+方案：在已确认的 SRPMixins 配置列表构造/发布/变更边界建立编译数组，发布时替换版本，查询直接读对应数据；删除热路径淘汰维护和整表身份扫描。动态的种群/阶段/维度条件仍在本次调用按原规则计算，不把它们长期缓存。
+这要求覆盖真实列表修改路径，不能单纯删 matches 后长期使用过期刷怪表。
+代码：SrpMobCapBridge.java:33
+当前已将七次扫描合成一次，但仍对每个实体反复进行类别继承判断。把固定类归属编译成 ClassValue bitmask，命中 requested 类别后累加；不可消失实体等可变属性仍读当前值。
+收益指标：同一刷怪调用的 CPU、分配数、后台维护任务数、计数与过滤结果一致。
+
+二、实体局部查询与寻光索引
+碰撞热点先做一个无需长期缓存的改动：RLTweaker HookWorld.getCollisionBoxes 已直接取 loaded chunk / section、跳过空 section，并复用 MutableBlockPos；这些已有措施不能重复算成新收益。
+其逐格调用仍进入 Block 静态 addCollisionBoxToList：当前先以 localAabb.offset(pos) 创建世界坐标 AABB，再 intersects，未命中也分配。
+方案：先按同样的坐标加法计算六个边界并判断相交，只有命中才创建输出 AABB。保留每个动态方块的原碰撞回调、原扫描顺序、边缘格规则、世界边界、事件及早退时机；局部碰撞箱即使越出 [0,1] 也不能裁切。该改动减少移动/掉落物碰撞时的无效对象分配，无需跨 tick 缓存碰撞结果。
+上面的代数替换适用于标准 AxisAlignedBB；该类不是 final，自定义子类可覆写 offset/intersects，需按原覆写语义分派。字节码证据：.refactor-backups/entity-collision-audit/Block.javap.txt:862、AxisAlignedBB.javap.txt:663、HookWorld.javap.txt:93。
+另可对逐类审计后明确静态的碰撞形状编译专用算子，减少虚调用；动态邻居/实体/方块实体相关形状仍执行原规则。这属于更大范围的改造，不能仅凭一次返回值认定形状永久静态。
+RLTweaker 实际实现已经按 chunk 和 Y section 查询，不是每次扫描全世界。其最近实体查询仍先建立完整 ArrayList，再遍历选择目标。
+方案：为已审计调用点提供 nearest/exists/count 专用扫描，直接在 section 遍历中返回所需结果；需要完整列表的碰撞 API 继续保留完整输出。最近目标维持原顺序、Predicate 调用语义、等距选择、大碰撞箱及多部件实体范围。
+代码：SrpTargetSearchBridge.java:19。现有排序替换为线性最小值已经有效，但前面的候选列表分配还在；融合查询与选择才能再减少一遍遍历。
+代码：SrpLightSearchBridge.java:46。
+范围 20、身高 1.8 的示例仍每次访问 10086 格。为区块 section 维护可能发光/电路候选索引，随区块载入和方块状态修改更新，查询只查相关 section 内候选。
+复杂度由 O(扫描体积) 改为 O(相关 section + 候选数)。保留原随机调用、任务频率、最近距离与等距顺序。
+自定义 getLightValue(state) 可能依赖外部状态；这些动态类型保留在候选中并实时求值，不能因某次亮度为零永久排除。这是索引内容的正确性，不是收益/静止门禁。
+
+三、寻路改为按搜索复用工作空间
+代码：SrpCachingWalkNodeProcessor.java:23、125；LycanitesPathingBridge.java:157。
+SRP 每个导航器保存两张容量只增不缩的哈希表；当前 Agrona clear 对非空表清理整个 value 数组，成本随历史容量增长。
+方案：改为线程内、可重入的单次搜索工作区；节点类型采用紧凑编码，记录本次写入槽并仅清理这些槽，或者用搜索代次数组做逻辑清空。共享的是内存，不跨搜索共享世界查询结果。
+这减少每实体常驻峰值工作区，以及搜索结束时清空大数组的成本；路径、节点代价、门/水/体型和搜索顺序仍使用原规则。
+SRP/Lycanites 等复用该算法，但只替换已确认节点处理器的数据布局，不将实体 tick 或可变世界读取随意放到工作线程。
+
+四、NBT 先减少不需要发生的调用
+首先处理记录已命中的装备深比较。真实 NBTTagCompound.equals 对两张表的 entrySet 调用相等比较；实际 fermiumasm-5.28 的 NormalTagMap 在小表阈值以下使用 Object2ObjectArrayMap，逐 entry contains 会线性查键，相同内容 n 个键的比较可达 O(n²)。
+方案：在装备比较调用点使用专用递归 NBT 比较器，大小一致后以双迭代器按序比较键和值；键顺序相同的常见装备快照实现 O(n) 遍历。键顺序不同时使用原顺序无关的查找语义，不能直接判不同。Compound 递归，List 保持顺序，其余 tag 使用原 equals；快迭代器减少 entry 对象。
+保留 ItemStack 的物品、数量、损伤与 Capability 等比较规则，仅替换其中 NBT 树比较算法；不把相等含义缩减成“只比较品质”。无需全局 NBT 版本、哈希缓存或每 tick 自检。验证乱序键、嵌套标签、数组、类型不匹配及原地修改后的结果。
+代码：QualityToolsAttributeBridge.java:17、30、102、110。
+实际 QualityTools 1.0.7 的马分支每 7 tick 完整 EntityHorse.writeToNBT，再读 ArmorItem、构造新 ItemStack。ArmorItem 来自 horseChest 第 1 槽。
+方案：直接访问马甲槽并调用原属性处理，保持原 7 tick 更新时间，消除这条完整实体 NBT 往返。
+ICE 当前普通生物路径每 7 tick 比完整 ItemStack，任一槽改变就复制全部六槽。Forge ItemStack.copy 会序列化 Capability 并复制物品 NBT；相等比较也可能序列化 Capability。
+实际 QT 属性读取只依赖 Quality.Slots、Quality.AttributeModifiers 等相关品质数据。
+方案：每槽保留所需字段的紧凑快照，只更新发生变化的槽，避免复制 ItemStack 与无关 Capability；玩家背包/Baubles 可复用同一解析算法。要识别原地修改的嵌套 Quality NBT，不能只比较引用。
+140 tick 强制复核不能孤立删除后留下陈旧属性。用准确的装备、品质字段和相关属性变更更新机制替代之后，再删除周期全量复核与深复制。
+对于原版装备同步和其他模组调用，不能全局把 ItemStack 相等改成只比品质字段；专用比较只用于已确认只读这些字段的调用点。
+PotionCore 实际 onLivingUpdate 每实体每 tick 写 Health Fix，反复读取 Projectile/Magic Invulnerability、doing drown/drown air，PlayerPersisted 分支重复查键，step_up 分支重复读取属性值。ICE 当前没有对应适配。
+原 NBT getInteger/getFloat/getBoolean 先 hasKey(type)→getTagId→map.get，随后再次 map.get，在小数组表上重复线性查找。
+方案：同一次事件复用 entity/data 局部引用；把已审计访问点改为一次取 tag 后按原类型转换和默认值读取；PlayerPersisted 一次取值后维持原存在/类型语义；step_up 在无回调片段只取一次属性值。原顺序写回，发生伤害/药水等可能改状态的回调后重新读取。该项直接针对记录中的重复查表，不跨 tick 缓存可变数值；只缓存 getEntityData 调用本身收益很小。
+
+五、保存任务只做仍会被写盘的工作
+代码：src/hooks/java/dev/rlcraft/ice/hooks/ChunkSaveCompressionAdapter.java:92；
+src/main/java/dev/rlcraft/ice/optimizer/compat/save/ChunkSaveCompressionBridge.java:65、98、245、364、387。
+问题 A：pending Map.put 先发布 NBT，随后才登记 ICE 压缩任务。IO 线程可能先取走 NBT、原路压缩，ICE 随后又压一遍。
+问题 B：Map.put 返回的旧 NBT 被丢弃，原 pending map 已覆盖的旧快照仍排队/压缩。现有清理只在任务数量至少 64 且完成任务已满 30 秒时执行，较少的孤儿可以保留到 reset。
+方案：在原发布边界先登记任务，再发布 NBT，随后提交工作；用 put 返回的旧快照立即撤销原版已经覆盖的旧任务并释放引用。已被 IO 领取的保存按原语义完成，不能按坐标盲目取消所有旧写入。
+问题 C：先压缩完成，才申请结果字节配额。配额失败后结果被扔掉，原路径再次序列化和压缩。
+方案：工作开始前取得有界输出槽所有权，完成后将同一缓冲交给写盘消费者；输出不足时避免先做一遍又丢弃。槽分配必须保证 IO 正在等待的任务可前进，不能让较晚任务占满槽造成队首死锁。
+以上是任务/数据所有权修复，不是增加帧率收益检测或自动停用逻辑。
+指标：被替代任务实际执行数、重复压缩数、队列保留字节、结果峰值、保存数据往返一致、flush 完整完成。
+
+六、NBT 编码与压缩内存
+NBTTagCompound 原 write/copy 使用 keySet 后再次 Map.get，可在原接口上直接遍历 entry；连续 DataOutput 缓冲减少小写调用。保持 tag 类型、Modified UTF、字节序、结束标记、异常行为及外部模组扩展。
+实例的 NormalASM 已修改 NBT 数据结构并对字符串去重；不能再笼统替换底层 Map。记录中 NormalStringPool 有 190 个服务端样本，其中 50 个在保存常见键时再次 canonicalize；若优化常量键路径，须沿原 API 保持动态键语义，不把全部字符串永久强引用到新全局缓存。
+OtgStructureCompressionBridge.java:27 每次新建 Deflater，并按未压缩输入长度预留输出，最后 toByteArray 再复制。
+方案：复用线程私有 Deflater，使用分段或可转移的结果缓冲，保留 zlib 格式，减少输入/大预留输出/最终副本同时驻留。不能简单复用仍被其他任务持有的 byte[]。
+现有 ChunkSectionNbtBridge 已优化局部调色板；可扩展标准全局调色板的直接编码，但目前没有该路径在开启区间占主导的证据，优先级低于上面的重复工作。
+
+七、自动保存的主线程峰值
+后台压缩不能消除 Entity、TileEntity、Capability 和 Forge 保存事件构造 NBT 的主线程成本。
+若剩余尖峰集中在普通自动保存，可用跨 tick 游标完成同一轮所有脏区块快照，给每轮明确完成期限；显式保存、退出与卸载仍按完整完成语义执行。
+该方案改变自动保存/事件时序，主要降低峰值，不减少总工作量；不能声称完全不改调度。不能省略脏区块或无限推迟保存。
+已有 NBT 快照并非全部深不可变：ForgeData、物品 tag、HeightMap/光照数组等可能仍引用实时数据。因此不能直接异步调用实体/Capability 保存回调；需在保存边界明确移交独立数据所有权。
+正常后台保存由 FILE_IO 消费，但显式 flush/退出也可能同步进入 writeNextIO→await；当前“永不阻塞主线程”的注释不能作为架构依据。
+
+实施与验证建议
+优先按同一轮改动处理：刷怪热缓存/类归属、碰撞箱按需分配、寻路工作区、目标查询、装备 NBT 比较、QT 非必要 NBT、保存发布与结果缓冲；寻光索引适合一并做，但需覆盖方块修改事件。自动保存游标独立列出其时序影响，不混入无语义变化的改动。
+离线使用真实 Forge/SRP/SRPMixins/QT/RLTweaker 字节码验证；目标结果/路径/属性 UUID 一致，NBT 解码后数据一致，连续同区块保存和退出不丢数据，嵌套回调可重入。
+游戏指标以服务端 MSPT、P95/P99 tick、保存峰值、分配率和 GC 为主；同时看客户端帧时间。沿同一路线移动战斗，保留相同实体/寻路/区块生成负载，不能用不同世界负载的平均 FPS 宣称收益。
+验收使用现有记录器或离线测试，不添加游戏内收益自测、冷却、静止条件或按收益自动关闭。
+跑图长 tick 仍有更强的世界生成证据；仅优化实体/NBT 不能覆盖全部卡顿。本方案不承诺未经实测的 FPS 提升百分比。
+
+核对的官方资料
+Forge 1.12.x ItemStack 补丁（copy/equality 与 Capability NBT）：
+https://github.com/MinecraftForge/MinecraftForge/blob/1.12.x/patches/minecraft/net/minecraft/item/ItemStack.java.patch
+Forge 1.12.x CapabilityDispatcher（相等比较中的序列化）：
+https://github.com/MinecraftForge/MinecraftForge/blob/1.12.x/src/main/java/net/minecraftforge/common/capabilities/CapabilityDispatcher.java
+Caffeine 维护机制：
+https://github.com/ben-manes/caffeine/wiki/Cleanup
+Java 8 Deflater reset/end 生命周期：
+https://docs.oracle.com/javase/8/docs/api/java/util/zip/Deflater.html

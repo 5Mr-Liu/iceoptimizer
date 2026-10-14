@@ -68,13 +68,16 @@ public final class HitchFixAdapterTest {
             assertEquals(2, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
                 "end", "(J)V"));
             assertEquals(1, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
-                "scanState", "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;)"
+                "scanState", "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;Ljava/lang/Object;)"
                     + "Lnet/minecraft/block/state/IBlockState;"));
-            assertEquals(1, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
+            assertEquals(0, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
                 "validationState", "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;)"
                     + "Lnet/minecraft/block/state/IBlockState;"));
             assertEquals(1, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
-                "newBlockCounter", "(Ljava/lang/Object;)Ljava/util/Map;"));
+                "validationState", "(Lnet/minecraft/world/World;Lnet/minecraft/util/math/BlockPos;Ljava/lang/Object;)"
+                    + "Lnet/minecraft/block/state/IBlockState;"));
+            assertEquals(1, countCalls(transformed, LycanitesSpawnScanAdapter.BRIDGE,
+                "newBlockCounter", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;"));
             assertEquals(2, countCalls(transformed, LycanitesBlockMembershipAdapter.BRIDGE,
                 "track", LycanitesBlockMembershipAdapter.TRACK_DESCRIPTOR));
             new ClassReader(transformed);
@@ -93,95 +96,24 @@ public final class HitchFixAdapterTest {
         new ClassReader(transformed);
         if (className.endsWith("WorldServer")) {
             assertTrue(hasInterface(transformed, MinecraftSaveTickAdapter.ACCESSOR));
-            assertTrue(hasField(transformed, MinecraftSaveTickAdapter.VERSION_FIELD, "J"));
+            assertFalse(hasField(transformed, "ice$pendingTickVersion", "J"));
             assertTrue(hasMethod(transformed, MinecraftSaveTickAdapter.ORIGINAL_PENDING_METHOD,
                 MinecraftSaveTickAdapter.PENDING_DESCRIPTOR));
             assertEquals(1, countCalls(transformed, MinecraftSaveTickAdapter.BRIDGE,
                 "pendingBlockUpdates", "(L" + MinecraftSaveTickAdapter.ACCESSOR
                     + ";Lnet/minecraft/world/chunk/Chunk;Z)Ljava/util/List;"));
         } else {
-            assertTrue(hasMethod(transformed, MinecraftSaveTickAdapter.ORIGINAL_SAVE_METHOD,
-                MinecraftSaveTickAdapter.SAVE_DESCRIPTOR));
-            assertTrue(hasMethod(transformed, MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
-                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR));
-            assertEquals(2, countCalls(transformed, MinecraftSaveTickAdapter.BRIDGE,
-                "begin", "(Ljava/lang/Object;Ljava/lang/Object;Z)J"));
-            assertEquals(4, countCalls(transformed, MinecraftSaveTickAdapter.BRIDGE,
-                "end", "(J)V"));
-            assertCatchAllFinallyWrapper(transformed,
-                MinecraftSaveTickAdapter.SAVE_METHOD,
-                MinecraftSaveTickAdapter.SAVE_DESCRIPTOR,
-                MinecraftSaveTickAdapter.ORIGINAL_SAVE_METHOD);
-            assertCatchAllFinallyWrapper(transformed,
-                MinecraftSaveTickAdapter.PROVIDER_TICK_METHOD,
-                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
-                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD);
-            assertEquals(1, countCallsInMethod(transformed,
-                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
-                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
-                MinecraftSaveTickAdapter.PROVIDER_TARGET, "func_73242_b",
-                "(Lnet/minecraft/world/chunk/Chunk;)V"));
-            assertEquals(1, countCallsInMethod(transformed,
-                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
-                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
-                MinecraftSaveTickAdapter.PROVIDER_TARGET, "func_73243_a",
-                "(Lnet/minecraft/world/chunk/Chunk;)V"));
-            assertEquals(1, countCallsInMethod(transformed,
-                MinecraftSaveTickAdapter.ORIGINAL_PROVIDER_TICK_METHOD,
-                MinecraftSaveTickAdapter.PROVIDER_TICK_DESCRIPTOR,
-                "it/unimi/dsi/fastutil/longs/Long2ObjectMap", "remove",
-                "(Ljava/lang/Object;)Ljava/lang/Object;"));
-        }
-        return transformed;
-    }
-
-    private static void assertCatchAllFinallyWrapper(byte[] bytes,
-                                                     String methodName,
-                                                     String descriptor,
-                                                     String originalName) {
-        ClassNode node = new ClassNode(Opcodes.ASM5);
-        new ClassReader(bytes).accept(node, 0);
-        MethodNode wrapper = null;
-        for (MethodNode method : node.methods) {
-            if (methodName.equals(method.name) && descriptor.equals(method.desc)) {
-                wrapper = method;
-            }
-        }
-        assertNotNull(methodName, wrapper);
-        assertEquals(methodName, 1, wrapper.tryCatchBlocks.size());
-        TryCatchBlockNode block = wrapper.tryCatchBlocks.get(0);
-        assertNull(methodName + " must use a catch-all finally", block.type);
-        int start = wrapper.instructions.indexOf(block.start);
-        int end = wrapper.instructions.indexOf(block.end);
-        int handler = wrapper.instructions.indexOf(block.handler);
-        assertTrue(methodName, start >= 0 && start < end && end <= handler);
-
-        int original = -1;
-        int beginCalls = 0;
-        int endCalls = 0;
-        int throwsAfterHandler = 0;
-        for (AbstractInsnNode instruction : wrapper.instructions.toArray()) {
-            if (instruction instanceof MethodInsnNode) {
-                MethodInsnNode call = (MethodInsnNode) instruction;
-                if (MinecraftSaveTickAdapter.PROVIDER_TARGET.equals(call.owner)
-                    && originalName.equals(call.name)
-                    && descriptor.equals(call.desc)) {
-                    original = wrapper.instructions.indexOf(instruction);
-                }
-                if (MinecraftSaveTickAdapter.BRIDGE.equals(call.owner)
-                    && "begin".equals(call.name)) beginCalls++;
-                if (MinecraftSaveTickAdapter.BRIDGE.equals(call.owner)
-                    && "end".equals(call.name)) endCalls++;
-            } else if (instruction.getOpcode() == Opcodes.ATHROW
-                && wrapper.instructions.indexOf(instruction) > handler) {
-                throwsAfterHandler++;
-            }
-        }
-        assertTrue(methodName + " original call must be protected",
-            original > start && original < end);
-        assertEquals(methodName, 1, beginCalls);
-        assertEquals(methodName, 2, endCalls);
-        assertEquals(methodName, 1, throwsAfterHandler);
+            assertTrue(hasInterface(transformed, MinecraftAutosaveAdapter.ACCESS));
+            assertTrue(hasMethod(transformed, "ice$originalSaveChunks", "(Z)Z"));
+            assertEquals(1, countCalls(transformed, MinecraftAutosaveAdapter.BRIDGE, "tick",
+                "(L" + MinecraftAutosaveAdapter.ACCESS + ";)V"));
+            assertEquals(1, countCalls(transformed, MinecraftAutosaveAdapter.BRIDGE, "finish",
+                "(L" + MinecraftAutosaveAdapter.ACCESS + ";)V"));
+            assertEquals(1, countCallsInMethod(transformed, "func_73156_b", "()Z",
+                MinecraftAutosaveAdapter.PROVIDER, "func_73242_b", "(Lnet/minecraft/world/chunk/Chunk;)V"));
+            assertEquals(1, countCallsInMethod(transformed, "func_73156_b", "()Z",
+                MinecraftAutosaveAdapter.PROVIDER, "func_73243_a", "(Lnet/minecraft/world/chunk/Chunk;)V"));
+        }        return transformed;
     }
 
     private static byte[] read(JarFile jar, String className) throws Exception {

@@ -146,6 +146,38 @@ public final class RenderLibRenderBridge {
             && traversal.objectOverflowDepth == 0 && traversal.sample != null;
     }
 
+    public static boolean isModelValidationTraversal() {
+        Traversal traversal = current();
+        return traversal != null && traversal.objectActive
+            && traversal.objectOverflowDepth == 0 && traversal.sample != null
+            && traversal.sample.lifecycleState()
+                == dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState.OUTPUT_VALIDATE;
+    }
+
+    /**
+     * The original display-list shortcut still contributes actual work to a
+     * measured traversal. Without this observation the first Legacy ABBA arm
+     * is always discarded as empty, so the candidate can never be measured.
+     * This does not mark a modern draw or perform per-part cache/state queries.
+     * Validation retains its separate, byte-certified eligibility accounting.
+     */
+    public static boolean observeOriginalModelDraw() {
+        Traversal traversal = current();
+        if (traversal == null || !traversal.objectActive
+            || traversal.objectOverflowDepth != 0 || traversal.sample == null) return false;
+        dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState state =
+            traversal.sample.lifecycleState();
+        if (state == dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState.OUTPUT_VALIDATE) {
+            return true;
+        }
+        if (traversal.objectCandidateAllowed
+            && (state == dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState.PAIRED_MEASURE
+                || state == dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState.REGRESSION_MONITOR)) {
+            traversal.eligibleDraws++;
+        }
+        return false;
+    }
+
     public static long currentEventScope() {
         Traversal traversal = current();
         return traversal == null || !traversal.objectActive

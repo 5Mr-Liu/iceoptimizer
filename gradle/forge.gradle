@@ -58,8 +58,48 @@ minecraft {
 }
 
 repositories { mavenCentral() }
+repositories { maven { url = 'https://repo.spongepowered.org/repository/maven-public/' } }
+repositories { maven { url = 'https://www.cursemaven.com' } }
+repositories { maven { url = 'https://api.modrinth.com/maven' } }
 configurations { optimizerLibraries }
 dependencies {
+    // API only: the pack supplies RenderLib. Never bundle the external renderer or its libraries.
+    if (project.hasProperty('renderLibJar')) {
+        hooksCompileOnly files(project.property('renderLibJar'))
+    } else {
+        hooksCompileOnly('maven.modrinth:renderlib:1.12.2-1.4.5') { transitive = false }
+    }
+    // BO3 configuration arrays are supplied by OTG, never bundled with ICE.
+    if (project.hasProperty('otgJar')) {
+        compileOnly files(project.property('otgJar'))
+        testCompileOnly files(project.property('otgJar'))
+        testRuntimeOnly files(project.property('otgJar'))
+    } else {
+        compileOnly('curse.maven:open-terrain-generator-265894:7004304') { transitive = false }
+        testCompileOnly('curse.maven:open-terrain-generator-265894:7004304') { transitive = false }
+        testRuntimeOnly('curse.maven:open-terrain-generator-265894:7004304') { transitive = false }
+    }
+    // Optional superclass API for the per-build Recurrent Complex field cache.
+    // IvToolkit remains supplied by the modpack and is never bundled.
+    if (project.hasProperty('ivToolkitJar')) {
+        compileOnly files(project.property('ivToolkitJar'))
+        testCompileOnly files(project.property('ivToolkitJar'))
+        testRuntimeOnly files(project.property('ivToolkitJar'))
+    } else {
+        compileOnly('curse.maven:ivtoolkit-224535:2443253') { transitive = false }
+        testCompileOnly('curse.maven:ivtoolkit-224535:2443253') { transitive = false }
+        testRuntimeOnly('curse.maven:ivtoolkit-224535:2443253') { transitive = false }
+    }
+    // Optional post-merge integration. Mixin is provided by the modpack, never bundled by ICE.
+    if (project.hasProperty('mixinApiJar')) {
+        hooksCompileOnly files(project.property('mixinApiJar'))
+        testCompileOnly files(project.property('mixinApiJar'))
+        testRuntimeOnly files(project.property('mixinApiJar'))
+    } else {
+        hooksCompileOnly('org.spongepowered:mixin:0.8.5') { transitive = false }
+        testCompileOnly('org.spongepowered:mixin:0.8.5') { transitive = false }
+        testRuntimeOnly('org.spongepowered:mixin:0.8.5') { transitive = false }
+    }
     minecraft 'net.minecraftforge:forge:1.12.2-14.23.5.2860'
     // The partial Windows/Java 8 recomp JAR omits unchanged vanilla classes.
     def mappedVersion = '1.12.2-14.23.5.2860_mapped_stable_39-1.12'

@@ -1,250 +1,199 @@
 package dev.rlcraft.ice.optimizer.compat.save;
 
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
+import java.util.AbstractList;
 import java.util.ArrayList;
-import java.util.ConcurrentModificationException;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
-import net.minecraft.util.math.BlockPos;
+import java.util.TreeSet;
+import java.util.NavigableSet;
+import java.util.SortedSet;
+import java.util.AbstractSet;
+import java.util.Comparator;
 import net.minecraft.world.NextTickListEntry;
 import net.minecraft.world.chunk.Chunk;
 import org.agrona.collections.Long2ObjectHashMap;
 
-/**
- * A mutation-versioned, read-only scheduled-tick index scoped to one synchronous
- * ChunkProviderServer save or unload pass. It never removes entries or changes save order.
- */
+/** World-owned ordered buckets, maintained by successful collection mutations. */
 public final class SaveTickIndexBridge {
-    private static final String MODULE = "vanilla-save-tick-index";
-    private static final int MAX_ASSIGNMENTS = 1 << 20;
-    private static final ThreadLocal<ScopeStack> SCOPES = new ThreadLocal<ScopeStack>() {
-        @Override protected ScopeStack initialValue() { return new ScopeStack(); }
-    };
-    private static volatile boolean activated;
-    private static volatile boolean recoveryPending;
-    private static volatile boolean missingAccessorReported;
+    private static final int MODULE = OptimizationModule.VANILLA_SAVE_TICK_INDEX.ordinal();
+    private SaveTickIndexBridge() { }
 
-    private SaveTickIndexBridge() {
-    }
-
-    /** Called at the exact entry of ChunkProviderServer.saveChunks(boolean) or tick(). */
-    public static long begin(Object provider, Object world, boolean all) {
-        try {
-            ScopeStack stack = SCOPES.get();
-            boolean masksOuterScope = stack.hasScope();
-            boolean enabled = OptimizerBridge.isEnabled(MODULE);
-            boolean active = enabled && world instanceof PendingTickAccessor;
-            if (enabled && !active && !missingAccessorReported) {
-                missingAccessorReported = true;
-                OptimizerBridge.incompatible(MODULE,
-                    "WorldServer 计划刻访问器未安装；同步保存保持原始逐区块扫描");
-            }
-            if (!active && !masksOuterScope) return 0L;
-            return stack.push(provider, world, active);
-        } catch (Throwable error) {
-            recoveryPending = true;
-            OptimizerBridge.failure(MODULE, error);
-            return 0L;
-        }
-    }
-
-    /** Called from a catch-all finally path around the original save method. */
-    public static void end(long token) {
-        if (token == 0L) return;
-        try {
-            if (!SCOPES.get().pop(token)) {
-                OptimizerBridge.incompatible(MODULE,
-                    "同步保存作用域发生非预期重入；计划刻索引已停用");
-            }
-        } catch (Throwable error) {
-            recoveryPending = true;
-            OptimizerBridge.failure(MODULE, error);
-        }
-    }
-
-    /** Replacement for WorldServer.getPendingBlockUpdates(Chunk, false). */
     public static List<NextTickListEntry> pendingBlockUpdates(PendingTickAccessor world,
-                                                               Chunk chunk, boolean remove) {
-        if (world == null || chunk == null || remove || !OptimizerBridge.isEnabled(MODULE)) {
-            return world == null ? null : world.ice$originalPendingBlockUpdates(chunk, remove);
+                                                             Chunk chunk, boolean remove) {
+        if (remove || !OptimizerBridge.isEnabled(MODULE)) {
+            return world.ice$originalPendingBlockUpdates(chunk, remove);
         }
-        Scope scope = SCOPES.get().current(world);
-        if (scope == null || !scope.active) {
-            return world.ice$originalPendingBlockUpdates(chunk, false);
-        }
-        if (scope.deferFirstQuery()) {
-            return world.ice$originalPendingBlockUpdates(chunk, false);
-        }
-
-        List<NextTickListEntry> result;
-        try {
-            result = scope.pendingFor(world, chunk.x, chunk.z);
-        } catch (Throwable error) {
-            scope.disable();
-            recoveryPending = true;
-            OptimizerBridge.failure(MODULE, error);
-            return world.ice$originalPendingBlockUpdates(chunk, false);
-        }
-        activate();
+        return pendingForChunk(world, chunk.x, chunk.z);
+    }
+    static List<NextTickListEntry> pendingForChunk(PendingTickAccessor world, int x, int z) {
+        Collection<NextTickListEntry> tree = ((TickTree) world.ice$pendingTickTree()).buckets.get(key(x, z));
+        Collection<NextTickListEntry> current = ((TickList) world.ice$pendingTicksThisTick()).buckets.get(key(x, z));
+        if (tree == null && current == null) return null;
+        ArrayList<NextTickListEntry> result = new ArrayList<NextTickListEntry>(
+            (tree == null ? 0 : tree.size()) + (current == null ? 0 : current.size()));
+        if (tree != null) result.addAll(tree);
+        if (current != null) result.addAll(current);
         return result;
     }
-
-    static List<NextTickListEntry> pendingForChunk(PendingTickAccessor world, int chunkX, int chunkZ) {
-        Scope scope = SCOPES.get().current(world);
-        if (scope == null || !scope.active) return null;
-        if (scope.deferFirstQuery()) return null;
-        return scope.pendingFor(world, chunkX, chunkZ);
+    private static long key(int x, int z) { return (long) x & 0xffffffffL | (long) z << 32; }
+    private static int overlap(NextTickListEntry entry) {
+        return ((entry.position.getX() & 15) >= 14 ? 1 : 0)
+            | ((entry.position.getZ() & 15) >= 14 ? 2 : 0);
+    }
+    private static long keyFor(NextTickListEntry entry, int slot) {
+        return key((entry.position.getX() >> 4) + (slot & 1),
+            (entry.position.getZ() >> 4) + (slot >> 1));
     }
 
-    private static void activate() {
-        if (recoveryPending) {
-            recoveryPending = false;
-            OptimizerBridge.success(MODULE);
-        }
-        if (activated) return;
-        activated = true;
-        OptimizerBridge.activate(MODULE,
-            "计划刻按原 TreeSet/List 顺序为同步增量、全量与卸载保存建立临时只读索引");
-    }
-
-    private static long chunkKey(int x, int z) {
-        return (long) x & 0xffffffffL | ((long) z & 0xffffffffL) << 32;
-    }
-
-    private static final class ScopeStack {
-        private Scope[] scopes = new Scope[2];
-        private int depth;
-        private long nextToken = 1L;
-
-        private boolean hasScope() {
-            return depth > 0;
-        }
-
-        private long push(Object provider, Object world, boolean active) {
-            if (depth == scopes.length) {
-                Scope[] grown = new Scope[scopes.length << 1];
-                System.arraycopy(scopes, 0, grown, 0, scopes.length);
-                scopes = grown;
-            }
-            Scope scope = scopes[depth];
-            if (scope == null) scopes[depth] = scope = new Scope();
-            long token = nextToken++;
-            if (token == 0L) token = nextToken++;
-            scope.reset(token, provider, world, active);
-            depth++;
-            return token;
-        }
-
-        private boolean pop(long token) {
-            if (depth == 0 || scopes[depth - 1].token != token) {
-                while (depth > 0) scopes[--depth].clear();
-                return false;
-            }
-            scopes[--depth].clear();
+    /** All vanilla tree writes use add, remove, iterator.remove and clear. */
+    public static final class TickTree extends TreeSet<NextTickListEntry> {
+        private final Long2ObjectHashMap<TreeSet<NextTickListEntry>> buckets =
+            new Long2ObjectHashMap<TreeSet<NextTickListEntry>>();
+        @Override public boolean add(NextTickListEntry entry) {
+            if (!super.add(entry)) return false;
+            added(entry);
             return true;
         }
-
-        private Scope current(Object world) {
-            if (depth == 0) return null;
-            Scope scope = scopes[depth - 1];
-            return scope.world == world ? scope : null;
+        private void added(NextTickListEntry entry) {
+            for (int slot = 0, mask = overlap(entry); slot <= mask; slot++) {
+                if ((slot & ~mask) != 0) continue;
+                long key = keyFor(entry, slot);
+                TreeSet<NextTickListEntry> bucket = buckets.get(key);
+                if (bucket == null) { bucket = new TreeSet<NextTickListEntry>(); buckets.put(key, bucket); }
+                bucket.add(entry);
+            }
+        }
+        @Override public boolean addAll(Collection<? extends NextTickListEntry> entries) {
+            boolean changed = false;
+            for (NextTickListEntry entry : entries) changed |= add(entry);
+            return changed;
+        }
+        @Override public boolean remove(Object value) {
+            if (!super.remove(value)) return false;
+            removed((NextTickListEntry) value); return true;
+        }
+        private void removed(NextTickListEntry entry) {
+            for (int slot = 0, mask = overlap(entry); slot <= mask; slot++) {
+                if ((slot & ~mask) != 0) continue;
+                long key = keyFor(entry, slot);
+                TreeSet<NextTickListEntry> bucket = buckets.get(key);
+                bucket.remove(entry);
+                if (bucket.isEmpty()) buckets.remove(key);
+            }
+        }
+        @Override public Iterator<NextTickListEntry> iterator() { return tracked(super.iterator()); }
+        @Override public Iterator<NextTickListEntry> descendingIterator() { return tracked(super.descendingIterator()); }
+        private Iterator<NextTickListEntry> tracked(final Iterator<NextTickListEntry> source) {
+            return new Iterator<NextTickListEntry>() {
+                private NextTickListEntry current;
+                public boolean hasNext() { return source.hasNext(); }
+                public NextTickListEntry next() { return current = source.next(); }
+                public void remove() { source.remove(); removed(current); }
+            };
+        }
+        @Override public NextTickListEntry pollFirst() {
+            NextTickListEntry entry = super.pollFirst(); if (entry != null) removed(entry); return entry;
+        }
+        @Override public NextTickListEntry pollLast() {
+            NextTickListEntry entry = super.pollLast(); if (entry != null) removed(entry); return entry;
+        }
+        @Override public void clear() { super.clear(); buckets.clear(); }
+        @Override public Object clone() {
+            TickTree copy = new TickTree();
+            copy.addAll(this);
+            return copy;
+        }
+        @Override public NavigableSet<NextTickListEntry> descendingSet() { return view(super.descendingSet()); }
+        @Override public NavigableSet<NextTickListEntry> subSet(NextTickListEntry a, boolean ai, NextTickListEntry b, boolean bi) { return view(super.subSet(a, ai, b, bi)); }
+        @Override public NavigableSet<NextTickListEntry> headSet(NextTickListEntry a, boolean inclusive) { return view(super.headSet(a, inclusive)); }
+        @Override public NavigableSet<NextTickListEntry> tailSet(NextTickListEntry a, boolean inclusive) { return view(super.tailSet(a, inclusive)); }
+        @Override public SortedSet<NextTickListEntry> subSet(NextTickListEntry a, NextTickListEntry b) { return subSet(a, true, b, false); }
+        @Override public SortedSet<NextTickListEntry> headSet(NextTickListEntry a) { return headSet(a, false); }
+        @Override public SortedSet<NextTickListEntry> tailSet(NextTickListEntry a) { return tailSet(a, true); }
+        private NavigableSet<NextTickListEntry> view(NavigableSet<NextTickListEntry> source) { return new View(source); }
+        private final class View extends AbstractSet<NextTickListEntry> implements NavigableSet<NextTickListEntry> {
+            private final NavigableSet<NextTickListEntry> source;
+            View(NavigableSet<NextTickListEntry> source) { this.source = source; }
+            @Override public int size() { return source.size(); }
+            @Override public boolean contains(Object entry) { return source.contains(entry); }
+            @Override public boolean add(NextTickListEntry entry) {
+                if (!source.add(entry)) return false;
+                added(entry); return true;
+            }
+            @Override public boolean remove(Object entry) {
+                if (!source.remove(entry)) return false;
+                removed((NextTickListEntry) entry); return true;
+            }
+            @Override public Iterator<NextTickListEntry> iterator() { return tracked(source.iterator()); }
+            @Override public Iterator<NextTickListEntry> descendingIterator() { return tracked(source.descendingIterator()); }
+            @Override public Comparator<? super NextTickListEntry> comparator() { return source.comparator(); }
+            @Override public NextTickListEntry first() { return source.first(); }
+            @Override public NextTickListEntry last() { return source.last(); }
+            @Override public NextTickListEntry lower(NextTickListEntry e) { return source.lower(e); }
+            @Override public NextTickListEntry floor(NextTickListEntry e) { return source.floor(e); }
+            @Override public NextTickListEntry ceiling(NextTickListEntry e) { return source.ceiling(e); }
+            @Override public NextTickListEntry higher(NextTickListEntry e) { return source.higher(e); }
+            @Override public NextTickListEntry pollFirst() { NextTickListEntry e=source.pollFirst(); if(e!=null) removed(e); return e; }
+            @Override public NextTickListEntry pollLast() { NextTickListEntry e=source.pollLast(); if(e!=null) removed(e); return e; }
+            @Override public NavigableSet<NextTickListEntry> descendingSet() { return view(source.descendingSet()); }
+            @Override public NavigableSet<NextTickListEntry> subSet(NextTickListEntry a, boolean ai, NextTickListEntry b, boolean bi) { return view(source.subSet(a,ai,b,bi)); }
+            @Override public NavigableSet<NextTickListEntry> headSet(NextTickListEntry a, boolean inclusive) { return view(source.headSet(a,inclusive)); }
+            @Override public NavigableSet<NextTickListEntry> tailSet(NextTickListEntry a, boolean inclusive) { return view(source.tailSet(a,inclusive)); }
+            @Override public SortedSet<NextTickListEntry> subSet(NextTickListEntry a, NextTickListEntry b) { return subSet(a,true,b,false); }
+            @Override public SortedSet<NextTickListEntry> headSet(NextTickListEntry a) { return headSet(a,false); }
+            @Override public SortedSet<NextTickListEntry> tailSet(NextTickListEntry a) { return tailSet(a,true); }
         }
     }
-
-    private static final class Scope {
-        private long token;
-        private Object provider;
-        private Object world;
-        private boolean active;
-        private int queryCount;
-        private long indexedVersion = Long.MIN_VALUE;
-        private Long2ObjectHashMap<ArrayList<NextTickListEntry>> index;
-        private int assignments;
-
-        private void reset(long value, Object saveProvider, Object saveWorld, boolean enabled) {
-            token = value;
-            provider = saveProvider;
-            world = saveWorld;
-            active = enabled;
-            queryCount = 0;
-            indexedVersion = Long.MIN_VALUE;
-            assignments = 0;
-            if (index != null) index.clear();
-        }
-
-        private boolean deferFirstQuery() {
-            return queryCount++ == 0;
-        }
-
-        private List<NextTickListEntry> pendingFor(PendingTickAccessor accessor, int chunkX, int chunkZ) {
-            long version = accessor.ice$pendingTickVersion();
-            if (index == null || indexedVersion != version) rebuild(accessor, version);
-            ArrayList<NextTickListEntry> values = index.get(chunkKey(chunkX, chunkZ));
-            List<NextTickListEntry> result = values == null
-                ? null : new ArrayList<NextTickListEntry>(values);
-            if (accessor.ice$pendingTickVersion() != indexedVersion) {
-                throw new ConcurrentModificationException("计划刻在索引查询期间发生变化");
-            }
-            return result;
-        }
-
-        private void rebuild(PendingTickAccessor accessor, long expectedVersion) {
-            Long2ObjectHashMap<ArrayList<NextTickListEntry>> rebuilt =
-                new Long2ObjectHashMap<ArrayList<NextTickListEntry>>(64, 0.65F, true);
-            assignments = 0;
-            append(rebuilt, accessor.ice$pendingTickTree());
-            append(rebuilt, accessor.ice$pendingTicksThisTick());
-            long observedVersion = accessor.ice$pendingTickVersion();
-            if (observedVersion != expectedVersion) {
-                throw new ConcurrentModificationException("计划刻在索引构建期间发生变化");
-            }
-            index = rebuilt;
-            indexedVersion = observedVersion;
-        }
-
-        private void append(Long2ObjectHashMap<ArrayList<NextTickListEntry>> target,
-                            Iterable<NextTickListEntry> entries) {
-            if (entries == null) throw new IllegalStateException("计划刻集合为空引用");
-            for (NextTickListEntry entry : entries) {
-                if (entry == null || entry.position == null) {
-                    throw new IllegalStateException("计划刻集合包含空条目");
+    /** An ordered current-tick list; iterator removal delegates to remove(index). */
+    public static final class TickList extends AbstractList<NextTickListEntry> {
+        private final ArrayList<NextTickListEntry> values = new ArrayList<NextTickListEntry>();
+        private final Long2ObjectHashMap<ArrayList<NextTickListEntry>> buckets =
+            new Long2ObjectHashMap<ArrayList<NextTickListEntry>>();
+        @Override public int size() { return values.size(); }
+        @Override public NextTickListEntry get(int index) { return values.get(index); }
+        @Override public void add(int index, NextTickListEntry entry) {
+            int previousSize = values.size(); values.add(index, entry); modCount++;
+            for (int slot = 0, mask = overlap(entry); slot <= mask; slot++) {
+                if ((slot & ~mask) != 0) continue;
+                long key = keyFor(entry, slot);
+                ArrayList<NextTickListEntry> bucket = buckets.get(key);
+                if (bucket == null) { bucket = new ArrayList<NextTickListEntry>(); buckets.put(key, bucket); }
+                if (index == previousSize) bucket.add(entry);
+                else {
+                    int before = 0;
+                    for (int i = 0; i < index; i++) if (belongs(values.get(i), key)) before++;
+                    bucket.add(before, entry);
                 }
-                BlockPos position = entry.position;
-                int baseX = position.getX() >> 4;
-                int baseZ = position.getZ() >> 4;
-                add(target, baseX, baseZ, entry);
-                boolean overlapsEast = (position.getX() & 15) >= 14;
-                boolean overlapsSouth = (position.getZ() & 15) >= 14;
-                if (overlapsEast) add(target, baseX + 1, baseZ, entry);
-                if (overlapsSouth) add(target, baseX, baseZ + 1, entry);
-                if (overlapsEast && overlapsSouth) add(target, baseX + 1, baseZ + 1, entry);
             }
         }
-
-        private void add(Long2ObjectHashMap<ArrayList<NextTickListEntry>> target,
-                         int chunkX, int chunkZ, NextTickListEntry entry) {
-            if (++assignments > MAX_ASSIGNMENTS) {
-                throw new IllegalStateException("计划刻索引超过安全上限 " + MAX_ASSIGNMENTS);
+        @Override public NextTickListEntry remove(int index) {
+            NextTickListEntry entry = values.get(index);
+            for (int slot = 0, mask = overlap(entry); slot <= mask; slot++) {
+                if ((slot & ~mask) != 0) continue;
+                long key = keyFor(entry, slot);
+                ArrayList<NextTickListEntry> bucket = buckets.get(key);
+                int before = 0;
+                for (int i = 0; i < index; i++) if (belongs(values.get(i), key)) before++;
+                bucket.remove(before);
+                if (bucket.isEmpty()) buckets.remove(key);
             }
-            long key = chunkKey(chunkX, chunkZ);
-            ArrayList<NextTickListEntry> values = target.get(key);
-            if (values == null) {
-                values = new ArrayList<NextTickListEntry>();
-                target.put(key, values);
-            }
-            values.add(entry);
+            values.remove(index); modCount++; return entry;
         }
-
-        private void disable() {
-            active = false;
-            indexedVersion = Long.MIN_VALUE;
-            if (index != null) index.clear();
+        @Override public NextTickListEntry set(int index, NextTickListEntry entry) {
+            int originalModCount = modCount;
+            NextTickListEntry previous = remove(index); add(index, entry);
+            modCount = originalModCount;
+            return previous;
         }
-
-        private void clear() {
-            token = 0L;
-            provider = null;
-            world = null;
-            disable();
+        @Override public void clear() { values.clear(); buckets.clear(); modCount++; }
+        private static boolean belongs(NextTickListEntry entry, long key) {
+            int x = (int) key, z = (int) (key >> 32);
+            int px = entry.position.getX(), pz = entry.position.getZ();
+            return px >= (x << 4) - 2 && px < (x << 4) + 16
+                && pz >= (z << 4) - 2 && pz < (z << 4) + 16;
         }
     }
 }

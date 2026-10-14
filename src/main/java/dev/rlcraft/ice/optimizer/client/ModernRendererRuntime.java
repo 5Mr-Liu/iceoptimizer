@@ -54,6 +54,9 @@ import dev.rlcraft.ice.optimizer.render.texture.LwjglAnimatedTextureUploadStream
 import dev.rlcraft.ice.optimizer.render.texture.TextureOutputValidator;
 import dev.rlcraft.ice.optimizer.render.visibility.ConservativeOcclusionHistory;
 import dev.rlcraft.ice.optimizer.render.visibility.LwjglDepthHistory;
+import dev.rlcraft.ice.optimizer.render.visibility.CurrentFrameTerrainOcclusion;
+import dev.rlcraft.ice.optimizer.render.visibility.RenderMatrixBridge;
+import dev.rlcraft.ice.optimizer.OptimizerConfig;
 import dev.rlcraft.ice.optimizer.runtime.ClientEpochs;
 import dev.rlcraft.ice.optimizer.runtime.EpochToken;
 import java.util.EnumMap;
@@ -74,6 +77,7 @@ import net.minecraft.util.BlockRenderLayer;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL14;
+import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL21;
 import org.lwjgl.opengl.GL30;
@@ -82,6 +86,7 @@ import org.lwjgl.opengl.GLContext;
 
 /** Render-thread owner of the complete hybrid renderer component graph. */
 public final class ModernRendererRuntime {
+    private final CurrentFrameTerrainOcclusion softwareOcclusion = new CurrentFrameTerrainOcclusion();
     private static final int INVALIDATE_WORLD = 1;
     private static final int INVALIDATE_RESOURCES = 1 << 1;
     private static final int INVALIDATE_CONTEXT = 1 << 2;
@@ -129,6 +134,8 @@ public final class ModernRendererRuntime {
 
     boolean initialized;
     volatile boolean shutdownRequested;
+    private volatile boolean runtimePaused;
+    private boolean resumeTrackedState;
     boolean genericModelVboValidated;
     long modelDrawOutsideTraversal;
     long modelStateReauthenticationAttempts;
@@ -214,12 +221,21 @@ public final class ModernRendererRuntime {
             currentStamp = null;
             observedSpriteVisibility = null;
             lastRuntimeFrame = frameId;
+            if (runtimePaused) {
+                // Resource/world flags remain pending until the registry mask
+                // is enabled again. Context loss must abandon native names now.
+                if ((pendingInvalidations.get() & INVALIDATE_CONTEXT) != 0) {
+                    applyPendingInvalidations();
+                }
+                return;
+            }
             // Context loss must dispose/abandon the old graph before any new
             // GL capability probe.  Resource/world changes are likewise
             // applied at the frame ownership boundary.
             applyPendingInvalidations();
             ensureInitialized();
             if (!initialized) return;
+            if (resumeTrackedState) initializeTrackedGlState();
             if (components.profiler.hasPendingGpuQueries()) components.profiler.pollGpu(8);
             shaderRuntime.drainPendingShaderCandidates(2);
             shaderRuntime.drainPendingShaderValidations(1);
@@ -242,6 +258,7 @@ public final class ModernRendererRuntime {
             currentStamp = components.coordinator.beginPrimaryView();
             frameInfrastructureActive = true;
             if (ModelMeshCaptureBridge.hasPendingModelMeshes()
+                && ModelMeshCaptureBridge.hasReadyModelMeshes(modelMeshAdmissionProgress())
                 && prepareModelMeshAdmissions()) {
                 ModelMeshCaptureBridge.drainPendingModelMeshes(
                     MODEL_ADMISSIONS_PER_FRAME,
@@ -295,6 +312,11 @@ public final class ModernRendererRuntime {
     public void endFrame() {
         if (!initialized || components.threadGuard == null || !components.threadGuard.isRenderThread()) return;
         if (!frameInfrastructureActive) {
+            if (runtimePaused) {
+                // Vanilla uploads and chunk deletion still retire arena ranges.
+                if (components.terrainArena != null) components.terrainArena.endFrame(true);
+                if (components.resources != null) components.resources.collect(epochs.currentGlContextGeneration(), 16);
+            }
             currentStamp = null;
             return;
         }
@@ -483,6 +505,113 @@ public final class ModernRendererRuntime {
         advanceRendererGeneration();
         lostContextGeneration = oldContextGeneration;
         pendingInvalidations.getAndUpdate(value -> value | INVALIDATE_CONTEXT);
+    }
+
+    /**
+     * Session switch, called at a client-tick boundary after the registry mask
+     * changes. Published terrain and model storage remain resident across a
+     * pause; owned terrain uses individual draws until vanilla replaces it.
+     */
+    public boolean setRuntimePaused(boolean paused) {
+        if (shutdownRequested) return false;
+        if (runtimePaused == paused) return true;
+        if (components.threadGuard != null) components.threadGuard.check();
+        if (!paused) {
+            runtimePaused = false;
+            resumeTrackedState = initialized;
+            detail = "运行时优化已恢复；复用模型缓存";
+            return true;
+        }
+        try {
+            if ((pendingInvalidations.get() & INVALIDATE_CONTEXT) != 0) {
+                applyPendingInvalidations();
+            }
+            if (initialized) {
+                flushBatches();
+                if (components.modelMeshes != null) components.modelMeshes.endStateBatch();
+                shaderRuntime.finishActiveShaderInterval(false, true);
+                if (shaderRuntime.hasNativeBinding()) {
+                    detail = "Shader 程序尚未归还，运行时切换未完成";
+                    return false;
+                }
+                CorrelatedRenderProfiler.GpuScope frameScope = measurements.frameGpuScope;
+                measurements.frameGpuScope = null;
+                if (frameScope != null) frameScope.close();
+                if (components.coordinator.viewDepth() == 1) components.coordinator.endPrimaryView();
+                if (components.coordinator.isFrameActive()) components.coordinator.endFrame();
+                catchUpTexturesForPause();
+                if (components.spriteVisibility != null) components.spriteVisibility.invalidate();
+                openVisibilityFrame = 0L;
+                if (components.depthHistory != null) components.depthHistory.reset(true);
+                else if (components.hzbHistory != null) components.hzbHistory.invalidate();
+                if (components.terrainArena != null) {
+                    components.terrainArena.configureVisibility(null, null, null);
+                }
+            }
+            softwareOcclusion.clear();
+            measurements.clearHzbGpuSamples();
+            measurements.backendGpuSamples.clear();
+            discardPendingTelemetryCounters();
+            pendingTerrainCandidate = false;
+            observedSpriteVisibility = null;
+            currentStamp = null;
+            frameInfrastructureActive = false;
+            runtimePaused = true;
+            EarlyGlStateTracker.invalidate();
+            EarlyMatrixStateTracker.invalidate();
+            detail = "运行时优化已暂停；模型缓存保留";
+            return true;
+        } catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
+            detail = "运行时切换未完成：" + error.getClass().getSimpleName();
+            IceMod.LOGGER.warn("ICE 暂停渲染优化时未能完成状态归还", error);
+            return false;
+        }
+    }
+
+    public boolean isRuntimePaused() { return runtimePaused; }
+
+    /** Flush deferred atlas content before normal animation uploads take over. */
+    private void catchUpTexturesForPause() {
+        SpriteVisibilityTracker tracker = components.spriteVisibility;
+        if (tracker == null || tracker.getPendingBytes() == 0L || animatedAtlasTextureId <= 0) return;
+        int activeUnit = EarlyGlStateTracker.activeTextureUnit();
+        int active = activeUnit == Integer.MIN_VALUE
+            ? GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE) : GL13.GL_TEXTURE0 + activeUnit;
+        int unpack = EarlyGlStateTracker.pixelUnpackBufferBinding();
+        if (unpack == Integer.MIN_VALUE) unpack = GL11.glGetInteger(GL21.GL_PIXEL_UNPACK_BUFFER_BINDING);
+        int texture = EarlyGlStateTracker.boundTextureForUnit(0);
+        Throwable failure = null;
+        try {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            EarlyGlStateTracker.activeTexture(GL13.GL_TEXTURE0);
+            if (texture == Integer.MIN_VALUE) texture = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, animatedAtlasTextureId);
+            EarlyGlStateTracker.bindTexture(animatedAtlasTextureId);
+            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            EarlyGlStateTracker.bindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+            tracker.markUnknown(Math.max(1L, epochs.currentFrameId()),
+                epochs.currentResourceGeneration(), epochs.currentAtlasGeneration());
+            failure = tracker.consumeLastFailure();
+        } catch (Throwable error) { failure = appendRuntimeFailure(failure, error); }
+        finally {
+            try {
+                GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, unpack);
+                EarlyGlStateTracker.bindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, unpack);
+            } catch (Throwable error) { failure = appendRuntimeFailure(failure, error); }
+            if (texture >= 0) try {
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+                EarlyGlStateTracker.bindTexture(texture);
+            } catch (Throwable error) { failure = appendRuntimeFailure(failure, error); }
+            try {
+                GL13.glActiveTexture(active);
+                EarlyGlStateTracker.activeTexture(active);
+            } catch (Throwable error) { failure = appendRuntimeFailure(failure, error); }
+        }
+        if (failure != null) {
+            EarlyGlStateTracker.invalidate();
+            rethrowRuntimeFailure(failure);
+        }
     }
 
     public void setShaderPackState(boolean known, boolean active) {
@@ -805,7 +934,7 @@ public final class ModernRendererRuntime {
 
     /** State-only form for build/capture hooks which may run outside a pass. */
     public boolean mayUseBackendCandidate(OptimizationModule module) {
-        if (!initialized || module == null) return false;
+        if (runtimePaused || !initialized || module == null) return false;
         AdaptiveBackendController backend = components.backends.get(module);
         long frameId = lastRuntimeFrame > 0L ? lastRuntimeFrame
             : epochs.currentFrameId();
@@ -919,9 +1048,9 @@ public final class ModernRendererRuntime {
                 unpackBindingAttempted = true;
                 OpenGlHelper.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
             }
-            TextureUtil.uploadTextureMipmap(upload.copyPixels(),
+            dev.rlcraft.ice.optimizer.render.texture.ExactTextureUpload.upload(upload.copyPixels(),
                 upload.getWidth(), upload.getHeight(), upload.getOriginX(),
-                upload.getOriginY(), upload.isBlur(), upload.isClamp());
+                upload.getOriginY(), upload.isBlur(), upload.isClamp(), upload.isMipFilter());
         } catch (Throwable uploadFailure) {
             failure = uploadFailure;
         }
@@ -1070,8 +1199,7 @@ public final class ModernRendererRuntime {
             || !components.threadGuard.isRenderThread()) return LwjglHudRenderer.FlushResult.EMPTY;
         int commands = components.hudRenderer.getCommandCount();
         int vertices = components.hudRenderer.getVertexCount();
-        LwjglHudRenderer.FlushResult result = components.hudRenderer.flush(
-            EarlyGlStateTracker.snapshot());
+        LwjglHudRenderer.FlushResult result = components.hudRenderer.flushTracked();
         if (currentStamp != null && components.profiler != null && commands > 0) {
             if (result == LwjglHudRenderer.FlushResult.MODERN
                 || result == LwjglHudRenderer.FlushResult.FAILED_AFTER_DRAW) {
@@ -1113,108 +1241,52 @@ public final class ModernRendererRuntime {
         }
     }
 
-    /**
-     * Rebuilds the software mirror after an observing Forge HUD event.
-     * This is never used per draw and is requested only by the measured modern
-     * HUD arm, so its synchronization cost participates in the ABBA decision.
-     */
+    /** Queries only bindings used by the next actual HUD stream submission. */
     public boolean resynchronizeHudState() {
         if (!initialized || components.threadGuard == null || !components.threadGuard.isRenderThread()) {
             return false;
         }
-        EarlyGlStateTracker.beginProbe();
         try {
-            int program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
-            int readFramebuffer = GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);
-            int drawFramebuffer = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
-            int depthFunction = GL11.glGetInteger(GL11.GL_DEPTH_FUNC);
             GlStateQueryWorkspace workspace = components.glStateQueryWorkspace;
             if (workspace == null || workspace.isClosed()) {
-                throw new IllegalStateException(
-                    "HUD state query workspace unavailable");
+                throw new IllegalStateException("HUD state query workspace unavailable");
             }
-            FloatBuffer depthRange = workspace.depthRange();
-            GL11.glGetFloat(GL11.GL_DEPTH_RANGE, depthRange);
-            int pixelPackBuffer = GL11.glGetInteger(GL21.GL_PIXEL_PACK_BUFFER_BINDING);
-            int arrayBuffer = GL11.glGetInteger(
-                org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER_BINDING);
+            int program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+            int vertexArray = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+            int arrayBuffer = GL11.glGetInteger(org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER_BINDING);
             int activeTextureEnum = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
-            int clientActiveTextureEnum = GL11.glGetInteger(
-                GL13.GL_CLIENT_ACTIVE_TEXTURE);
-            int activeTexture = activeTextureEnum - GL13.GL_TEXTURE0;
-            int clientActiveTexture = clientActiveTextureEnum - GL13.GL_TEXTURE0;
-            if (activeTexture < 0 || activeTexture >= 32
-                || clientActiveTexture < 0 || clientActiveTexture >= 32) {
-                throw new IllegalStateException("invalid HUD texture unit");
-            }
-            int texture0 = 0;
-            int texture1 = 0;
-            boolean texture0Enabled = false;
-            boolean texture1Enabled = false;
-            Throwable textureQueryFailure = null;
-            try {
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            int clientActiveTextureEnum = GL11.glGetInteger(GL13.GL_CLIENT_ACTIVE_TEXTURE);
+            int texture0;
+            boolean texture0Enabled;
+            if (activeTextureEnum == GL13.GL_TEXTURE0) {
                 texture0 = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
                 texture0Enabled = GL11.glIsEnabled(GL11.GL_TEXTURE_2D);
-                GL13.glActiveTexture(GL13.GL_TEXTURE1);
-                texture1 = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-                texture1Enabled = GL11.glIsEnabled(GL11.GL_TEXTURE_2D);
-            } catch (Throwable queryFailure) {
-                textureQueryFailure = queryFailure;
+            } else {
+                try {
+                    GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                    texture0 = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+                    texture0Enabled = GL11.glIsEnabled(GL11.GL_TEXTURE_2D);
+                } finally {
+                    GL13.glActiveTexture(activeTextureEnum);
+                }
             }
-            try { GL13.glActiveTexture(activeTextureEnum); }
-            catch (Throwable restoreFailure) {
-                textureQueryFailure = appendRuntimeFailure(textureQueryFailure,
-                    restoreFailure);
-            }
-            if (textureQueryFailure != null) {
-                rethrowRuntimeFailure(textureQueryFailure);
-            }
-            boolean blend = GL11.glIsEnabled(GL11.GL_BLEND);
-            int blendSourceRgb = GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB);
-            int blendDestinationRgb = GL11.glGetInteger(GL14.GL_BLEND_DST_RGB);
-            int blendSourceAlpha = GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA);
-            int blendDestinationAlpha = GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA);
-            boolean depthTest = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
-            boolean depthMask = GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK);
-            boolean cull = GL11.glIsEnabled(GL11.GL_CULL_FACE);
-            ByteBuffer colorMaskValues = workspace.colorMask();
-            GL11.glGetBoolean(GL11.GL_COLOR_WRITEMASK, colorMaskValues);
-            int colorMask = (colorMaskValues.get(0) != 0 ? 1 : 0)
-                | (colorMaskValues.get(1) != 0 ? 2 : 0)
-                | (colorMaskValues.get(2) != 0 ? 4 : 0)
-                | (colorMaskValues.get(3) != 0 ? 8 : 0);
-            FloatBuffer currentColor = workspace.currentColor();
-            GL11.glGetFloat(GL11.GL_CURRENT_COLOR, currentColor);
             IntBuffer viewport = workspace.viewport();
             GL11.glGetInteger(GL11.GL_VIEWPORT, viewport);
-
             EarlyGlStateTracker.useProgram(program);
-            EarlyGlStateTracker.bindFramebuffer(GL30.GL_READ_FRAMEBUFFER,
-                readFramebuffer);
-            EarlyGlStateTracker.bindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER,
-                drawFramebuffer);
-            EarlyGlStateTracker.depthFunction(depthFunction);
-            EarlyGlStateTracker.seedDepthRange(depthRange.get(0),
-                depthRange.get(1));
-            EarlyGlStateTracker.bindBuffer(GL21.GL_PIXEL_PACK_BUFFER,
-                pixelPackBuffer);
-            EarlyGlStateTracker.bindBuffer(org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER,
-                arrayBuffer);
+            EarlyGlStateTracker.bindVertexArray(vertexArray);
+            EarlyGlStateTracker.bindBuffer(org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER, arrayBuffer);
             EarlyGlStateTracker.clientActiveTexture(clientActiveTextureEnum);
-            EarlyGlStateTracker.seedDrawState(activeTexture, texture0, texture1,
-                blend, blendSourceRgb, blendDestinationRgb, blendSourceAlpha,
-                blendDestinationAlpha, depthTest, depthMask, cull, colorMask,
-                currentColor.get(0), currentColor.get(1), currentColor.get(2),
-                currentColor.get(3));
-            EarlyGlStateTracker.seedHudState(texture0Enabled, texture1Enabled,
-                viewport.get(0), viewport.get(1), viewport.get(2), viewport.get(3));
+            EarlyGlStateTracker.activeTexture(GL13.GL_TEXTURE0);
+            EarlyGlStateTracker.bindTexture(texture0);
+            EarlyGlStateTracker.texture2dEnabled(texture0Enabled);
+            EarlyGlStateTracker.activeTexture(activeTextureEnum);
+            EarlyGlStateTracker.viewport(viewport.get(0), viewport.get(1),
+                viewport.get(2), viewport.get(3));
             if (currentStamp != null && components.profiler != null) {
                 components.profiler.addCounter(currentStamp, RenderPass.HUD_GUI,
                     RenderBackendId.ICE_NATIVE, RenderCounter.STATE_RESYNC, 1L);
             }
-            EarlyGlStateTracker.Snapshot tracked = EarlyGlStateTracker.snapshot();
-            return tracked != null && tracked.hasHudState();
+            return true;
         } catch (Throwable error) {
             EarlyGlStateTracker.invalidate();
             hudBackendFailure(error);
@@ -1283,8 +1355,61 @@ public final class ModernRendererRuntime {
                 OptimizationModule.MODERN_TESR_BACKEND);
     }
 
+    public CurrentFrameTerrainOcclusion terrainSoftwareOcclusion() {
+        return !runtimePaused && OptimizerConfig.settings.enabled && OptimizerConfig.settings.modernRenderer
+            && OptimizerConfig.settings.terrainSoftwareOcclusion ? softwareOcclusion : null;
+    }
+
+    /** Publish immutable atlas evidence once per resource change, including while F6 is paused. */
+    public void publishTerrainOcclusionTextures(net.minecraft.client.renderer.texture.TextureMap atlas) {
+        softwareOcclusion.publishTextures(atlas);
+    }
+
+    /** The captured Minecraft matrices belong to this primary view only. */
+    public RenderMatrixBridge.Snapshot softwareTerrainMatrices() {
+        if (softwareOcclusion.getMeshCount() < 2
+            || !initialized || currentStamp == null || components.coordinator == null
+            || components.coordinator.viewDepth() != 1 || insideLegacyIsland()
+            || !shaderRuntime.shaderPackStateKnown || shaderRuntime.shaderPackActive
+            || OptifinePassLifecycleBridge.isShadowPass()) return null;
+        // Inspect only the layer's depth/coverage semantics. A mod callback may
+        // invalidate the broad mirror without changing these ordinary states.
+        if (GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM) != 0
+            || !GL11.glIsEnabled(GL11.GL_DEPTH_TEST)
+            || !GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK)
+            || GL11.glGetInteger(GL11.GL_DEPTH_FUNC) != GL11.GL_LEQUAL
+            || !GL11.glIsEnabled(GL11.GL_CULL_FACE)
+            || GL11.glGetInteger(GL11.GL_FRONT_FACE) != GL11.GL_CCW
+            || GL11.glGetInteger(GL11.GL_CULL_FACE_MODE) != GL11.GL_BACK
+            || GL11.glIsEnabled(GL11.GL_POLYGON_OFFSET_FILL)) return null;
+        FloatBuffer range = components.glStateQueryWorkspace.depthRange();
+        GL11.glGetFloat(GL11.GL_DEPTH_RANGE, range);
+        if (range.get(0) != 0.0F || range.get(1) != 1.0F) return null;
+        int active = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
+        int texture;
+        try {
+            if (active != GL13.GL_TEXTURE0) GL13.glActiveTexture(GL13.GL_TEXTURE0);
+            texture = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+        } finally {
+            if (active != GL13.GL_TEXTURE0) GL13.glActiveTexture(active);
+        }
+        if (texture != Minecraft.getMinecraft().getTextureMapBlocks().getGlTextureId()) return null;
+        return RenderMatrixBridge.snapshot();
+    }
+
+    private void configureTerrainBatching() {
+        components.terrainArena.configureNativeBatching(
+            OptimizerConfig.settings.terrainShaderBatching
+                && shaderRuntime.shaderPackStateKnown && !shaderRuntime.shaderPackActive,
+            OptimizerConfig.settings.terrainDirectionalCulling);
+    }
+
     /** Compiler work can wake a model backend without enabling per-draw inspection. */
     public boolean mayCaptureModelMeshes() {
+        if (runtimePaused) {
+            return OptimizerRegistry.isConfiguredOperational(OptimizationModule.MODERN_ENTITY_BACKEND)
+                || OptimizerRegistry.isConfiguredOperational(OptimizationModule.MODERN_TESR_BACKEND);
+        }
         if (!initialized) return !shutdownRequested;
         AdaptiveBackendController entity = components.backends.get(
             OptimizationModule.MODERN_ENTITY_BACKEND);
@@ -1301,7 +1426,7 @@ public final class ModernRendererRuntime {
 
     /** True only after startup has made a final decision to reject both users. */
     public boolean shouldDropDeferredModelMeshes() {
-        return initialized && !isModelMeshBackendOperational();
+        return !runtimePaused && initialized && !isModelMeshBackendOperational();
     }
 
     private boolean prepareModelMeshAdmissions() {
@@ -1390,6 +1515,19 @@ public final class ModernRendererRuntime {
             previous > Long.MAX_VALUE - count ? Long.MAX_VALUE : previous + count;
         components.profiler.addCounter(currentStamp, pass, RenderBackendId.ICE_NATIVE,
             RenderCounter.DRAW, count);
+    }
+
+    /** Called by the patched ModelRenderer call-list instruction. */
+    public void validateModelMeshAtCallSite(int displayList) {
+        OptimizationModule module = RenderLibRenderBridge.currentModule();
+        if ((module == OptimizationModule.MODERN_ENTITY_BACKEND
+            || module == OptimizationModule.MODERN_TESR_BACKEND)
+            && backendLifecycleState(module) == BackendLifecycleState.OUTPUT_VALIDATE) {
+            // This branch certifies the captured bytes and returns without a
+            // submission. Never allow a stale traversal sample to turn the
+            // validation hook into a second draw after the controller advances.
+            tryDrawModelMesh(displayList);
+        }
     }
 
     /** Called by the patched ModelRenderer call-list instruction. */
@@ -1512,14 +1650,13 @@ public final class ModernRendererRuntime {
     private boolean ensureModelTrackedState(AdaptiveBackendController backend,
                                             OptimizationModule module) {
         boolean glAuthenticated = EarlyGlStateTracker.hasModelDrawState();
-        boolean matrixAuthenticated = EarlyMatrixStateTracker.isKnown();
-        if (glAuthenticated && matrixAuthenticated) return true;
+        // Immediate VBOs and ordinary array scopes use the driver's matrices.
+        // Only the optional pose palette requires a CPU matrix mirror.
+        if (glAuthenticated) return true;
         long glInvalidation = EarlyGlStateTracker.invalidations();
-        long matrixInvalidation = EarlyMatrixStateTracker.invalidations();
         long frame = currentStamp == null ? -1L : currentStamp.getFrameId();
         if (failedModelReauthenticationFrame == frame
-            && failedModelGlInvalidation == glInvalidation
-            && failedModelMatrixInvalidation == matrixInvalidation) {
+            && failedModelGlInvalidation == glInvalidation) {
             modelStateReauthenticationSuppressions = saturatedIncrement(
                 modelStateReauthenticationSuppressions);
             return false;
@@ -1538,11 +1675,6 @@ public final class ModernRendererRuntime {
                 reauthenticateModelGlState(workspace);
                 glAuthenticated = true;
             }
-            if (!matrixAuthenticated) {
-                stage = "matrix-state";
-                reauthenticateModelMatrixState(workspace);
-                matrixAuthenticated = true;
-            }
             stage = "publication";
             if (!modelPublicationComplete()) {
                 throw new IllegalStateException(
@@ -1557,7 +1689,6 @@ public final class ModernRendererRuntime {
             return true;
         } catch (Throwable error) {
             if (!glAuthenticated) EarlyGlStateTracker.invalidate();
-            if (!matrixAuthenticated) EarlyMatrixStateTracker.invalidate();
             failedModelGlInvalidation = EarlyGlStateTracker.invalidations();
             failedModelMatrixInvalidation =
                 EarlyMatrixStateTracker.invalidations();
@@ -1709,33 +1840,14 @@ public final class ModernRendererRuntime {
      * three consecutive false failures and a permanent TESR quarantine.
      */
     static boolean modelPublicationComplete() {
-        return EarlyGlStateTracker.hasModelDrawState()
-            && EarlyMatrixStateTracker.isKnown();
-    }
-
-    private void reauthenticateModelMatrixState(
-        GlStateQueryWorkspace workspace) {
-        int matrixMode = GL11.glGetInteger(GL11.GL_MATRIX_MODE);
-        FloatBuffer modelView = workspace.modelView();
-        FloatBuffer projection = workspace.projection();
-        FloatBuffer textureMatrix = workspace.textureMatrix();
-        GL11.glGetFloat(GL11.GL_MODELVIEW_MATRIX, modelView);
-        GL11.glGetFloat(GL11.GL_PROJECTION_MATRIX, projection);
-        GL11.glGetFloat(GL11.GL_TEXTURE_MATRIX, textureMatrix);
-        EarlyMatrixStateTracker.seed(matrixMode, modelView, projection,
-            textureMatrix);
-        if (!EarlyMatrixStateTracker.isKnown()) {
-            throw new IllegalStateException(
-                "model matrix state publication incomplete");
-        }
+        return EarlyGlStateTracker.hasModelDrawState();
     }
 
     /** Gate shared by reviewed non-ModelRenderer mesh emitters. */
     public boolean canEmitExternalModelMesh() {
-        if (!initialized || currentStamp == null || !genericModelVboValidated
+        if (!initialized || currentStamp == null
             || insideLegacyIsland()
-            || !shaderRuntime.shaderPackStateKnown || shaderRuntime.shaderPackActive
-            || !components.capabilities.passed(ModernCapability.MODEL_MESH_VBO)) return false;
+            || !shaderRuntime.shaderPackStateKnown || shaderRuntime.shaderPackActive) return false;
         OptimizationModule module = RenderLibRenderBridge.currentModule();
         RenderPass pass = RenderLibRenderBridge.currentPass();
         if ((module != OptimizationModule.MODERN_ENTITY_BACKEND
@@ -1743,13 +1855,14 @@ public final class ModernRendererRuntime {
             || !RenderLibRenderBridge.candidateAllowed()) return false;
         AdaptiveBackendController backend = components.backends.get(module);
         if (backend == null) return false;
+        if (!backend.isDirectActivation() && (!genericModelVboValidated
+            || !components.capabilities.passed(ModernCapability.MODEL_MESH_VBO))) return false;
         BackendLifecycleState state = backend.lifecycleState();
         if (state != BackendLifecycleState.PAIRED_MEASURE
             && state != BackendLifecycleState.MODERN
             && state != BackendLifecycleState.REGRESSION_MONITOR) return false;
-        EarlyGlStateTracker.Snapshot gl = EarlyGlStateTracker.snapshot();
-        return gl != null && gl.hasArrayBufferBinding() && gl.hasDrawState()
-            && gl.getProgram() == 0 && EarlyMatrixStateTracker.isKnown();
+        return EarlyGlStateTracker.isKnown() && EarlyGlStateTracker.hasModelDrawState()
+            && EarlyGlStateTracker.modelProgramBinding() == 0;
     }
 
     public void recordExternalModelDraw() {
@@ -1786,9 +1899,7 @@ public final class ModernRendererRuntime {
     }
 
     public void flushModelPackets(OptimizationModule module) {
-        // Immediate model VBO draws are never deferred or reordered.  Keep
-        // the traversal barrier API so a future real batcher has an explicit
-        // integration point, but do no queue work in the current backend.
+        if (components.modelMeshes != null) components.modelMeshes.flushPoseBatch();
     }
 
     public RenderBackendSample beginRenderBackendSample(OptimizationModule module,
@@ -1832,6 +1943,7 @@ public final class ModernRendererRuntime {
         if (backend == null || !acceptsCandidateUploads(terrainState)) {
             return false;
         }
+        configureTerrainBatching();
         boolean retainLegacyCopy = shaderRuntime.shaderPackActive
             || retainsTerrainLegacyCopy(terrainState);
         int uploadBytes = builder == null || builder.getByteBuffer() == null
@@ -1879,9 +1991,11 @@ public final class ModernRendererRuntime {
             && mappingArm == MeasurementArm.MODERN;
         CorrelatedRenderProfiler.CpuScope scope = components.profiler.beginCpu(currentStamp,
             terrainPass(context.getLayer()), RenderBackendId.ICE_NATIVE, CpuWorkKind.UPLOAD);
-        SceneFingerprint mappingScene = measurements.sceneFingerprint(
-            Math.max(0, uploadBytes / 4096));
-        long mappingStarted = System.nanoTime();
+        boolean measureMapping = mapping != null
+            && mapping.shouldMeasureFrame(currentStamp.getFrameId());
+        SceneFingerprint mappingScene = measureMapping ? measurements.sceneFingerprint(
+            Math.max(0, uploadBytes / 4096)) : null;
+        long mappingStarted = measureMapping ? System.nanoTime() : 0L;
         boolean mappingStable = false;
         boolean mappedWork = false;
         boolean uploaded = false;
@@ -1944,7 +2058,7 @@ public final class ModernRendererRuntime {
                     instrumentationFailure, error);
             }
             try {
-                recordAuxiliaryBackendSample(
+                if (measureMapping) recordAuxiliaryBackendSample(
                     OptimizationModule.MODERN_TERRAIN_PERSISTENT_MAPPING,
                     mappingState, mappingArm, mappingScene,
                     Math.max(1L, System.nanoTime() - mappingStarted),
@@ -1962,6 +2076,7 @@ public final class ModernRendererRuntime {
     }
 
     public void releaseTerrain(VertexBuffer vertexBuffer) {
+        softwareOcclusion.release(vertexBuffer);
         if (!initialized || components.terrainArena == null || components.threadGuard == null
             || !components.threadGuard.isRenderThread()) return;
         components.terrainArena.release(vertexBuffer);
@@ -2000,6 +2115,27 @@ public final class ModernRendererRuntime {
                 OptimizationModule.MODERN_TERRAIN_BACKEND);
             if (backend != null) backend.runtimeFailure(publicationError);
         }
+    }
+
+    public void beforeTerrainBufferStorageReplacement(VertexBuffer vertexBuffer) {
+        if (initialized && components.terrainArena != null && components.threadGuard != null
+            && components.threadGuard.isRenderThread())
+            components.terrainArena.beforeBufferStorageReplacement(vertexBuffer);
+    }
+
+    public long modelMeshAdmissionProgress() {
+        if (!initialized || components.modelMeshes == null) return Long.MIN_VALUE;
+        try { return components.modelMeshes.admissionProgress(); }
+        catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
+            modelBackendFailure(error);
+            return Long.MIN_VALUE;
+        }
+    }
+
+    public boolean modelMeshAdmissionBlockedByCapacity() {
+        return components.modelMeshes != null
+            && components.modelMeshes.lastAdmissionBlockedByCapacity();
     }
 
     /** The already-installed upload boundary runs even while draw hooks sleep. */
@@ -2044,6 +2180,7 @@ public final class ModernRendererRuntime {
                 : TerrainFallbackReason.SHADER_PACK_ACTIVE);
         }
         TerrainRenderListAccessor accessor = (TerrainRenderListAccessor) container;
+        configureTerrainBatching();
         AdaptiveBackendController visibility = components.backends.get(
             OptimizationModule.MODERN_VISIBILITY_HZB);
         BackendLifecycleState visibilityState = visibility == null
@@ -2065,10 +2202,21 @@ public final class ModernRendererRuntime {
                 visibilityState = visibility.lifecycleState();
             }
         }
+        AdaptiveBackendController backend = components.backends.get(
+            OptimizationModule.MODERN_TERRAIN_BACKEND);
+        boolean profileTerrain = backend == null || !backend.isDirectActivation();
         int originalVisible;
         int arenaOwned;
         int regionRuns;
-        if (layer == BlockRenderLayer.SOLID) {
+        if (!profileTerrain) {
+            java.util.List<?> visibleChunks = accessor.ice$renderChunks();
+            originalVisible = visibleChunks == null ? 0 : visibleChunks.size();
+            // The draw planner resolves visible ownership. Explicit rendering
+            // needs neither an extra list scan nor an ABBA coverage profile.
+            arenaOwned = originalVisible == 0 || components.terrainArena.getOwnedMeshes() == 0
+                ? 0 : -1;
+            regionRuns = -1;
+        } else if (layer == BlockRenderLayer.SOLID) {
             long coverage = components.terrainArena.inspectCoverage(container, layer);
             originalVisible = LwjglTerrainArena.coverageVisible(coverage);
             arenaOwned = LwjglTerrainArena.coverageOwned(coverage);
@@ -2082,27 +2230,25 @@ public final class ModernRendererRuntime {
                 && components.terrainArena.ownsAny(container, layer) ? 1 : 0;
             regionRuns = 0;
         }
-        SceneFingerprint terrainScene = layer == BlockRenderLayer.SOLID
+        SceneFingerprint terrainScene = profileTerrain && layer == BlockRenderLayer.SOLID
             ? measurements.sceneFingerprint(originalVisible, arenaOwned, regionRuns) : null;
-        AdaptiveBackendController backend = components.backends.get(
-            OptimizationModule.MODERN_TERRAIN_BACKEND);
         BackendLifecycleState state = backend == null
             ? BackendLifecycleState.LEGACY : backend.lifecycleState();
-        boolean terrainProfileReady = layer != BlockRenderLayer.SOLID;
+        boolean terrainProfileReady = !profileTerrain || layer != BlockRenderLayer.SOLID;
         if (layer == BlockRenderLayer.SOLID && backend != null
             && terrainScene != null) {
             terrainProfileReady = backend.prepareProfiledWorkload(
                 terrainScene.terrainLoadBucket(), currentStamp.getFrameId());
             state = backend.lifecycleState();
         }
-        boolean coverageReady = terrainMeasurementCoverageStable(
+        boolean coverageReady = !profileTerrain || terrainMeasurementCoverageStable(
             originalVisible, arenaOwned);
         if (layer == BlockRenderLayer.SOLID) {
             terrainLastVisibleMeshes = originalVisible;
             terrainLastOwnedMeshes = arenaOwned;
             terrainLastRegionRuns = regionRuns;
         }
-        if (arenaOwned <= 0) {
+        if (arenaOwned == 0) {
             return declineTerrain(TerrainFallbackReason.NO_ARENA_OWNERSHIP);
         }
         MeasurementArm visibilityArm = visibilityState == BackendLifecycleState.PAIRED_MEASURE
@@ -2120,30 +2266,6 @@ public final class ModernRendererRuntime {
         long visibilityStarted = measureVisibility ? System.nanoTime() : 0L;
         boolean usableHistory = useHzb && components.depthHistory != null
             && components.depthHistory.hasUsableHistory(currentStamp, container);
-        AdaptiveBackendController terrainMapping = components.backends.get(
-            OptimizationModule.MODERN_TERRAIN_PERSISTENT_MAPPING);
-        BackendLifecycleState terrainMappingState = terrainMapping == null
-            ? BackendLifecycleState.LEGACY : terrainMapping.lifecycleState();
-        if (state == BackendLifecycleState.OUTPUT_VALIDATE) {
-            Boolean equivalent = components.terrainArena.validateOne(container, layer, currentStamp);
-            if (equivalent != null) {
-                recordValidation(OptimizationModule.MODERN_TERRAIN_BACKEND,
-                    equivalent.booleanValue(), equivalent.booleanValue() ? null
-                        : "terrain arena readback mismatch");
-                state = backend.lifecycleState();
-            }
-        }
-        if (terrainMappingState == BackendLifecycleState.OUTPUT_VALIDATE) {
-            Boolean equivalent = components.terrainArena.validateOnePersistent(container,
-                layer, currentStamp);
-            if (equivalent != null) {
-                recordValidation(
-                    OptimizationModule.MODERN_TERRAIN_PERSISTENT_MAPPING,
-                    equivalent.booleanValue(), equivalent.booleanValue() ? null
-                        : "terrain persistent-mapped write readback mismatch");
-                terrainMappingState = terrainMapping.lifecycleState();
-            }
-        }
         MeasurementArm arm = state == BackendLifecycleState.PAIRED_MEASURE
             ? backend.expectedMeasurementArm() : MeasurementArm.LEGACY;
         boolean exactLegacyReplay = state != BackendLifecycleState.MODERN
@@ -2195,6 +2317,13 @@ public final class ModernRendererRuntime {
             || mdiState == BackendLifecycleState.REGRESSION_MONITOR
             || (mdiState == BackendLifecycleState.PAIRED_MEASURE
                 && mdiArm == MeasurementArm.MODERN));
+        CurrentFrameTerrainOcclusion coverageSource = layer == BlockRenderLayer.SOLID ? terrainSoftwareOcclusion() : null;
+        RenderMatrixBridge.Snapshot coverageMatrices = coverageSource == null ? null : softwareTerrainMatrices();
+        components.terrainArena.configureVisibility(currentStamp, coverageSource, coverageMatrices);
+        if (coverageMatrices != null) {
+            useHzb = false;
+            usableHistory = false;
+        }
         RenderBackendId backendId = batched ? RenderBackendId.ICE_NATIVE
             : RenderBackendId.LEGACY;
         RenderPass pass = terrainPass(layer);
@@ -2699,21 +2828,23 @@ public final class ModernRendererRuntime {
     }
 
     /**
-     * Fault-only mixed fallback for an arena-owned list. It deliberately uses
+     * Individual mixed draws for a paused or failed backend. This uses
      * neither HZB nor MDI and preserves the caller's exact visible order.
      */
     public boolean tryRenderTerrainFallback(Object container, BlockRenderLayer layer) {
-        if (!initialized || currentStamp == null || components.terrainArena == null
+        if (!initialized || (!runtimePaused && currentStamp == null) || components.terrainArena == null
             || components.threadGuard == null || !components.threadGuard.isRenderThread()
             || !(container instanceof TerrainRenderListAccessor)
             || layer == null || !components.terrainArena.ownsAny(container, layer)) {
-            return declineTerrain(TerrainFallbackReason.FAULT_FALLBACK_DECLINED);
+            return runtimePaused ? false : declineTerrain(TerrainFallbackReason.FAULT_FALLBACK_DECLINED);
         }
         try {
             boolean handled = components.terrainArena.render(container, layer, false, false,
-                currentStamp.getFrameId());
-            if (handled) recordTerrainArenaDraw(false, 0);
-            else declineTerrain(TerrainFallbackReason.FAULT_FALLBACK_DECLINED);
+                runtimePaused ? lastRuntimeFrame : currentStamp.getFrameId());
+            if (!runtimePaused) {
+                if (handled) recordTerrainArenaDraw(false, 0);
+                else declineTerrain(TerrainFallbackReason.FAULT_FALLBACK_DECLINED);
+            }
             return handled;
         } catch (Throwable fallbackError) {
             FatalErrors.rethrowIfFatal(fallbackError);
@@ -2777,7 +2908,7 @@ public final class ModernRendererRuntime {
             publish(candidate);
             initializationRetry.recordSuccess(generation);
             initialized = true;
-            detail = "能力自测完成；各子后端独立预热/验证/测量";
+            detail = "渲染组件已初始化；实体与方块实体后端经输出校验和收益测量后启用";
             OptimizerRegistry.breaker(OptimizationModule.MODERN_FRAME_COORDINATOR)
                 .activate("帧/视图/pass 语义协调已启动，绘制仍按子后端认证结果选择");
             OptimizerRegistry.breaker(OptimizationModule.LEGACY_GL_ISLAND)
@@ -2872,9 +3003,12 @@ public final class ModernRendererRuntime {
         // Publish ownership last. Any preceding reset failure is rolled
         // back by ensureInitialized before the candidate graph is disposed.
         activeGraph = graph;
+        // The factory already seeded this newly published graph's GL state.
+        resumeTrackedState = false;
     }
 
     private void disposeActiveGraph(boolean contextValid, long contextGeneration) {
+        softwareOcclusion.clear();
         if (!contextValid) {
             shaderRuntime.abandonActiveShaderInterval();
         } else if (shaderRuntime.hasNativeBinding()) {
@@ -2972,6 +3106,9 @@ public final class ModernRendererRuntime {
     /** One startup/generation probe; ordinary frames use only CoreMod-published state. */
     void initializeTrackedGlState() {
         initializeTrackedGlState(components.glStateQueryWorkspace);
+        // A pending resource/world transition can initialize before the
+        // resume branch in beginFrame; it satisfies that same one-time seed.
+        resumeTrackedState = false;
     }
 
     void initializeTrackedGlState(GlStateQueryWorkspace workspace) {
@@ -2994,6 +3131,8 @@ public final class ModernRendererRuntime {
             int elementBuffer = GL11.glGetInteger(
                 org.lwjgl.opengl.GL15.GL_ELEMENT_ARRAY_BUFFER_BINDING);
             ContextCapabilities currentCapabilities = GLContext.getCapabilities();
+            EarlyGlStateTracker.fogi(0x855A, currentCapabilities.GL_NV_fog_distance
+                ? GL11.glGetInteger(0x855A) : 0x855C);
             int drawIndirectBuffer = currentCapabilities.OpenGL43
                 || currentCapabilities.GL_ARB_multi_draw_indirect
                     ? GL11.glGetInteger(0x8F43) : 0;
@@ -3179,6 +3318,7 @@ public final class ModernRendererRuntime {
     private void applyPendingInvalidations() {
         int flags = pendingInvalidations.getAndSet(0);
         if (flags == 0) return;
+        softwareOcclusion.clear();
         boolean contextLost = (flags & INVALIDATE_CONTEXT) != 0;
         boolean modelMeshesInvalidated = invalidatesModelMeshes(flags);
         Throwable failure = null;
@@ -3335,9 +3475,11 @@ public final class ModernRendererRuntime {
             }
         }
         try {
-            if (components.particleRenderer != null) components.particleRenderer.reset(true,
-                epochs.currentResourceGeneration(),
-                epochs.currentGlContextGeneration());
+            if (components.particleRenderer != null) {
+                components.particleRenderer.reset(true,
+                    epochs.currentResourceGeneration(), epochs.currentGlContextGeneration());
+                RendererComponentFactory.initializeParticleResources(components, this);
+            }
         } catch (Throwable error) {
             failure = appendRuntimeFailure(failure, error);
         }
@@ -3369,6 +3511,7 @@ public final class ModernRendererRuntime {
     }
 
     void flushBatches() {
+        if (components.modelMeshes != null) components.modelMeshes.flushPoseBatch();
         if (components.particles != null) components.particles.discardAtBarrier();
         if (components.particleRenderer != null && components.particleRenderer.size() > 0) {
             components.particleRenderer.discard();
@@ -3609,6 +3752,7 @@ public final class ModernRendererRuntime {
     }
 
     private boolean requiresFrameInfrastructure(long frameId) {
+        if (terrainSoftwareOcclusion() != null && softwareOcclusion.getMeshCount() >= 2) return true;
         for (AdaptiveBackendController backend : components.backends.values()) {
             if (!backend.isDormant(frameId)) return true;
         }

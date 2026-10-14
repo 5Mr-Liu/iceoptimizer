@@ -1,0 +1,81 @@
+ICE 1.20 修订 5：客户端区块重建与上传调度
+日期：2026-10-13
+
+用户要求继续做区块加载优化。沿用明确的“不测试、由用户实机验证”要求，
+本次检查已有源码/捕获字节码，修改实现，仅编译与打包，不运行测试或游戏。
+没有服务端生成速度或实机平滑度的新测量，不引用历史测试作为本修订通过。
+
+实际实现依据
+------------
+build/fps-target/130-render-global-bytecode.txt 是既有捕获整合包 RenderGlobal
+字节码，包含 OptiFine 和其他 coremod 的实际行为，不能只用纯 Forge 推测。
+setupTerrain 的 rebuildNear 分支：
+  非玩家更新的近处区块进入 chunksToUpdateForced；
+  玩家更新的近处区块调用 ChunkRenderDispatcher.func_178505_b(updateChunkNow)，
+  忽略返回值，然后 clearNeedsUpdate。
+updateChunks(long) 的实际指令：
+  入参先转换 double，加 1.0E8 纳秒，再转换 long；
+  该值传给 func_178516_a(runChunkUploads)。这允许积压时额外连续上传约 100ms。
+  needsImmediateUpdate 或区域为空时也会调用 updateChunkNow；
+  其余任务调用 func_178507_a(updateChunkLater)，已有成功/失败分支。
+
+Forge 本地源代码：updateChunkNow 直接调用 renderWorker.processTask；
+updateChunkLater 创建同类任务并提交原有队列；任务包含原距离优先信息，
+保留已有取消回调和构建器归还流程。runChunkUploads 每完成一项后检查截止
+时间；0 表示单次处理，已过期的截止时间也允许先处理一项，避免完全饿死。
+stopChunkUpdates 用 Long.MAX_VALUE 反复排空并归还全部构建器。
+
+本地 Nothirium 参考：
+Nothirium-main/src/main/java/meldexun/nothirium/mc/renderer/chunk/RenderChunkDispatcher.java
+其网格工作经 runAsync 进入执行器，GPU 工作回到渲染线程队列。
+ICE 独立修改现有 Forge/OptiFine 调用点，保留整合包构建器与兼容接入，
+没有复制第三方源码，也没有宣称完成整个 Nothirium 编译器替换。
+
+实现
+----
+新增 NativeTerrainChunkScheduleAdapter，挂在仅 native terrain 安装的
+NativeTerrainFrameAdapter 中，启动时改写 RenderGlobal 的两个调度入口。
+1. setupTerrain 的 updateChunkNow 改为 updateChunkLater。
+   原先 POP 忽略返回值改为 IFEQ 跳过 clearNeedsUpdate；提交失败时仍 dirty，
+   保留下一帧重试，不会因异步队列拒收而丢掉更新。Profiler 的结束分支仍执行。
+2. updateChunks 中的 updateChunkNow 改为 updateChunkLater。
+   原有 if(success) 才清 dirty/remove 的分支保留，队列失败路径不变。
+3. 在 updateChunks 入口保存原帧截止时间到独立 long 局部变量；上传调用前
+   丢弃被 OptiFine 放宽后的实参，使用原帧截止时间与 now + 2ms 的较早值。
+   NativeTerrainChunkScheduler.uploadDeadline 仅计算调度截止时间，
+   无性能追踪、动态门禁、日志或额外工作队列。
+4. 保存原 updateChunks 方法为 F6 暂停路径；setupTerrain 原方法也由现有
+   F6 机制保留。关闭优化时执行原有构建/上传调度，恢复时使用新调度。
+
+生命周期边界
+------------
+不直接改写 dispatcher.runChunkUploads，避免把 F6/world shutdown 的完整
+排空变成时间片处理，进而再次引入构建器等待死锁。
+旧的先取消 RenderChunk 任务再等待归还流程保留，GPU 资源拥有者交接不变。
+线程数、构建器池大小、距离排序、任务取消及上传完成后发布编译记录均复用。
+没有另加每帧队列扫描、后台调优器、探针或未测邻居缓存。
+启动时验证已捕获的调用/dirty 清理形状，运行热路径不做结构验证。
+
+准确限制
+--------
+优化的是客户端区块网格重建与 GPU 上传调度，不包括服务端区块生成或磁盘读取。
+2ms 是连续处理任务的时间片上限意图，不是单帧耗时保证；正在进行的单个
+编译/上传任务不可在中途抢占，仍可能超时。无工作线程的原 dispatcher 分支
+也仍可能在上传循环处理编译任务。
+平滑分摊可能增加区块首次出现时间，近处方块编辑的画面刷新也改为异步；
+不改变世界方块状态、碰撞规则、视距或实体数量，不丢弃应加载的区块。
+仍有主线程世界视图准备、任务提交和其他模组工作，不承诺主线程完全无构建成本。
+本修订包含修订 4 索引批处理，以及此前空网格、驻留层、F6 修复。
+版本仍为 ICE 1.20 / Minecraft 1.12.2；原游戏安装文件及配置不修改。
+编译命令：tools/build-native-terrain-candidate.ps1 -PackageOnly
+构建日志：build/fps-target/120-hotfix5-chunk-schedule-build.log。
+
+交付记录
+--------
+PackageOnly 构建成功，28 秒，没有测试或游戏启动。
+JAR SHA256：3FB8D6D4FB2C08E619AB2C025CB066356B15EBD1CDC43D6E13E5D11BB544AE56
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix5-playtest.zip
+ZIP SHA256：9ECCE3B1DA1A00779D980C041086ED659867878152817FCAC8691486C20038F7
+对比修订 4，新增两个调度类，仅 NativeTerrainFrameAdapter 现有条目改变。
+CRC、元数据、嵌入 JAR 与安装说明检查通过，不代表运行时 ASM/游戏验证。
+冻结源码/构建输入：build/fps-target/120-hotfix5-release/。

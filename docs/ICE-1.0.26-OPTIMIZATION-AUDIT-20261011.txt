@@ -1,0 +1,196 @@
+ICE 1.0.26 优化取舍核查
+日期：2026-10-11
+
+结论
+确实存在负收益路径，首先应处理地形 shader 批量提交和 HUD 字体小批次 VBO 提交。
+不能把“比上一版 ICE 少调用几次 GL”当成“比原路径快”。
+实体/NBT、按需解析、工作区复用等局部优化应区别保留，不建议整个优化器一并删除。
+
+本次只检查源码、复查旧记录，并运行独立 Java/OpenGL 探针。
+没有修改生产源码、游戏配置、mods 或存档，没有启动 Minecraft。
+当前 gradle.properties 为 1.0.26；README 的源码版本说明仍停在 1.0.25。
+工作目录没有 .git，不能提供基于提交历史的 diff 审计。
+下文是已检查路径的取舍建议，不代表 164 个字节码目标均做过独立性能对照。
+
+证据强度
+A：本次在当前构建上运行的对照，证明特定测试负载的收益/退化。
+B：当前代码、可复现行为及已有记录支持的额外工作，未测游戏净耗时。
+C：已有局部验证或算法依据，建议保留，但不承诺整个游戏 FPS 提升。
+
+一、优先删除或撤回默认接管的内容
+
+1. [A，最高优先级] 当前跨页 shader 地形批量提交路径
+   对象：LwjglTerrainBatchRenderer；LwjglTerrainArena.tryRenderNativeLayer。
+   当前实现逐层构造 offset/indirect commands，glBufferData 上传，跨页时还复制
+   resident offsets，顶点 shader 执行额外坐标/缩放和兼容固定管线计算。
+   这些都是实际工作，减少 draw-call 数量并不保证抵消它们。
+
+   本次测试：RTX 4060 Laptop / NVIDIA 592.82，Java 8，隐藏 Pbuffer，1280x720。
+   384 SOLID + 128 CUTOUT + 128 TRANSLUCENT，640 mesh，3,932,160 顶点；
+   六方向方块、移动视角、深度/纹理/光照贴图/混合/雾。
+   同一输入和网格，20 次交错预热，7 轮交错测量，每轮 16 帧，前后 glFinish。
+   耗时是这段地形绘制到 GPU 完成的墙钟时间，单位 ms/帧：
+
+   路径                         纯 arena OFF -> ON     50% 外部 VBO OFF -> ON
+   完整 shader+方向+GPU遮挡      0.660 -> 1.227         0.645 -> 1.076
+   完整路径独立 JVM 复跑         0.707 -> 1.299         0.648 -> 1.102
+   shader+方向，关闭GPU遮挡      0.701 -> 1.167         0.646 -> 1.007
+   只开shader批量，关闭两种剔除  0.656 -> 1.349         0.649 -> 1.143
+
+   OFF 是保留同一 arena 网格的逐项绘制，接近当前 F6 的绘制语义；不是卸载 ICE。
+   完整路径每帧确实提交 GPU visibility：384 candidates / 2048 source faces。
+   方向剔除在纯 arena 中少提交 1,179,648 顶点，仍未得到净收益。
+   shader 开启时 3,686,400 个颜色通道中 11 个差值大于 1，最大差值 47；
+   不能宣称逐像素完全相同。所有测试无最终 GL 错误，资源预算释放检查通过。
+
+   建议撤回当前算法的默认接管。可以保留源码作为替代实现研究材料。
+   不能只删方向剔除：本次去掉方向剔除后的 shader 批量仍慢，且会增加顶点。
+   不建议为了维持它而再堆在线收益检测、冷却或预算扩容。
+   来源：LwjglTerrainBatchRenderer.java:225,236,751；LwjglTerrainArena.java:1290。
+
+2. [A，高优先级] HUD 字体小批次的 VBO 转存/上传路径
+   对象：LwjglHudRenderer.flushTracked/flush；HudRenderBridge 的字体几何接管。
+   1.0.26 已减少重复 barrier、BufferData 和完整 Snapshot，但每次非空 flush
+   仍绑定 VAO/VBO、BufferSubData、组织 MultiDraw 参数并恢复绑定。
+
+   本次从现有 HudPageNativeProbe 派生对照：原 GL_TRIANGLE_STRIP 字形立即绘制
+   vs 当前 recordGlyph + 生产 flushTracked；4096 批，6 轮预热，11 轮交错测量。
+   第二组独立 JVM 按 128/32/4/1 的反向尺寸次序复跑。
+   同时检查像素、页增长、混合 primitive 顺序及小预算；全部最终检查通过。
+
+   每批字形数     原路径 CPU / 当前 CPU（微秒每批，复跑中位数）
+   1              0.122 / 6.881
+   4              0.385 / 7.850
+   32             2.633 / 10.148
+   128            12.892 / 19.458
+
+   对应包含结束 glFinish 的时间也未出现反转：32 字形约 2.658 / 10.290 微秒。
+   这是字体几何提交测试，不包含字符查找、FontLayoutCache 收益或完整 Forge HUD。
+   不是把所有 Gui 四边形原路径都假定为 glBegin，也不能把倍率换算成游戏 FPS。
+
+   建议删除这种小批次 VBO 接管；字体布局缓存可单独保留/评估。
+   若用 modernHudStream=false 做隔离对照，它还会关闭同模块其他功能，不能把
+   整模块差值全部算在 flush 上。修正后的 barrier/分页实现可保留为实验实现，
+   但“比旧版 ICE 快”不足以继续默认接管。
+   来源：LwjglHudRenderer.java:269,274,311,336。
+
+3. [B，建议移除默认预读] OTG 全量注册对象预读
+   对象：OtgObjectPreparationBridge.prepare；配置 otgObjectPreparation。
+   注册目录索引后同步遍历全部 BO2/BO3/BO4，预读文本并收集关联 NBT，
+   无论对象是否会在此次游玩中被使用；注册自身也可能发生在首次按需生成时。
+   文本/预读 NBT 缓存权重上限分别 96/64 MiB；这是权重额度，不是精确进程内存。
+   超过容量后，提前读取的数据可能被逐出，实际用到时再读取。
+
+   新增独立行为探针证实：64 个已注册文件，实际请求对象数 0；
+   otgObjectPreparation=true、otgSynchronousFileCache=false 时，仍预读缓存 64 个。
+   原因：prepare 只检查预读模块，prepareSettings 本身不检查缓存消费模块开关。
+   在该配置下，这些预读结果不能由已关闭的 readSettings 优化消费。
+
+   建议删除默认全量预读入口，保留按需读取缓存、解析器、BO3 执行和列缓存。
+   缓存启用且对象很快被大量访问时预读可能有用；本次没有量化默认配置的
+   全游戏净损失，因此不把它列为已证实的稳态 FPS 主因。
+   来源：OtgObjectPreparationBridge.java:11,14,19；OtgSynchronousIoBridge.java:108,256。
+
+4. [A/B，次优先级] 未进入合批的逐部件 VBO 替代 display list
+   对象：ModelMeshCaptureBridge.callList 中 tryDrawModelMesh 分支，以及
+   LwjglModelMeshCache.drawCurrent -> emitVertexArray。
+   即使没有获得部件合并收益，仍把一次 glCallList 换成 bind VAO/draw/restore，
+   加上模型查找和状态/生命周期检查。
+
+   将现有 ModelVertexArrayProbe 的计时基线改成真实已编译 glCallList，
+   15 轮交错 CPU 提交测量，4 顶点小部件得到约 7.9 ns -> 25.5 ns/部件；
+   72 组已有移动/状态恢复像素对照继续通过。
+   绝对差很小，测试没有真实模型复杂度与完整桥接开销，也不是 GPU 完成时间。
+   它支持“单件替换不是免费收益”，不能解释整个游戏的巨大 FPS 差距。
+
+   建议让不能合并的部件继续使用已有 display list，保留真正合批需要的网格数据。
+   整模型 pose batching、静态子树合并不应因为这项结果直接一起删除。
+   当前没有只关闭此分支而保留所有模型合批的独立配置，需要按代码路径拆分。
+   来源：ModelMeshCaptureBridge.java:182,211；LwjglModelMeshCache.java:329,540。
+
+二、建议保留
+
+1. [A] 装备 NBT 单遍比较、NBT 编码中的直接 Entry 遍历。
+   本次使用当前生产适配器、真实 FermiumASM NormalTagMap 重新运行 NbtAlgorithmProbe。
+   1500 项嵌套/原地修改/键乱序/编码检查通过。7 轮交错比较中位数：
+     4 键：527 -> 260 ns，736 -> 400 B/次；
+    16 键：2573 -> 973 ns，2848 -> 1360 B/次；
+    32 键：7897 -> 2059 ns，5664 -> 2640 B/次。
+   时间/分配数字属于同序嵌套比较；编码检查只证明相同字节，不代表测过编码提速。
+   对应 vanillaEquipmentNbt；PotionCore 单次取 tag、nbtConstantKeys 也有明确
+   减少重复查表/驻留操作的代码依据，可保留，不据此声称整体 FPS 已验证。
+
+2. [C] 实体算法：命中后才分配碰撞箱、同次寻路工作区、SRP 最近目标线性选择、
+   刷怪列表编译索引、生物类归属缓存、RLT 候选工作区。
+   这些减少分配/重复查找/不必要排序；不要删除必要的可变状态读取和回调顺序。
+   PathSearchWorkspace.release 只清本次用到的槽，已不再每实体常驻峰值表。
+   历史碰撞/寻路成本记录：.refactor-backups/entity-collision-audit/algorithm-cost-probe-20261010.txt。
+
+3. [C] 世界生成的直接算法优化：OTG 按需文件缓存/解析、BO3 数组执行、BO4 布局、
+   列缓存正确性修复，Recurrent 反射绑定/工作区，Forge opacity 直调，Phosphor 坐标复用。
+   它们与“全量对象预读”是不同入口，不应一起删除。
+   同样可保留 QualityTools 马甲直接读槽位，避免为取一件装备序列化整只马。
+
+4. [C] 透明四边形原始类型稳定排序、AO 暂存、矩阵/四元数复用、纹理参数去重。
+   历史完整排序对照中随机 4096 quad：约 275.7 -> 77.7 微秒；
+   已排序 4096 quad 则约 96.8 -> 104.3 微秒。应保留原始类型/复用工作区，
+   基数排序并非所有分布占优，不为几微秒局部退步回滚整个模块。
+   同一 atlas 纹理参数去重已有 32 -> 4 次参数调用记录；与 PBO 转存是不同优化。
+
+5. [C] 保存的顺序保证、压缩工作区、已覆盖任务撤销；自动保存分片可保留，
+   但应表述为分散尖峰的调度功能，不是减少总保存工作量的证据。
+   缓存失效、引用释放、GL 状态恢复、fence/资源退休、兼容回退必须随保留消费者继续存在。
+
+三、保留为可选/实验，暂不宣称净收益
+
+- GPU/CPU 遮挡：当前完整地形方案已测出负收益，但不能把整段差值全算给遮挡。
+  旧独立 GPU 探针约 0.135-0.238 ms；是否抵消绘制成本取决于场景。
+  删当前批量接管时可一并撤回默认遮挡计算；遮挡算法本身留作独立候选。
+  只关 terrainShaderBatching 会让同一证据转走 CPU filter，并不消除这份工作。
+  terrainSoftwareOcclusion 应同时显式关闭才能得到无额外遮挡的对照。
+
+- arena/普通固定管线 MDI：本次关闭自定义 shader 后，纯 arena 0.697 -> 0.822 ms，
+  混合 VBO 0.684 -> 0.684 ms，样本有抖动；没有证明“换回旧 MDI 就必然更快”。
+  上传分配/所有权正确性仍值得保留，不应把整套 arena 内存生命周期当垃圾删除。
+
+- 整模型 pose batching、FBP/粒子提交、FoamFix atlas PBO 命令流和纹理可见性：
+  已有正确性和部分局部调用减少记录，本次没有完整原路径净耗时对照。
+  留作可选，不能借地形退化推断它们全部负优化，也不能仅凭 MODERN 状态判定有收益。
+  1.0.20 已撤回的“逐 mip 即时 PBO”与当前 1.0.24 atlas 合并流不是同一算法，
+  不应用旧 PBO 的负收益数字直接判死当前实现。
+
+- 运行时测量框架：RendererComponentFactory:249 对后端 configureDirectActivation(true)。
+  所以 MODERN 表示显式选择，不能证明经过正收益认证。
+  可后续清理已无生产消费者的试跑/冷却代码，但本次不把未执行的分支称为耗时根因。
+
+四、执行取舍时的边界
+
+本次仅提出建议，没有应用以下配置。
+优先隔离地形时，同时关闭 terrainShaderBatching 与 terrainSoftwareOcclusion；
+若还要排除 arena 接管，另关 modernTerrainBackend，并重启进行同场景对照。
+HUD 整模块隔离是 modernHudStream=false；OTG 预读隔离是 otgObjectPreparation=false。
+这些开关组合用于确认取舍，不能预先保证最终 FPS 或自动归因整模块内所有分支。
+普通视锥/连通性遍历与“额外遮挡栅格器”不同，不要一起删除。
+OptimizationModule 使用追加式 ordinal ABI；删除实现时不要随意删除/重排枚举项。
+
+已有 1.0.25 游戏录制支持存在 ON 更慢的区间，但位置视角没有完全锁定。
+本次局部地形差约 0.4-0.6 ms，不能声称解释旧游戏记录全部约 9-10 ms 差距。
+
+五、本次复现材料
+
+目录：build/optimization-audit-20261011/
+  TerrainRealisticNativeProbe.java：基于既有高顶点量探针增加独立关闭方向/批量的测试参数。
+  terrain-full.log / terrain-full-repeat.log：完整路径两轮。
+  direction-only.log / batch-only.log：剔除分解。
+  terrain-fixed-function.log：非自定义 shader 的 arena 批量。
+  HudPageNativeProbe.java：增加原始字形提交基线、交错计时并使用生产 flushTracked。
+  hud-glyph-{1,4,32,128}-repeat.log：最终四种尺寸，均通过检查。
+  ModelVertexArrayProbe.java / model-displaylist-v-vao.log：真实 display list 基线。
+  OtgPreparationAuditProbe.java / otg-preparation.log：禁用缓存消费后的预读行为。
+  nbt-current.log：当前生产 NBT 适配器的正确性和成本结果。
+
+说明：最初 128 字形 HUD 试跑把大批量参数也作用于原有 4 KiB 小预算用例，
+导致该用例超容量断言；最终探针在小预算阶段恢复原小批负载并全套复跑通过。
+首次 NBT 试跑缺少 NormalTagMap 依赖，补入实际 FermiumASM JAR 后重新编译
+探针/agent 并运行；上面的 NBT 数字仅取最终成功日志。
+没有以这些探针代替真实游戏安装/移动路线 A/B，也没有运行无关完整构建。

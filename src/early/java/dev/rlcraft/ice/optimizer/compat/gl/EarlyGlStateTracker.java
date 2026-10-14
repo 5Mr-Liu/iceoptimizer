@@ -43,6 +43,12 @@ public final class EarlyGlStateTracker {
         | BLEND_ENABLED | BLEND_FUNCTION | DEPTH_ENABLED | DEPTH_FUNCTION
         | DEPTH_MASK | CULL_ENABLED | COLOR_MASK | CURRENT_COLOR
         | CLIENT_ACTIVE_TEXTURE | VIEWPORT;
+    // HUD uses the current fixed-function state without replacing its blend,
+    // depth, framebuffer, color or matrices. Only these bindings are inspected
+    // or temporarily changed by its private vertex array.
+    private static final int HUD_STREAM_REQUIRED = PROGRAM | ARRAY_BUFFER
+        | ACTIVE_TEXTURE | TEXTURE_0 | TEXTURE_0_ENABLED
+        | CLIENT_ACTIVE_TEXTURE | VIEWPORT;
     private static final ThreadLocal<State> STATES = new ThreadLocal<State>() {
         @Override protected State initialValue() { return new State(); }
     };
@@ -50,12 +56,28 @@ public final class EarlyGlStateTracker {
     private EarlyGlStateTracker() {
     }
 
+    public static void fogi(int name, int value) {
+        EarlyModelLightingState.fogi(name, value);
+        if (name == 0x855A) STATES.get().fogDistanceMode = value;
+    }
+
+    /** Zero means unknown; GL_NV_fog_distance is absent on some drivers. */
+    public static int fogDistanceMode() { return STATES.get().fogDistanceMode; }
+
     public static void beginProbe() {
+        EarlyModelLightingState.invalidate();
         State state = STATES.get();
         state.knownMask = 0;
         state.compatibilityKnown = false;
+        state.vertexArrayKnown = false;
         state.depthRangeKnown = false;
+        state.fogDistanceMode = 0;
         state.mutationSerial++;
+    }
+
+    public static int modelProgramBinding() {
+        State state = STATES.get();
+        return (state.knownMask & PROGRAM) != 0 ? state.program : Integer.MIN_VALUE;
     }
 
     public static void useProgram(int value) {
@@ -137,10 +159,18 @@ public final class EarlyGlStateTracker {
         if (value < 0) { invalidate(); return; }
         State state = STATES.get();
         state.vertexArray = value;
+        state.vertexArrayKnown = true;
         state.mutationSerial++;
     }
 
+    /** The VAO binding is independent of the full compatibility snapshot. */
+    public static int vertexArrayBinding() {
+        State state = STATES.get();
+        return state.vertexArrayKnown ? state.vertexArray : Integer.MIN_VALUE;
+    }
+
     public static void activeTexture(int textureEnum) {
+        EarlyModelLightingState.activeTexture(textureEnum);
         int index = textureEnum - 33984;
         if (index < 0 || index >= 32) { invalidate(); return; }
         State state = STATES.get();
@@ -242,6 +272,7 @@ public final class EarlyGlStateTracker {
     }
 
     public static void lightingEnabled(boolean enabled) {
+        EarlyModelLightingState.capability(2896, enabled);
         State state = STATES.get();
         state.lighting = enabled;
         state.knownMask |= LIGHTING_ENABLED;
@@ -390,6 +421,7 @@ public final class EarlyGlStateTracker {
             if (texture < 0) { invalidate(); return; }
         }
         state.vertexArray = vertexArray;
+        state.vertexArrayKnown = true;
         state.vertexArraySupported = vertexArraySupported;
         state.elementBuffer = elementBuffer;
         state.pixelUnpackBuffer = pixelUnpackBuffer;
@@ -417,6 +449,27 @@ public final class EarlyGlStateTracker {
     public static Snapshot snapshot() {
         State state = STATES.get();
         if ((state.knownMask & REQUIRED) != REQUIRED) return null;
+        return snapshot(state, (state.knownMask & HUD_REQUIRED) == HUD_REQUIRED);
+    }
+
+    /** Minimal HUD snapshot; does not claim the unqueried full draw state. */
+    public static Snapshot hudSnapshot() {
+        State state = STATES.get();
+        if ((state.knownMask & HUD_STREAM_REQUIRED) != HUD_STREAM_REQUIRED) return null;
+        return snapshot(state, true);
+    }
+
+    /** No snapshot allocation on each intercepted quad or glyph. */
+    public static boolean isHudStreamStateSafe() {
+        State state = STATES.get();
+        return (state.knownMask & HUD_STREAM_REQUIRED) == HUD_STREAM_REQUIRED
+            && state.program == 0 && state.activeTexture == 0
+            && state.clientActiveTexture == 0 && state.texture0Enabled
+            && state.texture0 > 0 && state.viewportWidth > 0
+            && state.viewportHeight > 0;
+    }
+
+    private static Snapshot snapshot(State state, boolean hudKnown) {
         return new Snapshot(state.program, state.readFramebuffer,
             state.drawFramebuffer, state.depthFunction, state.pixelPackBuffer,
             state.arrayBuffer, (state.knownMask & ARRAY_BUFFER) != 0,
@@ -431,16 +484,19 @@ public final class EarlyGlStateTracker {
             state.red, state.green, state.blue, state.alpha,
             state.viewportX, state.viewportY, state.viewportWidth,
             state.viewportHeight,
-            (state.knownMask & HUD_REQUIRED) == HUD_REQUIRED,
+            hudKnown,
             (state.knownMask & PARTICLE_REQUIRED) == PARTICLE_REQUIRED,
             state.invalidations);
     }
 
     public static void invalidate() {
+        EarlyModelLightingState.invalidate();
         State state = STATES.get();
         state.knownMask = 0;
         state.compatibilityKnown = false;
+        state.vertexArrayKnown = false;
         state.depthRangeKnown = false;
+        state.fogDistanceMode = 0;
         state.invalidations++;
         state.mutationSerial++;
     }
@@ -545,6 +601,7 @@ public final class EarlyGlStateTracker {
     }
 
     private static final class State {
+        private int fogDistanceMode;
         private int knownMask;
         private int program;
         private int readFramebuffer;
@@ -559,6 +616,7 @@ public final class EarlyGlStateTracker {
         private int arrayBuffer;
         private int elementBuffer;
         private int vertexArray;
+        private boolean vertexArrayKnown;
         private boolean vertexArraySupported;
         private int activeTexture;
         private int texture0;
@@ -869,3 +927,4 @@ public final class EarlyGlStateTracker {
         public long getInvalidationSerial() { return invalidationSerial; }
     }
 }
+

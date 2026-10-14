@@ -1,0 +1,87 @@
+Nothirium 实现对照与 ICE 重写记录（2026-10-13）
+
+参照来源
+官方仓库 https://github.com/Meldexun/Nothirium ，本次读取 main 分支源码。
+gradle.properties 标明 0.4.9-beta；main.zip SHA256：
+318C59F1D813C2529E8B55AD5F55FAE6188AB489E19A6AE05AD442E013F9D1E0。
+该哈希冻结本次读取内容，不把浮动 main 分支等同于发布 JAR 的确切提交。
+源码保存在工作区外 C 盘 nothirium-source-reference，未打入 ICE 制品。
+ICE 以下代码为自己的实现，参照其算法与调用关系；不是重命名打包第三方源码。
+
+已逐项阅读的实际实现（路径均相对 src/main/java/meldexun/nothirium）
+
+1. renderer/chunk/AbstractChunkRenderer.java
+setup 先处理透明排序，再遍历可见区块。每个区块用 visibleDirections 合并
+不同入口对应的出口方向；邻居通过相机所在方向、遮挡、视锥筛选。
+addToRenderLists 在遍历期间按各层有效 VBO 分流。它不是仅替换 draw API。
+
+2. renderer/chunk/AbstractRenderChunkProvider.java 与 AbstractRenderChunk.java
+区块拥有固定六邻居引用，随相机跨区块更新边缘邻接和复用槽位。
+网格持有 IVBOPart，绘制时直接读 first/count；dirty 控制后台重新编译。
+
+3. mc/renderer/chunk/ChunkRendererGL43.java
+setup 轮转两套各层 offset/command 缓冲，映射后写入相机相对偏移和四整数
+间接命令；透明层反序。绘制阶段 glMultiDrawArraysIndirect(GL_QUADS)。
+通过 timestamp query 等待复用缓冲可写，VAO 在几何缓冲变化后重建。
+没有把四边形普遍转换为三角形。
+
+4. mc/renderer/chunk/ChunkRendererDynamicVbo.java、opengl/DynamicVBO.java
+每层一个 DynamicVBO，以 128 顶点扇区分配。支持不可变存储/DSA，增长
+时拷贝并通知 VAO；上传使用 buffer sub-data。不能据此认定上传必有卡顿。
+
+5. mc/renderer/chunk/RenderChunkDispatcher.java、RenderChunkTaskCompile.java
+ForkJoinPool 后台任务编译，渲染线程队列发布 GPU 结果。缓存构建器复用，
+取消检查阻止旧任务覆盖新区块。编译同时计算可见性、各层网格及透明排序。
+完整替换还含 BetterFoliage、OptiFine、ChunkAnimator 等接入点。
+
+6. mc/mixin/MixinRenderGlobal.java、mc/renderer/ChunkRenderManager.java
+setupTerrain 转给自己的管理器；renderBlockLayer 直接进入各层渲染器。
+旧 updateChunks 不再执行，方块更新转成自己的 dirty 标记。
+
+ICE Build6 的落地改动
+- NativeTerrainVisibility：相机方向约束、入口可见方向合并、索引数组 BFS。
+  不安装运行时对照、回退判定和性能门禁；加载时删除原 BFS 循环。
+  目前仍借用原区块邻居查询、方块网格编译及实体/方块实体列表发布 ABI。
+- NativeTerrainFrameAdapter：删除 renderBlockLayer 的逐层过滤循环。
+  每个 setupTerrain 开始新帧，首次绘制时统一准备四层数据。
+- NativeTerrainFrameData：按层保持顺序，透明层反向，偏移和命令使用统一
+  baseInstance 索引，合成一次 GPU 上传。这一点比参照的分层上传更集中。
+- NativeTerrainBufferAccessor：网格直接附着到 VertexBuffer；每帧不再通过
+  IdentityHashMap 查询网格。该映射仅用于上传、释放和资源清理。
+- 保留 GL_QUADS，保留自有雾公式及光照纹理；未采用已发现平面着色差异
+  的三角形方案。性能收益以完整整合包实测为准。
+
+仍未完成的结构差异
+ICE 尚未替换完整编译调度器，不能称为完成整个 Nothirium
+架构。Build6 构建通过不表示性能目标完成；必须检查画面及匹配场景 FPS。
+
+实际整合包调用链补充
+130-render-global-bytecode.txt 中 OptiFine 的 getRenderChunkOffset 直接调用
+RenderChunk.getRenderChunkNeighbour，已有邻居缓存；后续只是高度与圆形
+视距判断。因此不能把“调用旧邻居查询”推断为“每次空间查找”，暂不加入
+重复邻接缓存。setupTerrain 末尾仍有原更新调度遍历以及 build near 同步
+编译调用，这与 Nothirium 自有任务队列存在实质差异，留待计时定位。
+
+Build6 冻结 JAR SHA256
+97630B858B3B65D4016BA81CF32F76264790C63AE68B62626D1D386F3D577625
+构建 54 秒；1276 项测试，130 项可选跳过，0 失败、0 错误。
+实际捕获的 OptiFine RenderGlobal 转换及 ASM 验证通过，确认原遍历调用
+和每层 addRenderChunk 调用已移除。制品启动检查通过。
+
+后续 Build7/Build8（2026-10-13）
+已独立实现保持原四边形顺序的 16 位索引面裁剪，避免按面重排造成植被
+共面覆盖次序差异。保留 GL_QUADS 与平面着色末顶点；透明层完整保留。
+四层 offset/ElementsIndirect 命令统一上传，长网格按 65532 顶点分段。
+最新构建 1280 项测试；GPU SOLID/CUTOUT_MIPPED/TRANSLUCENT 各 36 项
+画面对照通过。原生 CPU 可见性/命令准备仍是当前待优化工作。
+完整实测和 Nothirium 实体距离差异见 ICE-1.0.30-NATIVE-TERRAIN-WORKLOG.txt。
+尚未达到新增 20% 目标，不能用 GPU 时间降低量代替 FPS 提升比例。
+
+Build9 / Build10 后续
+Build9 将网格挂到 RenderChunk 的 Section，由 compiled 字段实际发布更新
+四层 activeMask；已移除 Build6 的 NativeTerrainBufferAccessor/VBO 附着。
+Build10 参照 AbstractChunkRenderer.addToRenderLists 的职责划分，在遍历中
+构造图层队列，处理原调度器在 setupTerrain 后发布 GPU 网格的时序差异。
+ICE 仍保留自身有序 16 位索引剔除；六平面固定变换在上传时计算，普通网格
+使用单段布局。透明四边形次序、渲染接口及实体距离没有因优化而改变。
+这些改动是否提高最终 FPS 以整合包匹配实测为准，不能由算法推算承诺。

@@ -15,14 +15,14 @@ public enum OptimizationModule {
     SRP_STATIC_MESH("srp-static-mesh", "SRP 多模型静态分支批处理"),
     SRP_PATH_NODE_CACHE("srp-path-node-cache", "SRP 单次寻路节点缓存", true),
     SRP_TARGET_SEARCH("srp-target-search", "SRP 最近目标线性选择", true),
-    SRP_POSE_CACHE("srp-pose-cache", "SRP Kirin/Heblu 姿态缓存"),
+    SRP_POSE_CACHE("srp-pose-cache", "SRP Heblu 动画公共表达式复用"),
     SRP_PARTICLE_COLLISION("srp-particle-collision", "SRP 粒子碰撞复用"),
     VANILLA_CHUNK_DISPATCH("vanilla-chunk-dispatch", "原版区块工作线程与缓冲调度"),
     VANILLA_CHUNK_SORT("vanilla-chunk-sort", "原版透明区块原始类型排序"),
     VANILLA_CHUNK_VBO_UPLOAD("vanilla-chunk-vbo-upload", "原版区块 VBO GPU 复制流水线"),
     OPTIFINE_DYNAMIC_LIGHTS("optifine-dynamic-lights", "OptiFine 动态光源不可变快照"),
     RUSTIC_LATTICE_STATE("rustic-lattice-state", "Rustic 栅栏连接状态与包围盒缓存", true),
-    VANILLA_SAVE_TICK_INDEX("vanilla-save-tick-index", "全量保存计划刻临时索引", true),
+    VANILLA_SAVE_TICK_INDEX("vanilla-save-tick-index", "保存计划刻增量索引", true),
     LYCANITES_PATH_NODE_CACHE("lycanites-path-node-cache", "Lycanites 单次寻路缓存", true),
     LYCANITES_REGISTRY_LOOKUP("lycanites-registry-lookup", "Lycanites 注册表单次探测", true),
     LYCANITES_SPAWN_SCAN("lycanites-spawn-scan", "Lycanites 刷怪方块扫描", true),
@@ -81,13 +81,13 @@ public enum OptimizationModule {
     // ordinary PBO animation stream operational.
     MODERN_TEXTURE_PERSISTENT_RING("modern-texture-persistent-ring",
         "动画纹理 Persistent PBO ring"),
-    // MDI command streaming has an independent online benefit loop and fuse;
-    // failure falls back to the already-certified terrain multi-draw path.
+    // MDI command streaming has an independent failure fuse; an actual
+    // submission failure leaves the terrain multi-draw path available.
     MODERN_TERRAIN_MDI("modern-terrain-mdi", "地形 MDI 命令 ring"),
-    // Persistent Arena writes are measured independently from terrain draw
-    // batching; a shared-memory or driver regression keeps subdata active.
+    // Persistent Arena writes have a separate failure domain from terrain
+    // batching; a failed mapping leaves subdata available.
     MODERN_TERRAIN_PERSISTENT_MAPPING("modern-terrain-persistent-mapping",
-        "地形 Arena Persistent Mapping"),
+        "地形持久映射上传暂存"),
     // Visibility suppression owns the final ordinal/mask bit and is isolated
     // from both the PBO stream and its persistent mapping strategy.
     MODERN_TEXTURE_VISIBILITY("modern-texture-visibility",
@@ -111,7 +111,32 @@ public enum OptimizationModule {
     ICEANDFIRE_PATH_NODE_CACHE("iceandfire-path-node-cache",
         "Ice and Fire 单次寻路缓存", true),
     FBP_CUBE_SUBMISSION("fbp-cube-submission",
-        "FBP 立方体粒子提交精简");
+        "FBP 立方体粒子提交精简"),
+    SRP_MOB_CAP("srp-mob-cap", "SRP 生物上限合并计数", true),
+    SRP_INFESTATION_CACHE("srp-infestation-cache", "SRP 感染名字规则缓存", true),
+    SRP_LIGHT_SEARCH("srp-light-search", "SRP 光源扫描低分配", true),
+    SRP_WEAKNESS_RULES("srp-weakness-rules", "SRP 伤害弱点规则编译", true),
+    OTG_BIOME_ARRAY_CLEAR("otg-biome-array-clear", "OTG 生物群系数组有效区域清理", true),
+    RECURRENT_CLOUD_FIELD("recurrent-cloud-field", "Recurrent Complex 单次云场插值复用", true),
+    RECURRENT_VALUE_WORKSPACE("recurrent-value-workspace", "Recurrent Complex 插值工作区复用", true),
+    ENTITY_COLLISION_BOXES("entity-collision-boxes", "实体碰撞箱按需分配", true),
+    ENTITY_NEAREST_QUERY("entity-nearest-query", "实体最近目标查询工作区", true),
+    VANILLA_EQUIPMENT_NBT("vanilla-equipment-nbt", "装备 NBT 单遍比较", true),
+    POTION_CORE_NBT("potioncore-entity-nbt", "PotionCore 实体 NBT 单次查询", true),
+    OTG_BO3_EXECUTION("otg-bo3-execution", "BO3 配置数组直接生成", true),
+    OTG_OBJECT_PREPARATION("otg-object-preparation", "OTG 对象依赖预读", true),
+    OTG_COLUMN_QUERIES("otg-column-queries", "OTG 未加载地形列查询", true),
+    RECURRENT_REFLECTION("recurrent-reflection", "Recurrent 方法绑定复用", true),
+    PHOSPHOR_LOCAL_PROPAGATION("phosphor-local-propagation", "Phosphor 区段内光照传播", true),
+    LIBRARIAN_CAPABILITY_QUERY("librarian-capability-query", "Librarian 能力名称复用", true),
+    LEVELUP_PROCESSOR_SNAPSHOT("levelup-processor-snapshot", "LevelUp 处理器工作区", true),
+    NUCLEARCRAFT_RADIATION_SNAPSHOT("nuclearcraft-radiation-snapshot", "NuclearCraft 有序辐射快照", true),
+    FISHING_BIOME_QUERY("fishing-biome-query", "FishingMadeBetter 生境查询复用", true),
+    SRP_ARCHITECT_QUERY("srp-architect-query", "SRP Architect 区段索引", true),
+    NBT_CONSTANT_KEYS("nbt-constant-keys", "NBT 常量键生命周期缓存", true),
+    SOUND_FILTERS("sound-filters", "SoundFilters 房间搜索与参数复用"),
+    VANILLA_AUTOSAVE_SLICES("vanilla-autosave-slices", "普通自动保存分散调度", true),
+    NOTHIRIUM_FOG_COMPATIBILITY("nothirium-fog-compatibility", "Nothirium 原版雾效兼容");
 
     private static final Map<String, OptimizationModule> MODULES_BY_ID;
     private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;
@@ -166,8 +191,8 @@ public enum OptimizationModule {
 
     /**
      * Runtime-managed renderer modules have no single target class whose ASM
-     * installation can serve as their readiness gate. Their own capability,
-     * output and benefit state machines remain the activation authority.
+     * installation can serve as their readiness gate. They initialize at
+     * renderer lifecycle boundaries after the required operations are available.
      */
     public boolean isRuntimeManagedRenderer() {
         return ordinal() >= MODERN_FRAME_COORDINATOR.ordinal()

@@ -101,7 +101,7 @@ public final class ModelImmediatePathBytecodeTest {
         final int[] pushes = new int[1];
         final int[] pops = new int[1];
         final int[] releases = new int[1];
-        visit(LwjglModelMeshCache.class, "emitImmediate",
+        visit(LwjglModelMeshCache.class, "emitClientArrays",
             new MethodVisitor(Opcodes.ASM5) {
                 @Override public void visitMethodInsn(int opcode, String owner,
                                                       String name,
@@ -119,6 +119,22 @@ public final class ModelImmediatePathBytecodeTest {
         assertTrue("client attrib pop is missing", pops[0] > 0);
         assertEquals("normal path must not duplicate pop with array release",
             0, releases[0]);
+    }
+
+    @Test
+    public void vertexArraySubmissionDoesNotRebuildOrPushClientArrays() throws Exception {
+        final int[] layoutCalls = new int[1];
+        final int[] draws = new int[1];
+        visit(LwjglModelMeshCache.class, "emitVertexArray", new MethodVisitor(Opcodes.ASM5) {
+            @Override public void visitMethodInsn(int opcode, String owner, String name,
+                                                  String descriptor, boolean itf) {
+                if (name.equals("glDrawArrays")) draws[0]++;
+                if (name.equals("glPushClientAttrib") || name.equals("glPopClientAttrib")
+                    || name.endsWith("Pointer") || name.equals("glGetInteger")) layoutCalls[0]++;
+            }
+        });
+        assertEquals(1, draws[0]);
+        assertEquals(0, layoutCalls[0]);
     }
 
     @Test

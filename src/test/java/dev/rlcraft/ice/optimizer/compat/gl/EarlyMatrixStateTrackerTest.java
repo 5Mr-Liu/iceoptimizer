@@ -13,6 +13,40 @@ import org.lwjgl.BufferUtils;
 
 public final class EarlyMatrixStateTrackerTest {
     @Test
+    public void nativeModelViewScopeDoesNotInventProjectionTextureOrOlderLevels() {
+        EarlyMatrixStateTracker.invalidate();
+        FloatBuffer nativeTop = identity();
+        nativeTop.put(12, 2.0F);
+        org.junit.Assert.assertTrue(EarlyMatrixStateTracker.beginModelViewScope(5888, nativeTop));
+        org.junit.Assert.assertTrue(EarlyMatrixStateTracker.isModelViewKnown());
+        assertFalse(EarlyMatrixStateTracker.isKnown());
+        assertNull(EarlyMatrixStateTracker.snapshot());
+        assertEquals(0, EarlyMatrixStateTracker.modelViewDepth());
+        EarlyMatrixStateTracker.pushMatrix();
+        EarlyMatrixStateTracker.translate(3.0F, 0.0F, 0.0F);
+        assertEquals(5.0F, EarlyMatrixStateTracker.modelView()[12], 0.0F);
+        EarlyMatrixStateTracker.popMatrix();
+        assertEquals(2.0F, EarlyMatrixStateTracker.modelView()[12], 0.0F);
+        EarlyMatrixStateTracker.popMatrix();
+        assertFalse(EarlyMatrixStateTracker.isModelViewKnown());
+        EarlyMatrixStateTracker.endModelViewScope();
+        assertNull(EarlyMatrixStateTracker.modelView());
+    }
+
+    @Test
+    public void modelScopeRejectsNonFiniteNativeTopAndDoesNotLeakPastEnd() {
+        FloatBuffer nativeTop = identity();
+        nativeTop.put(3, Float.NaN);
+        assertFalse(EarlyMatrixStateTracker.beginModelViewScope(5888, nativeTop));
+        assertFalse(EarlyMatrixStateTracker.isKnown());
+        assertFalse(EarlyMatrixStateTracker.isModelViewKnown());
+        org.junit.Assert.assertTrue(EarlyMatrixStateTracker.beginModelViewScope(5888, identity()));
+        EarlyMatrixStateTracker.endModelViewScope();
+        assertFalse(EarlyMatrixStateTracker.isModelViewKnown());
+        assertNull(EarlyMatrixStateTracker.snapshot());
+    }
+
+    @Test
     public void optimizedMultiplicationMatchesOriginalFloatBitsAndOverflow() {
         Random random = new Random(0x1ce107L);
         for (int sample = 0; sample < 1024; sample++) {

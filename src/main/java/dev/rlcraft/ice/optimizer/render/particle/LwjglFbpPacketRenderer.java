@@ -121,8 +121,7 @@ public final class LwjglFbpPacketRenderer {
 
         Slot slot;
         try {
-            ensureVertexArray();
-            slot = acquireSlot();
+            slot = ensureVertexArray() ? acquireSlot(bytes) : null;
         } catch (Throwable error) {
             FatalErrors.rethrowIfFatal(error);
             lastError = error;
@@ -202,22 +201,10 @@ public final class LwjglFbpPacketRenderer {
             legacyPackets++;
             return SubmitResult.FAILED_BEFORE_DRAW;
         }
-        try {
-            slot.fence = LwjglRetirementFence.tryAfterCurrentCommands(ledger);
-            if (slot.fence == null) {
-                slot.poisoned = true;
-                slot.fence = NeverReadyFence.INSTANCE;
-                lastError = new IllegalStateException("FBP Fence creation failed");
-            }
-        } catch (Throwable error) {
-            slot.poisoned = true;
-            slot.fence = NeverReadyFence.INSTANCE;
-            lastError = error;
-        }
-        FatalErrors.rethrowIfFatal(lastError);
+        // Every packet replaces the full store with glBufferData. Driver
+        // command ordering preserves earlier draws without a per-packet Fence.
         modernPackets++;
-        return lastError == null ? SubmitResult.MODERN
-            : SubmitResult.FAILED_AFTER_DRAW;
+        return SubmitResult.MODERN;
     }
 
     public Throwable getLastError() { return lastError; }
@@ -234,7 +221,8 @@ public final class LwjglFbpPacketRenderer {
                 if (slot.handle != null && validContext) {
                     ResourceLedger.RetirementFence fence = slot.fence;
                     slot.fence = null;
-                    ledger.retire(slot.handle, fence);
+                    ledger.retire(slot.handle, fence == null
+                        ? LwjglRetirementFence.afterCurrentCommands(ledger) : fence);
                 } else if (slot.fence != null && validContext) {
                     destroySlotFence(slot);
                 } else if (slot.fence != null) {
@@ -336,8 +324,8 @@ public final class LwjglFbpPacketRenderer {
                 == current.getClientActiveTexture();
     }
 
-    private void ensureVertexArray() {
-        if (vertexArrayId != 0 && vertexArrayHandle != null) return;
+    private boolean ensureVertexArray() {
+        if (vertexArrayId != 0 && vertexArrayHandle != null) return true;
         if (resourceGeneration <= 0L || contextGeneration <= 0L) {
             throw new IllegalStateException("FBP generation not prepared");
         }
@@ -347,9 +335,7 @@ public final class LwjglFbpPacketRenderer {
         }
         CacheBudget.Reservation reservation = ledger.reserveNativeObject(
             RenderResourceKind.VERTEX_ARRAY);
-        if (reservation == null) {
-            throw new IllegalStateException("FBP VAO resource budget exhausted");
-        }
+        if (reservation == null) return false;
         int id = 0;
         boolean allocationReturned = false;
         boolean nativeNameCreated = false;
@@ -370,6 +356,7 @@ public final class LwjglFbpPacketRenderer {
             reservation = null;
             vertexArrayId = publishedId;
             vertexArrayHandle = handle;
+            return true;
         } catch (Throwable error) {
             Throwable failure = error;
             boolean deleteCompleted = false;
@@ -387,35 +374,18 @@ public final class LwjglFbpPacketRenderer {
                 }
             }
             rethrow(failure);
-            return;
+            return false;
         }
     }
 
-    private Slot acquireSlot() {
+    private Slot acquireSlot(int requiredBytes) {
         for (int checked = 0; checked < slots.length; checked++) {
             int index = (nextSlot + checked) % slots.length;
             Slot slot = slots[index];
             if (slot.poisoned) continue;
-            if (slot.bufferId == 0) {
-                try { createSlot(slot); }
+            if (slot.bufferId == 0 || slot.handle != null && slot.handle.getBytes() < requiredBytes) {
+                try { if (!createSlot(slot, requiredBytes)) continue; }
                 catch (Throwable error) {
-                    slot.poisoned = true;
-                    lastError = error;
-                    return null;
-                }
-            }
-            if (slot.fence != null) {
-                boolean signaled;
-                try { signaled = slot.fence.isSignaled(); }
-                catch (Throwable error) {
-                    slot.poisoned = true;
-                    lastError = error;
-                    return null;
-                }
-                if (!signaled) continue;
-                try {
-                    destroySlotFence(slot);
-                } catch (Throwable error) {
                     slot.poisoned = true;
                     lastError = error;
                     return null;
@@ -439,15 +409,12 @@ public final class LwjglFbpPacketRenderer {
         }
     }
 
-    private void createSlot(Slot slot) {
+    private boolean createSlot(Slot slot, int bytes) {
         if (resourceGeneration <= 0L || contextGeneration <= 0L) {
             throw new IllegalStateException("FBP generation not prepared");
         }
-        CacheBudget.Reservation reservation = ledger.reserveGpu(
-            maximumPacketBytes);
-        if (reservation == null) {
-            throw new IllegalStateException("FBP GPU budget exhausted");
-        }
+        CacheBudget.Reservation reservation = ledger.reserveGpu(bytes);
+        if (reservation == null) return false;
         int id = 0;
         boolean allocationReturned = false;
         boolean nativeNameCreated = false;
@@ -458,7 +425,7 @@ public final class LwjglFbpPacketRenderer {
                 "FBP glGenBuffers failed");
             nativeNameCreated = true;
             RenderHandle handle = ledger.registerReserved(
-                RenderResourceKind.BUFFER, id, maximumPacketBytes,
+                RenderResourceKind.BUFFER, id, bytes,
                 resourceGeneration, contextGeneration, reservation);
             if (handle == null) {
                 throw new IllegalStateException("FBP GPU budget exhausted");
@@ -467,8 +434,28 @@ public final class LwjglFbpPacketRenderer {
             id = 0;
             nativeNameCreated = false;
             reservation = null;
+            RenderHandle previous = slot.handle;
             slot.bufferId = publishedId;
             slot.handle = handle;
+            if (previous != null) {
+                // Remove the VAO's reference before retiring the old payload;
+                // its queued draws remain fenced until storage is reclaimable.
+                int savedVao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+                int savedBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+                int savedClientTexture = GL11.glGetInteger(GL13.GL_CLIENT_ACTIVE_TEXTURE);
+                try {
+                    GL30.glBindVertexArray(vertexArrayId);
+                    GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, publishedId);
+                    setupBlockArrays();
+                } finally {
+                    GL30.glBindVertexArray(savedVao);
+                    GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, savedBuffer);
+                    GL13.glClientActiveTexture(savedClientTexture);
+                }
+                ledger.retire(previous,
+                    LwjglRetirementFence.afterCurrentCommands(ledger));
+            }
+            return true;
         } catch (Throwable error) {
             Throwable failure = error;
             boolean deleteCompleted = false;
@@ -489,7 +476,7 @@ public final class LwjglFbpPacketRenderer {
                 }
             }
             rethrow(failure);
-            return;
+            return false;
         }
     }
 

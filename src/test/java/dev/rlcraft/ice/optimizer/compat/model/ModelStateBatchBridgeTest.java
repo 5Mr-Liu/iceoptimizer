@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.compat.model;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import java.util.ArrayList;
 import java.lang.reflect.Field;
@@ -94,8 +95,8 @@ public final class ModelStateBatchBridgeTest {
         assertSame(model.leg2, ModelStateBatchBridge.rootAt(model, 2, 3));
         assertSame(model.leg3, ModelStateBatchBridge.rootAt(model, 2, 4));
         assertSame(model.leg4, ModelStateBatchBridge.rootAt(model, 2, 5));
-        assertFalse(ModelStateBatchBridge.beginRoots(null, 1));
-        assertFalse(ModelStateBatchBridge.beginRoots(new Object(), 2));
-        assertFalse(ModelStateBatchBridge.beginRoots(model, 1));
+        assertEquals(0, ModelStateBatchBridge.beginRoots(null, 1));
+        assertEquals(0, ModelStateBatchBridge.beginRoots(new Object(), 2));
+        assertEquals(0, ModelStateBatchBridge.beginRoots(model, 1));
     }
 }

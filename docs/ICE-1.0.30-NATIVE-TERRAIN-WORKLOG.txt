@@ -1,0 +1,622 @@
+ICE 自有地形渲染工作记录 — 2026-10-13
+
+当前状态（本轮结束）：Build12、Build13 均已撤销。生产 src 的 913 个文件
+逐字节匹配冻结 Build11；build/libs 的 1.0.30 JAR 也已重建并匹配 Build11。
+最终构建/打包/启动检查通过，1289 项测试、130 可选跳过、0 失败/错误，
+10 项制品启动检查通过。没有游戏运行；原游戏未改动、未部署候选。
+最新正式匹配成绩仍为 Build10 +7.430246%，20% 目标未达到。
+
+用户目标
+让 ICE 自身具备完整地形渲染能力，不以 Nothirium 外部依赖完成目标。
+移除新路径中的运行时验证、追踪、性能准入门禁及旧绘制回退。
+最新性能要求：相对 ICE 1.0.29 Build29 + Nothirium 0.4.9-beta 的兼容
+方案，再提高至少 20%。旧的相对原游戏 +50% 结果不等于新目标完成。
+画质、视距和玩法保持；战斗专项仍停止。
+
+当前实施
+- 新增 NativeTerrainRenderer / NativeTerrainShader，独立编写，无外部
+  渲染器实现或 shader 拷贝。复用游戏的区块构建和可见列表，ICE 直接
+  管理常驻几何、相机偏移、层内原有顺序与 multi-draw indirect 提交。
+- 启动配置 general.settings.nativeTerrainRenderer=true 选择新模式；
+  当前仍为实验性选项，默认 false。OpenGL 4.3；本候选不支持光影包。
+- 新模式的字节码直接替换最终 VBO 绘制及上传方法，删除原方法体、
+  观察计时和回退包装；不保存原版 VBO 副本，不创建旧 ModernRendererRuntime。
+- 新模式不运行旧 GL 状态追踪、输出验证、ABBA 性能准入、回归监控、
+  HZB 读回验证、每帧窗口/光影轮询。旧模式的源码仍是历史兼容代码，
+  不能把“新路径未引用”描述为已经物理删除整个历史框架。
+- 保留正常资源生命周期和 GL 状态还原；透明层不重排，不跳过实体或
+  动画。ChunkAnimator 使用其自身位移结果。F6 不卸载地形所有者。
+
+离线验证（不打包入游戏）
+- tools/NativeTerrainShaderProbe.java：192 组固定管线与 ICE 着色器的
+  原生 OpenGL 图像对照，纹理、光照贴图、无雾/三种雾、轴向/径向、
+  转向、相机偏移、透明裁切、混合、1/1.000001 区块缩放。
+  最大颜色通道误差 1，没有通道误差大于 1。不是整世界像素等价证明。
+- 新增字节码检查确认原绘制/上传回退体和计时调用已从新模式移除；
+  新增间接命令与实例索引顺序测试。
+- 全量 1266 常规测试：1136 通过、130 可选跳过、0 失败/错误；
+  10 项最终产物启动检查通过。升级版本号时发现并修正源码常量和
+  ModLinkageTest 的旧版本预期；未通过删测试掩盖错误。
+- 比较器新增 --required-gain-percent 参数，默认仍为原来的 50，
+  本轮显式传 20；未改变输入一致性、窗口活跃、完整性或慢帧检查。
+  原有 3 项比较器回归检查通过。
+
+Build1
+冻结 build/fps-target/130-native-build1-candidate/
+JAR SHA256 9AE98EF9296E801B247F17131FB168F47C228CC90E2F196DFE7DB1B82AF1E714
+live-130-native-build1-fixed-camera-v3-1，PID19912。
+08:09:37 实机明确启用 ICE 自有后端；预热时触发固定 448 MiB 顶限，
+08:10:07 报错退出世界。没有有效 FPS 样本，不能计入性能结果。
+只终止了该隔离测试进程；原实例、配置及存档未改动。
+
+Build2
+移除固定世界网格容量，按需求扩容，仅保留整数顶点寻址上限。
+增长步长为 1.5 倍；新缓冲复制存量后替换，删除旧名称由 GL 保证
+已提交命令的生命周期。原生分配失败会明确报错，不悄悄切回旧路径。
+全量构建与产物检查通过，日志 build/fps-target/130-native-build2-verified.log。
+隔离快照 live-130-native-build2-fixed-camera-v3-1 与
+live-130-nothirium-reference-fixed-camera-v3-1 均完成。
+串行，固定 v3 夹具，120 秒预热、各场景 60 秒，1920x1080、15 区块，
+基线为冻结 1.0.29 Build29 与 Nothirium。
+静止：309.900 -> 275.226 FPS，-11.19%；
+转向：312.661 -> 217.060 FPS，-30.58%；
+移动：307.964 -> 265.027 FPS，-13.94%；
+三场景比值几何平均：-19.042959%，未达标，慢帧指标也退步。
+GPU 中位耗时反而分别降低 4.65%、2.16%、8.72%，因此接下来用独立
+测试 agent 检查 CPU 可见性、提交及上传耗时。实体数量存在自然波动，
+以上仅是单次配对，不能视作跨场景统计结论。
+证据：build/fps-target/130-native-build2-vs-nothirium-reference.txt。
+
+Build3（尚未测定收益）
+- VAO 属性仅在几何缓冲名称变化时更新。
+- 直接调用 ChunkAnimator 的位移接口；队列为空时整层跳过动画查询。
+- 删除新后端 65536 条命令的人为上限，使用实际整数容量。
+- 独立小缓冲暂存上传，GPU 有序复制到几何缓冲，避免 CPU 直接改写
+  正被绘制的大缓冲引起隐式同步；不增加每帧验证或回退。
+- 启动选择尊重 enabled=false。
+- 自有分配器使用按大小查找、相邻空闲区合并，取消旧通用分配器的
+  预算、代际、故障隔离和追踪状态。10000 次随机分配/释放验证无重叠。
+- 新模式不安装 prepareUpload 观察入口，VBO 生命周期直接交给新后端。
+- 全量构建、最终产物检查通过（53 秒）；冻结目录
+  build/fps-target/130-native-build3-candidate/，JAR SHA256
+  7A95A66A18A52AB0AA12E8034512C3C5E0AD49317AC28FF52316C5C5FADA3193。
+- 追加诊断：Build2 上传仅 0.025–0.032 毫秒/帧，不支持“上传同步主导”
+  的猜测；地形提交 0.347–0.388 毫秒/帧。工具计时只存在独立 agent 中。
+- live-130-native-build3-fixed-camera-v3-1 在进入世界前的 OpenAL64.dll
+  alcCreateContext 崩溃（hs_err_pid22652.log），无有效样本。
+- 新快照 live-130-native-build3-coarse-v2 正常完成诊断：静止 268.019 FPS。
+  三场景 CPU 提交规划 0.261–0.277 毫秒/帧，GL 提交 0.075–0.121 毫秒/帧。
+  这轮有测试计时且采样更短，不能代替正式目标评测。
+
+Build4（正式性能测试进行中）
+- 共享四边形索引，使用 GL_TRIANGLES + glMultiDrawElementsIndirect，
+  原顶点字节、四边形顺序和透明顺序不变。
+- CPU 使用整数数组组装，然后一次批量拷贝到直接缓冲。
+- 动画完成后本次网格不再反复查询 ChunkAnimator 的 WeakHashMap，
+  新上传（包括区块换位后的上传）重新读取动画待处理状态。
+- 普通 192 项及非共面/不同逐顶点颜色光照 192 项原生图像对照均通过，
+  最大通道误差 1。证据 130-native-triangles-probe.txt 与
+  130-native-triangles-irregular-probe.txt。
+- 首次构建被 ForgeGradle 联网证书预检拦下；只对重试的 --offline 命令
+  传入 test_certs=false，不改系统证书或全局设置，不下载依赖。
+- 重试构建通过（50 秒），1272 项测试，130 项可选跳过，0 失败或错误，
+  产物启动检查通过。冻结 build/fps-target/130-native-build4-candidate/，
+  JAR SHA256 F08B34A9D037B0217B8613E9A4402AF26D83AC00FE558F7790E4A7C27C2369FE。
+- 新隔离快照 live-130-native-build4-fixed-camera-v3-1 使用冻结 v3 夹具，
+  120 秒预热、每场景 60 秒，不安装测试计时 agent。
+- 09:01 正常结束：静止 279.357、转向 258.507、移动 273.842 FPS；
+  对本轮 Nothirium 兼容基线分别为 -9.86%、-17.32%、-11.08%，
+  几何平均 -12.814253%。未达标，P95/P99 仍退步。
+- 本轮转向末位置偏移约 0.83 格，移动末位置差约 3.97 格，期间出现
+  Pixen 交互消息；不能将移动场景视为严格重合视角的最终证明。
+  后续正式夹具需要固定相机路径，排除实体挤动对视角的影响。
+- 证据 build/fps-target/130-native-build4-vs-nothirium-reference.txt。
+
+后续源码清理（已完成 Build5 构建）
+删除 ModernTerrainBridge、ChunkVboUploadBridge 过渡时期的 native 转交
+分支，NativeTerrainRenderer 绘制入口改为直接 void，不再保留接管布尔值。
+
+Build4 三角形试验被拒绝
+新增 GL_FLAT + 非共面/逐顶点颜色对照，在首项出现最大通道差 15、
+12672 通道误差 >1；四边形的末顶点颜色不等于每个拆分三角形的末顶点。
+同条件四边形 MDI 路径 192 项通过，最大通道误差 1。
+证据 130-native-triangles-flat-probe.txt 与 130-native-quads-flat-probe.txt。
+已从生产源码删除三角形索引缓冲/绘制试验，保留数组批量写入和动画缓存；
+没有加运行时图像检查或失败后重放旧渲染器。
+
+尚未达到/证明新增 20% 目标，不应发布为已达标版本。
+
+Build5
+去除三角形路径后的构建通过，1271 项测试，130 项可选跳过，0 失败。
+冻结 JAR SHA256 3F6C6D606D1FC9BF6D432CB7FD9474F3449A51218747D4F32B72778456C7F0DC。
+尚未进入游戏测试，后续转入用户要求的 Nothirium 源码对照重写。
+
+Build6
+详见 ICE-1.0.30-NOTHIRIUM-SOURCE-MAP.txt。
+实际源码确认后实现入口方向合并、索引 BFS、统一四层命令上传、直接网格
+引用。删除新路径原 BFS 和逐层筛选循环，不添加运行时验证或旧绘制重放。
+完整构建通过，1276 项测试，130 项可选跳过，0 失败；制品启动检查通过。
+固定路径测试夹具 v5 单独冻结，SHA256：
+4F4BD874DE21BC1CC764C09BE123857BC9D26326439F6484EE22001DF8189C0C。
+使用脱离实体碰撞的相机，保留自然实体活动与第一人称玩家自身模型排除。
+该夹具没有进入生产模组，需要通过本轮相机/画面实测后才能作性能对照。
+
+Build6 固定相机实测结果（09:31 / 09:39 完成）
+场景             ICE Build6         ICE29 + Nothirium
+静止             308.494755         321.977569
+转向             280.623808         323.394364
+移动             303.753784         300.038287
+FPS 比值几何平均 -5.582372%，未达新增 20% 要求。静止及转向 P95/P99
+退步；GPU 中位时间比兼容方案低约 5–7%，所以不能只从 GPU 时间判断 FPS。
+三场景实际相机路线、锚点及末姿态对照通过；静止截图地形和雾视觉一致，
+自然实体/粒子活动不同，不代表完整逐像素画面验证。
+移动末尾曾执行文件名搜索，最终验收仍需隔离负载的独立重复测试。
+证据：130-native-build6-vs-nothirium-fixed-path.txt，两组 fixed-path-v5-1 快照。
+
+后续按面裁剪离线研究（不在生产模组运行）
+NativeTerrainFaceProbe 使用实际捕获的大场景网格与当前 NativeTerrainShader。
+SOLID：36 个旋转/平移/平面及平滑着色组合，逐像素一致，2585548 顶点
+降至约 1674324（不同视角略有变化）。
+CUTOUT_MIPPED：首项 1297 个颜色通道不同，最大差 113。分离原因后，
+所有差异来自面分组重排；分组后进一步裁剪的差异为 0。禁止直接将此
+重排路径用到植被层；保持四边形原顺序的索引过滤才是可继续评估的方向。
+证据：130-native-face-solid-probe.txt、130-native-face-cutout-split-probe.txt。
+NativeTerrainVisibility 后续源码改用实际 ActiveRenderInfo 相机偏移，覆盖
+第三人称；Build6 冻结包未修改，该修正等待下一版构建验证。
+
+Build6 粗粒度计时（09:49 完成，测试用 agent，不进入生产包）
+静止/转向/移动：BFS 0.364/0.530/0.526 ms/frame；整段可见性
+0.446/0.628/0.626 ms/frame。同步编译接近 0；不据猜测重写同步编译。
+实体阶段 0.864/0.616/0.731 ms/frame；发现原版 Entity 渲染距离权重
+设置位于 Nothirium 提前取消位置之后，需运行时读值确认比较条件。
+
+Build7
+独立实现保持四边形原顺序的 16 位索引过滤。每段最多 65532 顶点，
+通过 baseVertex 定位；不改变末顶点、纹理、透明层排序或着色模型。
+在上传时计算轴对齐矩形的面元数据，相机跨越面组边界才更新索引。
+四层命令仍统一上传一次。透明层保留全部顶点，分段后保持块内顺序。
+可见性入口合并中，同一区块的面可见性掩码每次遍历读取一次。
+包含实际相机偏移修正；未替换编译器和调度器，不能宣称已完整重写。
+离线 SOLID、CUTOUT_MIPPED、TRANSLUCENT 各 36 项 GPU 逐像素一致。
+植被层示例：5432460 -> 3477920 顶点；透明层保留 2438580 顶点。
+这些是 GPU 工作量与正确性证据，不等于实际 FPS 提升。
+构建及制品启动检查通过（59 秒）。冻结 JAR SHA256：
+97C03BED729D2479D8E34574F1C2BC910BF4D4536FB951819F7F65D282FE909E。
+测试夹具 v6 只新增实体渲染距离权重读数，SHA256：
+39A021765227EF751222DD465BF5E5E17FE5B2C3F2AFA7C0123E5757F6407276。
+
+Build7 未统一实体距离的默认行为实测（10:16 / 10:24 完成）
+场景             ICE Build7         ICE29 + Nothirium
+静止             304.111735         283.220907
+转向             289.528012         296.328585
+移动             303.478174         289.450203
+FPS 比值几何平均 +3.226852%，仍未达到新增 20%。转向 P95/P99 退步，
+静止 P99 退步；GPU 中位时间减少 35.75%–41.02%，不等于 FPS 增益。
+参照实体距离权重 1.0，原生版 1.875，三场景均确认，因此这不是同画质
+验收。Nothirium 在 setupTerrain 第一个 profiler.startSection 前取消，
+实际字节码中 Entity.setRenderDistanceWeight 在更后位置；根因有源码
+和运行时读值支持。后续测试夹具可对两边统一施加原版距离规则，不改
+正式模组、不缩小原生版视距；原始默认对照保留，不能混称为同一基线。
+静止截图地形和雾没有明显缺块，原生组近处有绿色药水粒子及跳跃状态，
+自然实体活动也不同，未宣称整幅游戏截图逐像素相同。
+证据：130-native-build7-vs-nothirium-fixed-path-v6.txt，两个 v6-1 快照。
+
+原版距离诊断夹具 v7
+-Dice.bench.matchVanillaEntityDistance=true 在渲染开始时对两组统一施加
+clamp(renderDistanceChunks / 8.0, 1.0, 2.5)。该修正在测试夹具，不进入
+生产 JAR；摘要记录 policy 和实际值。新的数据必须单列为原版距离对照，
+不能替换前面的 renderer_default 结果。JFR/coarse 轮仅用于定位瓶颈。
+
+Build7 原版实体距离诊断（coarse + JFR，仅定位，不做 FPS 验收）
+两个 v7 diagnostic 快照均确认权重 1.875，policy=vanilla。
+转向：原生可见性 0.794 ms/frame、命令准备 0.561 ms/frame、实体 0.637；
+参照 setupTerrain（包含其命令准备）0.616、绘制入口 0.068、实体 0.627。
+说明距离统一后实体阶段接近，原生 CPU 可见性和准备仍需优化。
+原生 JFR：测量阶段客户端 1815 个样本；BFS 栈 36.91%、prepare 栈
+28.37%、NativeChunkAnimation.offset 栈 15.04%。这些是样本分布，
+不能换算成精确耗时。动画热点落在 MethodHandle 调用边界；实际安装的
+ChunkAnimator 1.2.1 字节码确认到期会删除 timeStamps，不能推断动画未结束。
+证据：130-native-build7-jfr-summary.txt、130-nothirium-matched-jfr-summary.txt、
+130-chunk-animator-bytecode.txt、130-native-render-chunk-bytecode.txt。
+
+Build8
+NativeAnimationOffset 使用 LambdaMetafactory 在初始化时绑定外部动画接口，
+热路径调用普通接口，保留原 getOffset 的行为。去掉 Native BFS 对原版
+RenderChunk.frameIndex 的重复写入，自有 seen/recorded 已经承担访问状态。
+该字段在实际字节码里仅用于旧 BFS 的重复入队判断；不影响 frustum 的独立帧缓存。
+完整构建与启动检查通过（55 秒）。冻结 JAR SHA256：
+EF036218906819947F8D66C2520C37F01327FE04EE02ABB302AC52C479F95ACE。
+此时尚待游戏实测，不宣称绑定方式或删重复写入已经带来性能收益。
+
+Build8 诊断结果（11:55 完成）
+静止/转向/移动：BFS 0.312/0.550/0.534 ms/frame；prepare
+0.410/0.466/0.414 ms/frame。比 Build7 的部分阶段计时降低，但世界实体
+活动不同、带 JFR 和计时插桩，不据此宣称因果性 FPS 增益。
+动画直接计数：静止 0 次、转向 0 次，移动 1364 次，总 0.8758 ms，
+均摊每帧 0.000161 ms。说明原 JFR 15.04% 调用栈不能当作动画自身
+CPU 时间，可能有 JIT 采样位置偏差，撤回任何由它推导动画占时的解释。
+普通接口调用仍比动态调用边界简洁，保留且不宣称这是主要提速来源。
+下一步使用冻结 Build8 与 ICE29 + Nothirium，在双方实体距离 1.875 的
+独立无 JFR、无分段计时运行中比较；不覆盖先前默认距离不匹配的数据。
+
+Build8 无诊断工具的原版距离配对测试（12:07 / 12:16 完成）
+120 秒预热，每场景 60 秒；两边均 fixed camera v7，权重 1.875，
+无 JFR、无分段计时 agent；原始世界、图形选项哈希及相机路径检查通过。
+场景             ICE Build8         ICE29 + Nothirium       FPS 变化
+静止             313.917404         267.793003             +17.22%
+转向             284.472660         277.003761              +2.70%
+移动             296.482             260.578491             +13.78%
+三项 FPS 比值几何平均 +11.056391%；20% 要求未达到。
+GPU 中位时间减少 36.77%–42.65%，但转向 P99 +7.05%，移动 P99 +2.46%。
+相机与画质条件匹配不等于自然世界负载完全一致：参照静止实体数 245–295，
+原生 207–233，另两场景也有差别。不得把这单轮 +11.06% 当成已证实的
+普遍增益，后续还需要重复试验；当前没有足够依据宣布原生版达标。
+静止截图人工对照：地形、树木、雾及手部构图一致，没有明显缺块；实体与
+粒子不同，不是整幅画面逐像素相等。GPU 离线 108 项像素对照结论另列。
+证据：130-native-build8-vs-nothirium-matched-formal-v7.txt 与两个 formal-v7-1 快照。
+当前所有游戏已退出；正式游戏未部署候选包；源码与冻结 Build8 一致。
+下一处实测支持的工作方向仍是可见性遍历与命令准备的数据访问成本，
+应优先减少重复的区块/层查询和状态维护，收益仍须实际测试，不能预报百分比。
+
+Build9：发布时记录图层，区块直接持有四层网格
+渲染线程上传时将 Mesh 归入区块 Section；在实际 RenderChunk 对 compiled
+字段的每次写入后更新 activeMask，包含构造、完成发布、取消/移动的 DUMMY。
+每帧不再逐层读取 CompiledChunk.isLayerEmpty、VertexBuffer 和附着网格。
+移除旧 NativeTerrainBufferAccessor 及 VBO 附着字段；冷路径的生命周期
+映射仍用于 GPU 资源释放。发布只写图层状态，不在 worker 线程改 GPU 分配器。
+动画状态合并为每区块一次。GL 数据格式、四边形顺序和透明分段顺序未改。
+BFS 改为 int 队列及正/负 epoch 的单 visited 数组，删除重复 seen/recorded。
+区块 ID 到对象的表只在 ViewFrustum 数组更换时建立；未假定空间数组顺序
+等于 ID。测试用倒序空间数组验证此点，并覆盖多入口合并、视锥拒绝及 epoch 溢出。
+完整构建及制品启动检查通过（51 秒）：1285 测试，130 可选跳过，0 失败。
+真实捕获 RenderChunk 的所有 compiled 字段写入都有发布调用，ASM 验证通过。
+首次测试的邻居夹具误用了 1 格偏移，修正为区块的 16 格后通过；保留初次日志。
+冻结 JAR SHA256 DD5B555F1226A02BAC3074156B96AF021E40ACFEBE7CCC3C9ECBD1D74A58B5E0。
+尚待游戏实测，不预报 FPS 收益。
+
+Build9 诊断（12:42 完成，coarse + JFR）
+静止/转向/移动 BFS：0.352/0.574/0.551 ms/frame；prepare：
+0.409/0.447/0.428 ms/frame。与 Build8 相比没有明确的整体改善，不能
+把数据结构精简宣传为已实现提速。运行完整结束，没有插桩失败或崩溃。
+静止截图地形、植被、水面、雾及手部构图正常，没有明显缺块；仅人工检查。
+接下来只加强外部计时，分离 glGetFloat、camera inverse、command pack、
+bulk copy 和 index refresh，保持生产 Build9 冻结，以便定位剩余 0.40 ms。
+补充数据：捕获大场景 SOLID 1013 网格、CUTOUT_MIPPED 1015 网格、
+TRANSLUCENT 524 网格，超过 65532 顶点的网格均为 0；最大分别
+11924、25652、29680。普通单段网格布局是可继续评估的优化候选，未实施。
+
+Build9 细分诊断（12:56 完成，外部 phase agent v5，无 JFR）
+静止/转向/移动 prepare 0.356/0.418/0.382 ms；其中 command pack
+0.0141/0.0146/0.0142 ms，bulk copy 0.0049/0.0055/0.0053 ms；
+modelview 读取 0.00040–0.00048 ms，camera inverse 0.00024–0.00025 ms。
+index refresh 0.0067/0.0097/0.0110 ms/frame。主要剩余工作在逐区块、
+逐层及逐网格整理循环；不是 glGetFloat 或命令数组最后的复制。
+这些是带外部计时的阶段数据，不能替代无插桩的最终 FPS 比较。
+
+Build10：遍历中整理图层，上传时变换面平面
+- NativeTerrainDrawQueue 随相机 BFS 填充四层队列，延续各层原遍历顺序。
+  Mesh 发布/释放使队列失效，首次绘制前刷新，处理 setupTerrain 后的上传。
+  动画只在有待处理的区块中计算一次；透明层仍沿用反序命令打包。
+- 单段网格直接存 drawCount，超过 65532 顶点才分配分段数组。
+  origin/scale/baseVertex 存在 Mesh 内，减少热循环中的间接读取。
+- 六个面边界在上传时折入固定 scale/translation，热循环不再重复除法；
+  向外取下一可表示值，保守保留边界四边形。UNKNOWN 面与透明层规则不变。
+完整构建及制品启动检查通过（63 秒）：1288 测试，130 可选跳过，0 失败。
+新测试覆盖图层队列替换/取消/扩容、变换后的面边界和原顺序。
+大场景 CUTOUT_MIPPED，scale=1.000001，36 组 GL 平滑/平面着色、视角、
+平移对照全部像素完全相等；130-native-build10-plane-pixels.txt。
+JAR SHA256 03BD1AFCC8F5341F1662316A60B98D1C2570274A132BC96E46C9A9CDECFE31D6。
+13:05 启动隔离整合包诊断；生产代码无性能计时或运行时画面对照。
+
+Build10 分段诊断（13:09 完成，90 秒预热，每场景 20 秒）
+场景         prepare ms/frame    BFS ms/frame   队列重建 ms/frame
+静止         0.160851            0.219987       0.014237
+转向         0.217851            0.556006       0.021167
+移动         0.193284            0.560263       0.028660
+上轮 Build9 phase 的 prepare 分别为 0.356125/0.417901/0.382281；
+转向 BFS 为 0.538435，移动 0.503667。新结构将少量工作移入 BFS，
+两个阶段合计仍下降，不能仅拿 prepare 降幅当 FPS 收益。
+队列重建调用静止 981/7235 帧、转向 1373/6154、移动 1654/6111；
+不是每帧都重建，平均成本 0.014–0.029 ms。暂不再增加队列局部更新机制。
+图形无明显缺块，完整运行正常退出，静止截图已人工检查。
+下一步无分段计时/JFR，与重新运行的 ICE29+Nothirium 做 120/60 秒配对。
+
+Build10 无诊断工具的原版距离配对测试（13:20 / 13:28 完成）
+候选 native-build10-matched-formal-v7-1；参照 nothirium-reference-matched-formal-v7-2。
+120 秒预热，各场景 60 秒；两边实体距离权重 1.875、固定相机 v7，无分段
+计时/JFR。世界与图形选项哈希、相机路径/位置检查通过，窗口全程活跃。
+场景           ICE Build10       ICE29+Nothirium        FPS 变化
+静止           336.642207        304.433390             +10.58%
+转向           308.504613        301.116249              +2.45%
+移动           322.826329        294.980287              +9.44%
+三场景 FPS 比值几何平均 +7.430246%；20% 目标未达到。
+P99 帧耗时分别增加 14.41%、10.71%、9.83%，不能宣布总体流畅度已达标。
+GPU 中位耗时减少 26.44%–33.56%；CPU 阶段收益不等于最终 FPS 提升。
+本轮参照比早先参照更快；不能挑旧参照的低帧率来宣称新版本超过 20%。
+自然实体数量仍有差别：静止 native 206–229 / reference 224–251，
+转向 205–218 / 219–242，移动 171–237 / 170–232。因此也不能把
+这单轮 +7.43% 当成已证实的普遍增益，或从两轮比例下降推导 Build10 退步。
+候选与参照静止截图已人工检查：地形、植被、雾与手部构图一致，无明显缺块；
+自然实体和粒子不同，不是整幅图像逐像素一致。
+报告：build/fps-target/130-native-build10-vs-nothirium-matched-formal-v7.txt。
+当前没有游戏进程；正式游戏未部署候选；生产源码与冻结 Build10 一致。
+仍须优化可见性阶段和慢帧。下一处源码支持的研究方向是 RenderInfo 的
+逐帧分配及旧实体列表维护；RenderLib 1.4.5 实际字节码将实体/TESR 绘制
+转给自己的管理器，但删除旧列表前还需核对它们的实际消费者与变换顺序。
+未实施该改动，也没有把潜在收益当作已测结果。
+
+Build11：删除 RenderLib 接管后的旧实体列表维护
+重新读 OptiFine G5 实际字节码后发现 getRenderInfo() 已返回区块持有的
+同一个对象。ice$newRenderInfo 这个方法名不代表该整合包有逐帧分配，
+撤销此优化假设，不再额外建立复用缓存。
+RenderLib 实际 RenderGlobal 字节码在其 EntityRenderManager/TESR manager
+调用后使用 ICONST_0 + IFEQ 无条件跳过旧列表消费者；其源代码直接从
+world.loadedEntityList/TileEntityUtil 整理自己的可见实体列表。
+本地 mods 的 class 常量扫描未找到其他直接使用这两个 OptiFine 列表的
+模组（仅原 ICE 1.0.25 自身的访问器/安装器包含名字）；结果见
+130-render-info-list-consumers.txt。不是对任意反射访问的全覆盖证明。
+新原生路径安装时识别这两个已被跳过的消费者，各自删去遍历内对应的
+getChunk/ChunkUtils.hasEntities（内部反射读布尔字段）及 compiledTiles。
+保持主地形/更新列表，RenderLib 实体和 TESR 绘制逻辑未改。
+没有逐帧检测和新门禁；仍使用这些列表的非 RenderLib 路径保持其列表。
+真实捕获字节码测试确认只剩主列表 add；将实体跳过条件变为非无条件时，
+测试确认实体列表保留、方块实体列表仍可独立省略。
+完整构建和启动制品检查通过（54 秒），1289 项，130 可选跳过，0 失败。
+冻结 JAR SHA256 1B2C8D272BD395DF4CD8AEB9E2BA560AC27F6F204A5736BFD02E1A5E904209BC。
+待运行诊断：外部 agent v7 对每 128 次 BFS 中一次采样其子调用；包含空
+计时括号校准，微短方法结果有计时本身开销。该 agent 不进入生产 JAR，
+其阶段和 FPS 不与无探针正式结果混算。
+
+Build11 诊断（14:01 完成，外部采样 agent v7）
+实际运行抓取的 RenderGlobal.ice$appendRenderInfo 只剩主列表 add，实体/
+TESR 查询已移除；130-native-build11-render-global-bytecode.txt 有完整证据。
+游戏正常结束，无 agent 失败/VerifyError；静止截图地形和实体均显示。
+此运行出现自然生物给予的跳跃/速度效果和对应 HUD/粒子，与前轮无效果
+场景不同；不使用本轮 FPS 作为正式对比。原 v7 stableCreative 只在开始
+清除效果，不能保证过程中不再获得效果，这是已有匹配方法的局限。
+抽样 neighbor/frustum 每次约 194/235 ns，info 约 32 ns；细分计时存在
+显著插桩干扰，空括号校准也不稳定，不据此换算“真实百分比”或相加总时长。
+结果用于确认后续关注邻接解析/视锥路径；下一版回到 v6 粗阶段工具测量。
+已有 Build9 JFR 在 12:41:22–12:42:22 的60秒内无 Client thread sleep、park、
+monitor enter 事件；18 次 GC 暂停总251ms、最大28.9ms。不能由该旧录制
+证明当前慢帧来源；退出后的 sleep 已排除，不能混入渲染结果。
+
+Build12：按实际查询条件复用邻居索引
+OptiFine 原本缓存相邻 RenderChunk 对象；这次缓存的是调用经过高度/雾
+距离限制后返回的区块 ID，减少重复条件判断、对象索引转换和跨对象读取。
+每个区块的六个方向按需解析，未访问的方向不提前构建；仍调用实际原查询，
+没有重新猜测圆形视距算法。原点块坐标（复制数值，非可变对象引用）、fog、
+maxY 或布局 revision 改变后延迟重建。RenderChunk 实际 position.setPos
+以及 OptiFine setRenderChunkNeighbour 调用使布局失效；无每帧全图重建。
+每帧仍重新读取遮挡关系和执行原视锥方法，四层及透明绘制顺序保持不变。
+测试覆盖稳定帧无重复查询、遮挡/视锥变化仍生效、已存在/原本为空的邻居
+在移动后刷新、可变原点/雾/高度改变以及 epoch 溢出。
+第一次测试预期把西入口对应的东出口写成南出口；修正测试预期，算法未改。
+完整构建和启动制品检查通过（95 秒）：1292 项，130 可选跳过，0 失败。
+冻结 JAR SHA256 FD805E42149F1E796EFDA6CB986589F7B8ACDE077FBA4BA926DB97139B718601。
+（历史状态，已被下方测量与撤销记录取代。）
+
+Build12 测量及撤销；2026-10-13 交接复核
+隔离 live-130-native-build12-phase-diagnostic-v7 的粗阶段结果：
+静止/转向/移动 BFS 0.202074/0.576180/0.599404 ms/frame；
+静止每次调用 0.615745 ms。Build10 同口径转向/移动为
+0.556006/0.560263 ms/frame。不同运行不能严格隔离因果，但结果不足以
+支持新增邻居索引缓存及失效状态，故撤销该实验，不将其作为优化保留。
+冻结 Build12 只作实验档案，没有新的正式配对成绩。
+复核四个恢复文件逐字节等于 Build11 source.zip：NativeTerrainVisibility、
+PrimitiveTerrainVisibilityAdapter 及对应两个测试。未重新引入缓存。
+复核时没有 Java/游戏进程；D 盘剩余约 1.23 GiB，不在 D 盘做游戏快照。
+build/libs/1.0.30 JAR 哈希仍为 FD805E42…B718601，确属 Build12，
+不能部署或拿来代表当前源码。冻结 Build11 哈希再次核对为
+1B2C8D272BD395DF4CD8AEB9E2BA560AC27F6F204A5736BFD02E1A5E904209BC。
+正式匹配性能结论仍只有 Build10 几何平均 +7.430246%，20% 未达标，
+P99 三场景退步；Build11/12 没有可替换它的新正式结果。
+
+Build11 恢复重建
+build、optimizerBundleZip、verifyArtifactStartup 全部通过（86 秒）。
+1289 项测试，131 可选跳过，0 失败/错误；10 项制品启动检查全部通过。
+此次未传 Nothirium 测试 JAR，额外跳过了可选 ABI 检查；下次命令补齐。
+重建 JAR 哈希精确等于冻结 Build11，产物错配已经消除。
+可复现的后续完整构建命令现保存为 tools/build-native-terrain-candidate.ps1。
+
+Build13 候选：Fully 视锥的浮点支持乘积
+已阅读实际 OptiFine 字节码、RenderLib 普通视锥及 Nothirium 遍历实现。
+独立实现，按乘积选极值，保留 float 转换、加法次序、<=0 边界及 NaN
+语义；前四平面和后两平面分别处理。无每帧配置判定、缓存、oracle、
+原方法重放或运行时验证。只在 nativeTerrainRenderer 启动时安装。
+400000 个针对真实捕获方法的差分用例通过，另有 20000000 组浮点
+乘积组合穷举通过；6 项针对性测试无跳过。数学依据和限制单列于
+ICE-1.0.30-FRUSTUM-SUPPORT-NOTES.txt。尚未宣称游戏性能收益。
+
+Build13 完整构建、诊断与撤销（2026-10-13 18:27 后）
+完整构建 43 秒，1295 项，130 可选跳过，0 失败/错误；10 项启动检查通过。
+冻结 JAR SHA256 FF5EC5E3143F1F1BFC8C36CBBD22C0D3BC96CCCA137CC2B81AB70FF935FC576F。
+两个全新 C 盘快照、同一初始世界/画质/配置；固定 v7，相同粗粒度 v6，
+90 秒预热、每场景 20 秒，串行运行，测试时未并行编译/复制/GPU 探针。
+均正常结束、窗口活跃、实体距离 1.875；真实运行 class 确认替换已生效。
+Build11 / Build13 的 BFS ms/frame：
+静止 0.294262/0.354643，转向 0.547138/0.603316，移动 0.568196/0.572583。
+静止 ms/call 0.618733/0.660471。未见净改善；全通过微基准也更慢。
+总 FPS 和慢帧不能全归因于此改动：候选自然实体更多，实体阶段明显更慢。
+详见 130-native-build13-vs-build11-frustum-diagnostic.txt，保留全部慢帧结果。
+不做没有依据的正式候选验收，不把诊断 FPS 混入正式 Build10 成绩。
+已移除 Build13 生产实现及注册，恢复 Build11；冻结源码/测试/报告保留，
+外部研究工具放入 tools/experiments/frustum-support-build13。
+
+撤销 Build13 后的最终验证
+完整 build、optimizerBundleZip、verifyArtifactStartup 通过（50 秒）。
+1289 项、130 可选跳过、0 失败/错误；10 项最终制品启动检查通过。
+全部 913 个 src 文件与 Build11 source.zip 逐字节相同，没有额外/缺失文件。
+build/libs/ice-rlcraft-optimizer-1.0.30.jar SHA256：
+1B2C8D272BD395DF4CD8AEB9E2BA560AC27F6F204A5736BFD02E1A5E904209BC。
+日志 130-native-build11-restored-after-build13.log，产物与生产源码重新一致。
+本轮两个测试进程均已正常退出，没有修改原游戏文件或部署候选。
+两组输入清单仅 ICE JAR 哈希不同；世界、options、fixture、agent 和相机
+参数一致。自然实体和药水效果仍不是完全确定性输入，保留此限制。
+
+Build11 人工体验包（用户要求打包，自行安装）
+已生成 build/playtest/ice-rlcraft-optimizer-1.0.30-build11-playtest.zip。
+包内唯一 JAR 与冻结 Build11 字节完全相同，附中文 INSTALL.txt、
+BUILD-INFO.txt 和 SHA256SUMS.txt；ZIP CRC 与嵌入 JAR 哈希复核通过。
+体验 ZIP SHA256：FE0A278F7BEA5B2C2069D6435A1520597E9DA7963B824BEB4A5A5E43176EE37A。
+修正 packaging/optimizer-install.txt 的旧 1.0.29/Nothirium 安装指引，
+明确 nativeTerrainRenderer 默认关闭、启用位置、移出 Nothirium、保留
+RenderLib，以及实际测试图形设置；同步刷新标准 bundle 的 INSTALL.txt。
+只重新打包已验证的 JAR，没有重编译或新增游戏测量，未改动原游戏目录。
+
+2026-10-13 Build15：默认开启与 F6 总开关体验包
+用户明确要求 F6 一并关闭/恢复全部当前开启的 ICE 优化，包含自有地形。
+基于 Build11 修改启动默认值；第一次启动或旧配置缺少 nativeTerrainRenderer
+时即选择原生地形。显式 false、外部 Nothirium 和各模块原配置继续受尊重。
+此前“F6 只暂停部分优化”的体验说明已作废，由本次实现和新 INSTALL 替代。
+保留四处进入 ICE 前的原地形方法，以总开关切换执行；停止区块构建后切换
+并释放/重建对应 GPU 资源。没有新增自动性能门控，也未恢复已否定实验。
+不改 profiler/F3 的显示设置，用户自行清理分析器；不修改或部署到原游戏。
+完整构建：1293 项（1163 通过、130 可选跳过）、0 失败/错误；10 启动检查通过。
+隔离副本已完成 enabled/paused/paused/enabled 实测并正常退出；地形截图可见，
+重开 ICE 后重新报告原生后端 active。首个关闭场景触发 OptiFine hasEntities
+反射探测告警，已由 OptiFine 处理，无崩溃；保留在记录中，不声称无告警。
+F6 保留已加载类/对象及保证恢复正确性的失效记录，不是卸载 JAR 的内存对比。
+具体实现、资源交接与验证边界见 docs/ICE-1.0.30-F6-COMPARISON-NOTES.txt。
+本次只验证开关功能，不更新正式性能达标结论。
+体验包：build/playtest/ice-rlcraft-optimizer-1.0.30-build15-f6-playtest.zip
+ZIP SHA256：7C1FDE27EA52792147E439DEC3968F5200005DE6BB3C6B764341BF074D282201。
+JAR SHA256：D00DC7A56B5C7DB5A65F93A0CD0AD2798116170B8189BAFBB674998931EBB6F9。
+冻结源码和制品：build/fps-target/130-native-build15-f6-candidate/。
+用户包/标准 bundle 的 CRC、嵌入 JAR、INSTALL 已验证；冻结源码逐文件一致。
+
+2026-10-13 F6 死锁修复，正式体验版本升为 1.20
+用户报告 Build15 按 F6 永久卡死。实际 F6 按键路径的重建压力测试在第 4 次
+切换复现，线程栈确认客户端等待构建器、待上传任务等待客户端执行的死锁。
+修复为等待 dispatcher 前先取消全部 RenderChunk 编译任务及其上传 future。
+新增真实任务/上传 future 的回归测试；没有降低画质或改动已启用模块选择。
+修复候选 Build16 在相同压力场景连续完成 6 次 F6 切换并正常退出。
+输入世界、options、fixture、相机与各配置内容/哈希一致，只有优化器 JAR 不同；
+配置清单 JSON 序列化顺序不同，原始清单哈希不同，不误报为配置内容变化。
+随后按用户要求改为精确版本 1.20（Minecraft 仍为 1.12.2），重建并核对：
+仅版本元数据与 IceMod 两个版本常量改变，全部优化代码与实测候选逐字节一致。
+完整构建 63 秒：1294 项，1164 通过、130 可选跳过、0 失败/错误；10 启动检查通过。
+Build15 作废，历史文件仅作档案。默认开启、F6 关闭/恢复含地形的总开关保留。
+没有 profiler/HUD 行为改动，也没有向原游戏部署；用户自行替换安装。
+切换仍重建地形，短时画面有远处加载过程；不声称零停顿或画面逐像素一致。
+正式性能结论未更新，Build12/13 实验仍撤销。
+详细记录：docs/ICE-1.0.30-F6-DEADLOCK-FIX.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-playtest.zip
+JAR SHA256：9E7D0342D970E8F03115C1F3D47D12FE5812E57DB360F1BEF9D8D26B93A36200
+ZIP SHA256：A2077DBC9F0F685808E3E5FBD286ECFC6E5F9FB7D375FBCF60E622FE5F0E9D30
+最终包 CRC、嵌入 JAR、INSTALL 核对通过。
+冻结源码/构建输入/测试夹具和制品：build/fps-target/120-release-f6-fix/。
+
+2026-10-13 ICE 1.20 修订 2：F6 重开后转向崩溃与资源重建修复
+用户确认卡顿发生在 F6 重新开启之后。原游戏 20:40:21 崩溃报告指向原生
+地形上传的 28 字节布局检查。源码确认空透明层重排序可能不初始化复用
+构建器，但 dispatcher 仍上传；真实方法回归复现 count=0、残留 112 字节
+触发同一异常。未自然复现用户的完整崩溃操作序列，不混淆证据强度。
+空层/零顶点先清理旧网格和计数，不再检查旧字节；保留非空布局检查。
+F6 保留 RenderChunk/VBO 对象与编号，释放对应几何存储并调度正常重建；
+保留先取消任务再等待归还的死锁修复。没有更改画质、玩法或模块开关语义。
+最终构建 1299 项：1169 通过、130 可选跳过、零失败；另 10 项制品检查通过。
+隔离快照 live-120-hotfix2-f6-reuse-stress 完成 6 次真实 F6 切换及持续转向，
+每次确认 15376 个区块对象全部保留；真实 GL 非空/空/非空上传探针通过。
+正常退出，未生成崩溃报告；检查了关闭与最终恢复后的地形截图。
+重开场景最大帧耗时依次为 26.44/55.09/20.70 ms，仍有慢帧，不能承诺零卡顿。
+短测排除切换及稳定期，不是正式匹配性能验收；Build10 +7.43% 结论不变。
+Build12/13 仍撤销；不添加每帧检查器或探针，不修改原游戏或分析器。
+版本仍为精确 1.20；新旧 JAR 同名，用户需要替换原来的 1.20 JAR。
+详细证据与限制：docs/ICE-1.20-EMPTY-UPLOAD-FIX.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix2-playtest.zip
+JAR SHA256：0D00E411AA9990F5F27FE832FD50DD21CACC183E66CE47CF3F39F71384943321
+ZIP SHA256：6BF18C0034C4E634BDA2D51F51757B43B52A6EDC6E29D98A082EE2AB3EAB6633
+冻结源码、构建输入、夹具和验证：build/fps-target/120-hotfix2-release/。
+
+2026-10-13 ICE 1.20 修订 3：绘制队列驻留层修复，待用户实机验证
+用户新报告 21:34:36 崩溃，异常为 ICE visible terrain has no resident mesh。
+确认实际安装修订 2。编译层 used 标记不保证上传非零顶点，空网格释放或
+分层更新后 activeMask 可含没有 resident Mesh 的层，原队列错误地直接抛异常。
+改用 activeMask & residentMask，保留已有上传/释放/发布时的队列失效流程。
+此前空上传、F6 死锁及复用修复均保留，没有增加回退或降低画质。
+用户明确要求本次不测试；只执行 -PackageOnly 编译与打包，27 秒成功。
+没有运行自动测试、启动检查或游戏，禁止引用旧的 1299 项结果为本版通过。
+JAR 只有 NativeTerrainDrawQueue.class 与修订 2 不同；包完整性检查通过。
+原客户端残留在崩溃界面，先请求正常退出；确认无 Server thread 后清理残留。
+未部署新 JAR，原游戏安装文件保持修订 2。无新的性能或消除卡顿结论。
+详细记录：docs/ICE-1.20-RESIDENT-LAYER-FIX.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix3-playtest.zip
+JAR SHA256：7A8A7D5CEAB8E02F2957EDF3C1BFC392395AAF565D8B129F11FD146BAF6C3267
+ZIP SHA256：9FB5ED0EF05FE422A8386911A290BA5160043559A363A184D3C548B3093CE578
+冻结目录：build/fps-target/120-hotfix3-release/。
+
+2026-10-13 ICE 1.20 修订 4：索引准备批处理，待用户实机验证
+用户反馈平均帧率提高，但转向偶发卡顿、大型建筑/地形出现时明显卡顿。
+已有 JFR 中 38/725 个客户端样本落在索引写入，源码确认每个变化网格独立
+暂存上传、逐索引 putShort、扩容复制完整预留容量，形成集中额外开销。
+参照本地 Nothirium DynamicVBO/ChunkRendererDynamicVbo 后，独立修改：
+合并每次 prepare 的索引暂存上传，每四个 short 合并一次 putLong，GPU
+扩容只复制已写入前缀。保持四边形/透明顺序、分段重定位和原剔除条件。
+复用批处理缓冲会增加直接内存高水位；未改原区块编译调度，仍可能有其他停顿。
+本次是源码依据的优化候选，没有当前用户场景的实测归因或改善百分比。
+遵守用户不测试要求，只 PackageOnly 编译打包，1 分 10 秒成功。
+没有运行自动测试、启动检查、游戏或性能采样；不能引用旧测试为本版通过。
+修订 2/3 与 F6 修复保留；Build12/13 仍撤销，没有改原游戏或部署新 JAR。
+详细记录：docs/ICE-1.20-INDEX-BATCH-NOTES.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix4-playtest.zip
+JAR SHA256：504755DF5799A1032A3539E5D88F350D350F653EA58FCED70BD20968D4B333B7
+ZIP SHA256：75A61AAB1C3B3F376DFAA00827E167B60CA6D484FF8DEB9E851320FAC53EAF83
+冻结目录：build/fps-target/120-hotfix4-release/。
+
+2026-10-13 ICE 1.20 修订 5：客户端区块构建与上传调度，待用户实机验证
+用户要求继续做区块加载优化。实际捕获 OptiFine RenderGlobal 显示：
+updateChunks 入参增加 1.0E8ns 后用于上传；近处玩家更新及 immediate/empty
+分支会在主线程调用 updateChunkNow。参照已有 Forge/Nothirium 源码改写调用点。
+将这两处立即重建交给原有异步队列；near 分支提交失败时不清 dirty，保留重试。
+正常帧上传使用原帧截止时间与 now+2ms 的较早值，不再接受额外 100ms 放宽。
+F6 关闭执行保存的原 setupTerrain/updateChunks；完整排空不受上传时间片约束。
+保留工作线程数、构建器池、距离优先与取消流程；不增加另一个任务队列。
+代价是区块/方块编辑画面可能稍晚刷新，单个大任务仍能超过时间片。
+这不是服务端生成优化，也不是经过测量的总加载时间或帧率提升结论。
+按用户要求未测试、未启动游戏，仅 PackageOnly 编译打包，28 秒成功。
+归档检查不等于运行时 ASM 验证；不得引用旧测试声称本版已通过。
+包含修订 4 索引批处理和此前修复；不部署到原游戏，不恢复 Build12/13。
+详细记录：docs/ICE-1.20-CHUNK-SCHEDULING-NOTES.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix5-playtest.zip
+JAR SHA256：3FB8D6D4FB2C08E619AB2C025CB066356B15EBD1CDC43D6E13E5D11BB544AE56
+ZIP SHA256：9ECCE3B1DA1A00779D980C041086ED659867878152817FCAC8691486C20038F7
+冻结目录：build/fps-target/120-hotfix5-release/。
+
+2026-10-13 ICE 1.20 修订 6：复杂建筑区块的 CPU 准备异步化，待用户实机验证
+用户要求继续优化单个大型建筑。源码确认每层上传在主线程逐四边形分类；
+把原面分类/剔除平面计算前移到现有构建线程，随原 future 传递 Prepared。
+参考 Nothirium RenderChunkTaskCompile 与 RenderLib GLBuffer；离线还原实际
+OptiFine G5 dispatcher 并核对发布 MD5，确认工厂调用在后台分支、队列锁之前。
+原距离队列、取消 future、allAsList 和构建器归还关系保留，不另建队列或等待。
+Prepared 无世界/区块/构建器引用，ThreadLocal 单次消费并在 finally 清理。
+空层先返回，透明排序保持，F6 关闭跳过 CPU 准备，直接上传入口保留计算。
+未拆分单次 GPU 上传；显存扩容、传输、绘制前索引及服务端生成仍可能停顿。
+后台负载及排队时元数据占用增加；无实测收益百分比或完全消除卡顿结论。
+按用户要求只 PackageOnly 编译打包，29 秒成功；未运行自动测试、启动检查
+或游戏。字节码阅读/包核对不是运行时 ASM 验证，不引用旧测试为本版通过。
+保留修订 2/3/4/5 和 F6 修复；不恢复 Build12/13，不改原游戏或部署。
+详细记录：docs/ICE-1.20-LARGE-MESH-PREPARATION.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix6-playtest.zip
+JAR SHA256：B2A66E77B77EA680818966CDBEAA3A2A91D99024914AAFF5590761D2668631DE
+ZIP SHA256：3B0CB2B14E2F85FC571F4AE01739E051F130C23FFE395844178A8267CB89F195
+冻结目录：build/fps-target/120-hotfix6-release/。
+
+2026-10-13 ICE 1.20 修订 7：Phosphor 坐标边界崩溃修复，待用户实机验证
+当次 22:52:13 崩溃是服务端光照更新的 fetchNeighborDataFromCursor:413，
+ArrayIndexOutOfBoundsException: -1；已确认原安装为修订 6。
+实际 Phosphor class 哈希与启动时 ICE 接收的输入哈希一致。原方法解码邻居
+压缩键，y 取 8 位；ICE 旧改写从 curPos 加方向，边界进位时不等价。
+例如排队 y=256 的游标解码为 0，向下的压缩邻居有效 y=255，旧计算却为 -1。
+日志没有记录完整队列键，不断言具体触发方块；已定位与异常一致的源码错误。
+恢复原 decodeWorldCoord，再提取/复用局部坐标，删除方向数组；不吞异常、
+不跳过光照或关闭整个模块。原 PhosphorCrashFix 修的是其他注解问题，无需移除。
+后续保存 Already processing updates 是先前光照异常留下状态的次生错误。
+修订 2..6 地形代码保持逐字节一致，默认开启/F6 语义保留；未改原游戏和存档。
+补充现有回归夹具的 -1/256/257 高度及真实解码游标，按用户要求没有编译或运行
+测试，也没有启动检查/游戏。仅 PackageOnly 构建 30 秒成功，包内容核对通过。
+详细记录：docs/ICE-1.20-PHOSPHOR-COORDINATE-FIX.txt。
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix7-playtest.zip
+JAR SHA256：B7E06766E5FD932ABB5398B4DC9F64F5BF1F77884E75D09DBE14F04748D319AC
+ZIP SHA256：7EF0A55045CA16AA1EF4766722CE0B56A859AD8215CEF465AC33F45F087A633E
+冻结目录：build/fps-target/120-hotfix7-release/。

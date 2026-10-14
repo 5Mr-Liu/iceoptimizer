@@ -44,7 +44,7 @@ public final class TemporaryGpuResourceScope implements AutoCloseable {
     public Slot reserve(RenderResourceKind kind, long bytes,
                         IntDestroyer destroyer) {
         checkOpen();
-        if (kind == null || bytes <= 0L || destroyer == null) {
+        if (kind == null || bytes < 0L || destroyer == null) {
             throw new IllegalArgumentException("temporary GPU resource");
         }
         if (size >= slots.length) {

@@ -4,11 +4,15 @@ import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Consumer;
 
 /** Shared status bridge between the early Coremod and the regular runtime. */
 public final class OptimizerRegistry {
     private static final OptimizationModule[] MODULES = OptimizationModule.values();
     private static final ModuleCircuitBreaker[] BREAKERS = new ModuleCircuitBreaker[MODULES.length];
+    private static final Object MASK_LOCK = new Object();
+    private static volatile boolean runtimePaused;
+    private static volatile Consumer<Boolean> pauseObserver;
     private static volatile long operationalMask;
     private static volatile long operationalMaskHigh;
 
@@ -30,7 +34,7 @@ public final class OptimizerRegistry {
 
     public static synchronized void beginRuntime() {
         for (ModuleCircuitBreaker breaker : BREAKERS) breaker.resetRuntimeState();
-        refreshOperationalMask();
+        setRuntimePaused(false);
     }
 
     public static synchronized void configure(OptimizerRuntimeConfig config) {
@@ -52,6 +56,42 @@ public final class OptimizerRegistry {
 
     public static boolean isOperational(OptimizationModule module) {
         return module != null && isOperational(module.ordinal());
+    }
+
+    /** Session switch; leaves configuration, failures and compatibility decisions intact. */
+    public static void setRuntimePaused(boolean paused) {
+        boolean changed;
+        synchronized (MASK_LOCK) {
+            changed = runtimePaused != paused;
+            runtimePaused = paused;
+            refreshOperationalMask();
+        }
+        Consumer<Boolean> observer = pauseObserver;
+        if (changed && observer != null) notifyPauseObserver(observer, paused);
+    }
+
+    public static boolean isRuntimePaused() { return runtimePaused; }
+
+    /** Optional recorder subscription; no polling or work at optimized call sites. */
+    public static void observeRuntimePause(Consumer<Boolean> observer) {
+        pauseObserver = observer;
+        if (observer != null) notifyPauseObserver(observer, runtimePaused);
+    }
+
+    private static void notifyPauseObserver(Consumer<Boolean> observer, boolean paused) {
+        try {
+            observer.accept(Boolean.valueOf(paused));
+        } catch (Throwable error) {
+            FatalErrors.rethrowIfFatal(error);
+            // Recording must not interrupt F6 resource handoff or change the module mask.
+            org.apache.logging.log4j.LogManager.getLogger("ICE Optimizer")
+                .warn("ICE pause recorder callback failed", error);
+        }
+    }
+
+    /** For retaining model source during a pause, never for executing optimizations. */
+    public static boolean isConfiguredOperational(OptimizationModule module) {
+        return module != null && BREAKERS[module.ordinal()].isOperational();
     }
 
     /** One volatile read; used by injected and other high-frequency call sites. */
@@ -101,15 +141,20 @@ public final class OptimizerRegistry {
     static long operationalMaskHighForTest() { return operationalMaskHigh; }
 
     private static void refreshOperationalMask() {
-        long next = 0L;
-        long nextHigh = 0L;
-        for (int i = 0; i < BREAKERS.length; i++) {
-            ModuleCircuitBreaker breaker = BREAKERS[i];
-            if (breaker == null || !breaker.isOperational()) continue;
-            if (i < Long.SIZE) next |= 1L << i;
-            else nextHigh |= 1L << (i - Long.SIZE);
+        // Separate from the Registry monitor: breaker callbacks can hold a breaker lock.
+        synchronized (MASK_LOCK) {
+            long next = 0L;
+            long nextHigh = 0L;
+            if (!runtimePaused) {
+                for (int i = 0; i < BREAKERS.length; i++) {
+                    ModuleCircuitBreaker breaker = BREAKERS[i];
+                    if (breaker == null || !breaker.isOperational()) continue;
+                    if (i < Long.SIZE) next |= 1L << i;
+                    else nextHigh |= 1L << (i - Long.SIZE);
+                }
+            }
+            operationalMask = next;
+            operationalMaskHigh = nextHigh;
         }
-        operationalMask = next;
-        operationalMaskHigh = nextHigh;
     }
 }

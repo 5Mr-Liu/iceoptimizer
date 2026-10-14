@@ -79,6 +79,30 @@ public final class CommonModelStateBatchRuntimeTest {
         assertFalse(Trace.active);
     }
 
+    @Test public void splitScopeVisitsRootsInRealDrawOrderOnBothForgeAndG5Branches() throws Exception {
+        assertSplit(forgeBiped());
+        try (OptifinePatchedClassSupport support = OptifinePatchedClassSupport.openOrSkip()) {
+            assertSplit(support.patchAndRemap("bpx", CommonModelStateBatchAdapter.BIPED.replace('/', '.')));
+        }
+    }
+
+    private static void assertSplit(byte[] source) throws Exception {
+        Fixture original = fixture(source, false);
+        Fixture adapted = fixture(source, true);
+        for (boolean child : new boolean[]{false, true}) {
+            Trace.reset(false);
+            original.draw(child, true);
+            List<String> expected = new ArrayList<String>(Trace.events);
+            Trace.reset(true);
+            Trace.split = true;
+            adapted.draw(child, true);
+            assertEquals(expected, Trace.events);
+            assertEquals(java.util.Arrays.asList(1, 2, 3, 4, 5, 6), Trace.boundaries);
+            assertEquals(1, Trace.normalEnds);
+            assertFalse(Trace.active);
+        }
+    }
+
     private static void assertOrder(byte[] source) throws Exception {
         Fixture original = fixture(source, false);
         Fixture adapted = fixture(source, true);
@@ -202,7 +226,7 @@ public final class CommonModelStateBatchRuntimeTest {
         final String name;
         Part(String name) { this.name = name; }
         public void func_78785_a(float scale) {
-            assertEquals(Trace.enabled, Trace.active);
+            assertEquals(Trace.enabled && !(Trace.split && "field_178723_h".equals(name)), Trace.active);
             Trace.events.add("part:" + name + ':' + scale);
             if (name.equals(Trace.failPart)) throw Trace.failure;
         }
@@ -227,20 +251,25 @@ public final class CommonModelStateBatchRuntimeTest {
 
     public static final class Trace {
         static final List<String> events = new ArrayList<String>();
-        static boolean enabled, active, failTail;
+        static final List<Integer> boundaries = new ArrayList<Integer>();
+        static boolean enabled, active, failTail, split;
         static String failPart;
         static int begins, normalEnds, failureEnds;
         static RuntimeException failure;
         static Throwable closedFailure;
         static void reset(boolean batch) {
-            events.clear(); enabled = batch; active = false; failTail = false; failPart = null;
+            events.clear(); boundaries.clear(); enabled = batch; active = false; failTail = false; failPart = null; split = false;
             begins = normalEnds = failureEnds = 0; closedFailure = null;
             failure = new IllegalStateException("original callback failure");
         }
         public static void head() { assertFalse(active); events.add("head"); }
         public static void animation() { assertFalse(active); events.add("animation"); }
         public static void tail() { assertFalse(active); events.add("tail"); if (failTail) throw failure; }
-        public static boolean beginRoots(Object model, int kind) { assertFalse(active); begins++; active = enabled; return enabled; }
+        public static int beginRoots(Object model, int kind) { assertFalse(active); begins++; active = enabled; return enabled ? (split ? 2 : 1) : 0; }
+        public static void beforeRoot(Object model, int kind, int index) {
+            boundaries.add(Integer.valueOf(index));
+            active = index != 2;
+        }
         public static void end() { normalEnds++; active = false; }
         public static void endAfterFailure(Throwable original) { failureEnds++; closedFailure = original; active = false; }
     }

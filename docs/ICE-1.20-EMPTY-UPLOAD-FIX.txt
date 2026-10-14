@@ -1,0 +1,168 @@
+ICE 1.20 hotfix2 — empty terrain upload boundary
+2026-10-13
+
+User evidence
+-------------
+The user reported intermittent camera-turning hitches and a later crash, and
+clarified that the hitches appeared after turning ICE back on with F6.
+Original game was inspected read-only. Installed 1.20 JAR SHA256:
+9E7D0342D970E8F03115C1F3D47D12FE5812E57DB360F1BEF9D8D26B93A36200.
+Crash report: crash-2026-10-13_20.40.21-client.txt, Rendering chunk,
+IllegalStateException: ICE native terrain needs the 28-byte quad layout,
+NativeTerrainRenderer.store -> upload -> ChunkRenderDispatcher upload future.
+F6 OFF completed 20:39:29; ON completed 20:39:48. The crash followed at 20:40:17
+(report written 20:40:21). This is distinct from the previous F6 dispatcher
+deadlock. No user JVM survived for inspection, and the old exception did not
+record stride/count/byte bounds, so the exact failing input is not recoverable.
+
+Code evidence and deterministic reproduction
+-------------------------------------------
+Reviewed Forge 2860 source and the previously captured actual transformed
+OptiFine RenderChunk/RenderGlobal bytecode. RenderGlobal schedules transparency
+resorts for layers that were STARTED, which can still have no emitted geometry.
+RenderChunk.resortTransparency returns without beginning/finishing its builder
+when the layer is empty or has no state. ChunkRenderWorker nevertheless submits
+the translucent builder for upload. A pooled builder can retain the byte limit
+and translation of its previous upload: reset clears vertexCount, not bytes.
+ICE checked the byte limit and coordinates before accounting for empty output.
+Nothirium's local reference independently separates unused/zero-vertex builders
+from upload; no Nothirium code or dependency was added to the release.
+
+Test-only reproduction against pre-fix compiled code produced:
+stride=28, count=0, mode=7, position=0, limit=112, layer=Translucent.
+It throws the same layout exception. The test's chunk is GL-free, so its null
+position is not an observed game location. See 120-empty-upload-red-test.log.
+Diagnostic JAR differs from released 1.20 only by more detailed exception text:
+2E07FCCC77A3838C524329363D8AFFA5B5A8B9607FCF70CDECE230E106327465.
+Two fresh natural-game diagnostic runs did NOT reproduce the full user crash:
+live-120-upload-layout-diagnostic (rotating views + real F6 OFF/ON), and
+live-120-upload-layout-movement (static/rotation/local movement with JFR).
+Thus the fixed boundary is proven, but do not claim the user's exact sequence
+was reproduced or that every possible layout exception has been eliminated.
+
+Change
+------
+An empty compiled layer or zero vertex count is an empty publication. Retire
+any prior native mesh, clear its VBO count, reset the builder, and return before
+creating GL storage or inspecting stale vertex bytes/coordinates. Release also
+invalidates the draw queue and detaches the final resident section. Nonempty
+geometry keeps the existing layout/coordinate contract and full visual data.
+The exception now includes stride/count/mode/bounds/layer/chunk if a genuinely
+nonempty incompatible payload reaches it. This adds no per-frame diagnostic
+logging, fallback renderer, performance gate, or suppressed error.
+
+Regression and build verification
+---------------------------------
+NativeTerrainUploadTest covers actual empty RenderChunk.resortTransparency,
+recycled bytes/coordinates, an unused builder, zero output marked used by a
+block renderer, and resident mesh/range release plus draw-queue invalidation.
+Initial test fixture incorrectly seeded its index allocator at vertex offset
+0 while its helper mesh's index range starts at 4. Corrected fixture setup and
+expected reused offset; no production change was needed for that assertion.
+Final build log: build/fps-target/120-hotfix2-empty-upload-build2.log.
+build + optimizerBundleZip + verifyArtifactStartup passed in 54 seconds.
+1298 tests: 1168 passed, 130 optional skipped, 0 failures/errors.
+10 final artifact/startup checks passed separately.
+JAR SHA256: 43DC1B9C4B4A17AA113940C567553D6631CDE62218F7AE8BC30872081FA8DB0D.
+
+Hitch investigation so far
+-------------------------
+Diagnostic rotation/F6 run: 20-second measured scenes, after the fixture's
+5-second settle; before F6 max frame 36.52 ms, restored ON max 45.16 ms, neither
+had a measured frame over 50 ms. This excludes the handoff/first settling frames
+and is not a guarantee about the user's rebuilding experience.
+Separate movement/JFR run: static max 75.61 ms, rotation max 51.64 ms, movement
+max 22.77 ms. Rotation had four frames above 25 ms and one above 50 ms.
+JFR shows GC pauses and substantial visibility traversal work, but sample
+proportions are not exact frame costs or proof of the user's hitch cause.
+No unmeasured visibility rewrite or rejected Build12/13 experiment was added.
+These are short diagnostics, not formal FPS acceptance or a new 20% claim.
+
+Release version stays exactly 1.20 (Minecraft 1.12.2). The user package uses a
+hotfix2 suffix to distinguish the new payload from the earlier 1.20 package.
+Default ON and F6 all-current-modules behavior remain. Original game, profiler
+HUD/settings and saved-world files are unchanged.
+
+Additional user clarification and recovery-only baseline
+------------------------------------------------------
+User confirmed the rotation hitches begin after F6 restores optimization.
+The empty-upload-only candidate (43DC1B9C...) completed a fresh isolated run:
+live-120-hotfix2-f6-recovery, 2026-10-13 21:05:47 through 21:08:03 +08:00.
+Real transformed dispatcher/GL probe passed nonempty -> empty -> nonempty
+publication, including clearing and restoring the resident mesh and VBO count.
+The probe runs before warmup/sampling and is never packaged in the release.
+Actual F6 OFF and ON both completed, all four rotating scenes completed, and
+the JVM exited normally. The restored ON screenshot contains visible terrain.
+Measured max frames after the five-second settle: initial ON 32.05 ms,
+OFF 65.25 ms, repeated OFF 40.94 ms, restored ON 56.32 ms. The restored scene
+had three frames above 25 ms, including two above 50 ms. Thus this crash fix
+alone did not eliminate hitches. JFR recorded 31.85-41.64 ms GC pauses after
+restore; this is not proof that a particular allocation caused the user's hitch.
+
+F6 resource-lifecycle candidate
+------------------------------
+The prior handoff recreated ViewFrustum via loadRenderers on every transition.
+At view distance 15 this recreates 15,376 RenderChunks and 61,504 VBO wrappers
+and names even though the world, chunk positions and VBO mode are unchanged.
+Candidate keeps the existing objects, clears all legacy storage/native mesh
+counts, publishes CompiledChunk.DUMMY, marks each chunk dirty (not immediate),
+and invalidates the visible list. Cancel-before-drain remains unchanged, and
+native GPU arenas are still released when changing geometry owner.
+Keep the existing per-chunk and global tile-entity bookkeeping together.
+No per-frame checker, cache, quality reduction or rejected experiment added.
+New GL-free regression covers mixed legacy/native/empty buffers, cleared old
+geometry, retained IDs, normal rebuild priority and idempotent invalidation.
+Build 120-hotfix2-reuse-build.log passed: 1299 tests, 1169 passed, 130 skipped,
+zero failures/errors; 10 final artifact/startup checks passed separately.
+Candidate JAR SHA256: 0D00E411AA9990F5F27FE832FD50DD21CACC183E66CE47CF3F39F71384943321.
+Accepted after live F6 stress verification described below.
+
+Live resource-reuse stress result
+--------------------------------
+Fresh snapshot: live-120-hotfix2-f6-reuse-stress; PID 13640 exited normally.
+2026-10-13 21:21:15-21:25:02 +08:00. Same original saved world, view distance 15,
+1920x1080, stable creative, rotating view, 15-second warmup, 25-second scenes,
+five-second settle. Test-only fixture v3 adds cold-toggle identity assertions.
+This run additionally marks all 15,376 chunks dirty before each real F6 input,
+waits three client ticks to put builders under load, and alternates 0/4 masks
+through seven scenes. All six toggles completed, three OFF and three ON.
+Every toggle retained the same array and all 15,376 RenderChunk identities.
+Real transformed-dispatcher/GL empty-upload probe passed again before sampling.
+No crash report; COMPLETE marker and normal exit. OFF and final ON screenshots
+show loaded terrain/trees/entities; no full pixel-equivalence claim.
+
+Scene/mode      Max frame ms  P99 ms  Frames >25 ms  Frames >50 ms
+0 initial ON       31.91       11.72        2              0
+1 OFF              25.66       14.07        1              0
+2 restored ON      26.44       11.29        2              0
+3 OFF              57.67       13.82        2              2
+4 restored ON      55.09       11.21        2              2
+5 OFF              19.39       13.12        0              0
+6 restored ON      20.70       10.81        0              0
+
+JFR after first restore recorded 14.81-15.84 ms GC pauses, versus 31.85-41.64 ms
+after the empty-only baseline restore. Later stress-run GC pauses still reached
+32.99 ms. Recording ends during scene 4 and does not cover the final scenes.
+The changed stress schedule and natural entity activity prohibit claiming a
+paired causal FPS gain from these observations. Retaining objects demonstrably
+removes unnecessary recreation; residual slow frames mean the hitch problem
+is mitigated at the lifecycle level, not proven completely solved.
+Measurements exclude the switch and settling frames. No GPU/compilation work
+or broad filesystem scans ran during FPS sampling. No changes to original game.
+Keep this candidate's simpler F6 resource lifecycle, while preserving the prior
+empty-only candidate for comparison. Formal Build10 +7.43% remains unchanged;
+there is no new 20% or original 50% acceptance result.
+
+Final package verification (2026-10-13)
+---------------------------------------
+Accepted JAR SHA256: 0D00E411AA9990F5F27FE832FD50DD21CACC183E66CE47CF3F39F71384943321
+Package: build/playtest/ice-rlcraft-optimizer-1.20-hotfix2-playtest.zip
+ZIP SHA256: 6BF18C0034C4E634BDA2D51F51757B43B52A6EDC6E29D98A082EE2AB3EAB6633
+The packaged JAR exactly matches the six-toggle live-tested JAR. Only the two
+changed production source families differ from the prior 1.20 artifact:
+NativeTerrainRenderer (including nested classes with shifted line tables) and
+NativeTerrainPauseLifecycle. The remaining JAR entries are byte-identical.
+User ZIP CRC, embedded JAR hash, version metadata and installation text verified.
+The standard bundle's installation text was refreshed without recompiling JARs.
+Frozen source/build inputs and test-only fixture: build/fps-target/120-hotfix2-release/.
+No profiler, fixture or diagnostic agent is included in the user package.

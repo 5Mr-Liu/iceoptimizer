@@ -48,6 +48,80 @@ public final class ChunkPrimitiveSortBridgeTest {
         assertEquals(100, fixture.ints.get(3 + 32));
     }
 
+    @Test
+    public void radixAndMergePreservePayloadAndStableOrderAcrossMovingViews() {
+        Random random = new Random(0x51AD1CEL);
+        float[] special = {Float.NaN, Float.intBitsToFloat(0xffc12345),
+            Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, Float.MAX_VALUE,
+            Float.MIN_VALUE, -0.0F, 0.0F, -1.0F, 1.0F};
+        for (int quads : new int[] {255, 511, 512, 513, 1024, 8192}) {
+            for (int stride : new int[] {4, 7, 14}) {
+                Fixture fixture = new Fixture(quads, stride);
+                for (int quad = 0; quad < quads; quad++) {
+                    float x = quad % 11 == 0 ? special[quad % special.length]
+                        : random.nextInt(33) - 16;
+                    fixture.putQuad(quad, x, random.nextInt(17) - 8,
+                        random.nextInt(33) - 16, 0x20000000 | quad);
+                }
+                for (int view = 0; view < 4; view++) {
+                    float x = view * 0.35F, y = -view * 1.25F, z = view * 2.75F;
+                    int[] expected = vanillaReference(fixture.copyRaw(), quads,
+                        stride, x, y, z);
+                    ChunkPrimitiveSortBridge.sortForTest(fixture, x, y, z);
+                    assertArrayEquals(expected, fixture.copyRaw());
+                    assertEquals(quads * 4 * stride, fixture.ints.position());
+                    assertEquals(fixture.ints.capacity(), fixture.ints.limit());
+                }
+            }
+        }
+    }
+
+    @Test
+    public void integerKeysMatchFloatTotalOrderIncludingNaNsAndSignedZeros() {
+        Random random = new Random(0xF10A7L);
+        int[] special = {0, 0x80000000, 0x7f800000, 0xff800000,
+            0x7fc00001, 0xffc12345, 1, 0x80000001, 0x3f800000, 0xbf800000};
+        for (int i = 0; i < 100000; i++) {
+            float left = Float.intBitsToFloat(i < 100 ? special[i / 10] : random.nextInt());
+            float right = Float.intBitsToFloat(i < 100 ? special[i % 10] : random.nextInt());
+            assertEquals(Integer.signum(Float.compare(right, left)),
+                Integer.signum(Integer.compareUnsigned(
+                    ChunkPrimitiveSortBridge.descendingKey(left),
+                    ChunkPrimitiveSortBridge.descendingKey(right))));
+        }
+    }
+
+    @Test
+    public void orderedReadOnlyVerticesNeedNoRewriteButUnorderedSuccessStillMutates() {
+        for (int quads : new int[] {8, 511, 512, 4096}) {
+            final Fixture fixture = new Fixture(quads, 7);
+            for (int quad = 0; quad < quads; quad++) {
+                fixture.putQuad(quad, quad < 2 ? Float.NaN : quads - quad,
+                    0.0F, 0.0F, 100 + quad);
+            }
+            final IntBuffer readOnly = fixture.ints.asReadOnlyBuffer();
+            readOnly.position(3);
+            ChunkBufferAccessor accessor = new ChunkBufferAccessor() {
+                @Override public FloatBuffer ice$sortFloatBuffer() { return fixture.floats; }
+                @Override public IntBuffer ice$sortIntBuffer() { return readOnly; }
+                @Override public int ice$sortVertexCount() { return fixture.quads * 4; }
+                @Override public int ice$sortVertexStrideInts() { return fixture.stride; }
+            };
+            int[] before = fixture.copyRaw();
+            ChunkPrimitiveSortBridge.sortForTest(accessor, 0.0F, 0.0F, 0.0F);
+            assertArrayEquals(before, fixture.copyRaw());
+            assertEquals(readOnly.capacity(), readOnly.position());
+            assertEquals(readOnly.capacity(), readOnly.limit());
+
+            // A changed view must invalidate the ordering proof even if the
+            // buffer identity and geometry have not changed.
+            int[] expected = vanillaReference(before, quads, fixture.stride,
+                quads * 2.0F, 0.0F, 0.0F);
+            ChunkPrimitiveSortBridge.sortForTest(fixture, quads * 2.0F, 0.0F, 0.0F);
+            assertArrayEquals(expected, fixture.copyRaw());
+        }
+    }
+
     private static int[] vanillaReference(int[] original, int quads, int stride,
                                           float x, float y, float z) {
         float[] distance = new float[quads];

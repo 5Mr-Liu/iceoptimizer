@@ -57,6 +57,7 @@ public final class VanillaTextureUploadAdapterTest {
         byte[] transformed = adapt(original);
         assertEquals(0, count(original, VanillaTextureUploadAdapter.BRIDGE, "skipParameters"));
         assertEquals(1, count(transformed, VanillaTextureUploadAdapter.BRIDGE, "skipParameters"));
+        assertEquals(1, count(transformed, VanillaTextureUploadAdapter.BRIDGE, "tryUploadLevel"));
         assertEquals(count(original, "net/minecraft/client/renderer/GlStateManager", null),
             count(transformed, "net/minecraft/client/renderer/GlStateManager", null));
         assertSame("a second transform must not add a second guard", transformed, adapt(transformed));

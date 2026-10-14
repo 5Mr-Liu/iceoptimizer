@@ -26,7 +26,7 @@ import org.apache.logging.log4j.Logger;
 public final class IceProfilerMod {
     public static final String MOD_ID = "iceprofiler";
     public static final String NAME = "ICE Performance Recorder";
-    public static final String VERSION = "1.0.13";
+    public static final String VERSION = "1.20";
     public static final Logger LOGGER = LogManager.getLogger(NAME);
 
     @SidedProxy(

@@ -49,6 +49,10 @@ public final class CacheBudget {
             used.get(BudgetKind.GPU).get(), limits.get(BudgetKind.GPU), rejected.get());
     }
 
+    public long availableBytes(BudgetKind kind) {
+        return limits.get(kind) - used.get(kind).get();
+    }
+
     /**
      * Verifies that a caller-supplied reservation can be transferred into a
      * component which shares this budget.  Native resources sometimes need a
@@ -57,6 +61,7 @@ public final class CacheBudget {
      * name has already been created.
      */
     public boolean owns(Reservation reservation, BudgetKind kind, long bytes) {
+        if (bytes == 0L) return reservation == Reservation.EMPTY;
         return reservation != null && reservation.owner == this
             && reservation.kind == kind && reservation.bytes == bytes
             && !reservation.released.get();

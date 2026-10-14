@@ -30,11 +30,33 @@ public final class HudStreamTest {
         assertEquals(40, layout.getGlyphGeometry().length);
         assertEquals(1.5F, layout.getGlyphGeometry()[0], 0.0F);
         assertArrayEquals(new int[] {3, 4}, layout.getTexturePages());
-        assertEquals(168L, layout.retainedBytes());
+        assertEquals(176L, layout.retainedBytes());
         assertEquals(8.0F, layout.getAdvance(), 0.0F);
         FontLayoutCache.GlyphLayout empty = new FontLayoutCache.GlyphLayout(
             new float[0], new int[0], 0, 0.0F);
         assertEquals(0, empty.glyphCount());
+        assertEquals(0, empty.runCount());
+    }
+
+    @Test
+    public void fontTextureRunsPreserveAlphaOrderAndChargeOnlyNeededMetadata() {
+        FontLayoutCache.GlyphLayout layout = new FontLayoutCache.GlyphLayout(
+            new float[140], new int[] {7, 7, 3, 3, 7, 2, 2}, 25.0F);
+        assertEquals(4, layout.runCount());
+        int[] starts = {0, 2, 4, 5};
+        int[] counts = {2, 2, 1, 2};
+        int[] pages = {7, 3, 7, 2};
+        for (int run = 0; run < 4; run++) {
+            assertEquals(starts[run], layout.runStart(run));
+            assertEquals(counts[run], layout.runGlyphCount(run));
+            assertEquals(pages[run], layout.runTexturePage(run));
+        }
+        assertEquals(7 * 84L + 16L, layout.retainedBytes());
+        FontLayoutCache.GlyphLayout single = new FontLayoutCache.GlyphLayout(
+            new float[40], new int[] {5, 5});
+        assertEquals(1, single.runCount());
+        assertEquals(2, single.runGlyphCount(0));
+        assertEquals(168L, single.retainedBytes());
     }
 
     @Test

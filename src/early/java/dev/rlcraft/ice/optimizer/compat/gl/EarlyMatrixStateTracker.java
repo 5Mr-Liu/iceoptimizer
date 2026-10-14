@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.optimizer.compat.gl;
 
 import java.nio.FloatBuffer;
+import java.nio.ByteOrder;
 
 /** Core-JAR resident render-thread mirror of compatibility matrix stacks. */
 public final class EarlyMatrixStateTracker {
@@ -22,6 +23,8 @@ public final class EarlyMatrixStateTracker {
                             FloatBuffer texture) {
         State state = STATES.get();
         try {
+            state.modelViewScope = false;
+            state.scopedModelViewKnown = false;
             state.modelView.reset();
             state.projection.reset();
             state.texture.reset();
@@ -39,6 +42,45 @@ public final class EarlyMatrixStateTracker {
             rethrowIfFatal(error);
             invalidate();
         }
+    }
+
+    /**
+     * Opens an authoritative model-view-only scope at the current native stack
+     * top. Older native levels, projection and texture matrices are not known
+     * from this read and must never be published as a complete snapshot.
+     */
+    public static boolean beginModelViewScope(int mode, FloatBuffer modelView) {
+        State state = STATES.get();
+        state.known = false;
+        state.modelViewScope = true;
+        state.scopedModelViewKnown = false;
+        state.mode = mode;
+        state.modelView.reset();
+        try {
+            read16(modelView, state.modelView.top());
+            state.scopedModelViewKnown = stack(state) != null
+                && finite(state.modelView.top());
+            if (!state.scopedModelViewKnown) state.invalidations++;
+            return state.scopedModelViewKnown;
+        } catch (Throwable error) {
+            rethrowIfFatal(error);
+            state.invalidations++;
+            return false;
+        }
+    }
+
+    /** Only the pushed levels inside this scope were mirrored. */
+    public static void endModelViewScope() {
+        State state = STATES.get();
+        if (!state.modelViewScope) return;
+        state.modelViewScope = false;
+        state.scopedModelViewKnown = false;
+    }
+
+    public static boolean isModelViewKnown() { return modelViewKnown(STATES.get()); }
+
+    private static boolean modelViewKnown(State state) {
+        return state.known || state.modelViewScope && state.scopedModelViewKnown;
     }
 
     public static void matrixMode(int mode) {
@@ -64,7 +106,7 @@ public final class EarlyMatrixStateTracker {
 
     public static void rotate(float degrees, float x, float y, float z) {
         State state = STATES.get();
-        MatrixStack stack = state.known ? stack(state) : null;
+        MatrixStack stack = current();
         if (stack == null) return;
         if (!Float.isFinite(degrees)) {
             invalidate();
@@ -124,11 +166,17 @@ public final class EarlyMatrixStateTracker {
 
     public static void multMatrix(FloatBuffer source) {
         State state = STATES.get();
-        MatrixStack stack = state.known ? stack(state) : null;
+        MatrixStack stack = current();
         if (stack == null) return;
         try {
             float[] right = state.right;
             read16(source, right);
+            // OpenGL reads direct storage in native byte order, independently
+            // of the FloatBuffer view's Java byte order.
+            if (source.isDirect() && source.order() != ByteOrder.nativeOrder()) {
+                for (int i = 0; i < 16; i++) right[i] = Float.intBitsToFloat(
+                    Integer.reverseBytes(Float.floatToRawIntBits(right[i])));
+            }
             if (!finite(right) || !multiply(stack.top(), right, state.result)) {
                 invalidate();
             }
@@ -141,7 +189,7 @@ public final class EarlyMatrixStateTracker {
     public static void ortho(double left, double right, double bottom, double top,
                              double near, double far) {
         State state = STATES.get();
-        MatrixStack stack = state.known ? stack(state) : null;
+        MatrixStack stack = current();
         double width = right - left;
         double height = top - bottom;
         double depth = far - near;
@@ -167,13 +215,35 @@ public final class EarlyMatrixStateTracker {
 
     public static float[] modelView() {
         State state = STATES.get();
-        if (!state.known) return null;
+        if (!modelViewKnown(state)) return null;
         return state.modelView.top().clone();
+    }
+
+    /** Copies a captured pose without allocating a per-part snapshot. */
+    public static boolean copyModelView(float[] target, int offset) {
+        State state = STATES.get();
+        if (!modelViewKnown(state) || target == null || offset < 0
+            || offset > target.length - 16) return false;
+        System.arraycopy(state.modelView.top(), 0, target, offset, 16);
+        return true;
+    }
+
+    public static int modelViewDepth() {
+        State state = STATES.get();
+        return modelViewKnown(state) ? state.modelView.depth : -1;
+    }
+
+    public static boolean copyModelViewLevel(int depth, float[] target) {
+        State state = STATES.get();
+        if (!modelViewKnown(state) || target == null || target.length < 16
+            || depth < 0 || depth > state.modelView.depth) return false;
+        System.arraycopy(state.modelView.values[depth], 0, target, 0, 16);
+        return true;
     }
 
     public static boolean matchesModelView(float[] expected) {
         State state = STATES.get();
-        if (!state.known || expected == null || expected.length != 16) return false;
+        if (!modelViewKnown(state) || expected == null || expected.length != 16) return false;
         float[] actual = state.modelView.top();
         for (int i = 0; i < 16; i++) {
             if (Float.floatToRawIntBits(actual[i])
@@ -190,14 +260,16 @@ public final class EarlyMatrixStateTracker {
 
     public static void invalidate() {
         State state = STATES.get();
+        if (modelViewKnown(state)) EarlyModelBatchBarrier.matrixInvalidated();
         state.known = false;
+        state.scopedModelViewKnown = false;
         state.invalidations++;
     }
 
     public static boolean isKnown() { return STATES.get().known; }
     public static int currentMode() {
         State state = STATES.get();
-        return state.known ? state.mode : -1;
+        return modelViewKnown(state) ? state.mode : -1;
     }
     public static long invalidations() { return STATES.get().invalidations; }
 
@@ -228,13 +300,15 @@ public final class EarlyMatrixStateTracker {
         }
         MatrixStack stack = current();
         if (stack == null) return;
-        float[] matrix = stack.top();
+        float[] matrix = STATES.get().result;
+        System.arraycopy(stack.top(), 0, matrix, 0, 16);
         for (int row = 0; row < 4; row++) {
             matrix[row] *= x;
             matrix[4 + row] *= y;
             matrix[8 + row] *= z;
         }
         if (!finite(matrix)) invalidate();
+        else System.arraycopy(matrix, 0, stack.top(), 0, 16);
     }
 
     private static void translate0(float x, float y, float z) {
@@ -244,17 +318,20 @@ public final class EarlyMatrixStateTracker {
         }
         MatrixStack stack = current();
         if (stack == null) return;
-        float[] m = stack.top();
+        float[] m = STATES.get().result;
+        System.arraycopy(stack.top(), 0, m, 0, 16);
         for (int row = 0; row < 4; row++) {
             m[12 + row] = m[row] * x + m[4 + row] * y
                 + m[8 + row] * z + m[12 + row];
         }
         if (!finite(m)) invalidate();
+        else System.arraycopy(m, 0, stack.top(), 0, 16);
     }
 
     private static MatrixStack current() {
         State state = STATES.get();
-        if (!state.known) return null;
+        if (!state.known && !(state.modelViewScope && state.scopedModelViewKnown
+            && state.mode == MODELVIEW)) return null;
         MatrixStack result = stack(state);
         if (result == null) invalidate();
         return result;
@@ -330,6 +407,8 @@ public final class EarlyMatrixStateTracker {
         private final float[] result = new float[16];
         private int mode = MODELVIEW;
         private boolean known;
+        private boolean modelViewScope;
+        private boolean scopedModelViewKnown;
         private long invalidations;
     }
 

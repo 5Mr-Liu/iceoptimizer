@@ -20,8 +20,7 @@ public final class DynamicTreesConnectionBridge {
             if (!OptimizerBridge.isEnabled(MODULE)) return null;
             Entry entry = LAST.get();
             if (entry == null || entry.model != model || entry.extendedState != extendedState
-                || entry.radius != radius || entry.connections == null
-                || entry.connections.length != 6) return null;
+                || entry.radius != radius) return null;
             activateOnce();
             return entry.connections;
         } catch (Throwable error) {

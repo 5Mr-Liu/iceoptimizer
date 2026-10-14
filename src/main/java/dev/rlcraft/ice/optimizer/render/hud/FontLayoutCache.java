@@ -27,6 +27,9 @@ public final class FontLayoutCache {
     public static final class GlyphLayout {
         private final float[] glyphGeometry;
         private final int[] texturePages;
+        // Null is the common single-page case. Repeated pages separated by a
+        // different page remain separate runs: alpha drawing order is observable.
+        private final int[] runEnds;
         private final float advance;
 
         public GlyphLayout(float[] glyphGeometry, int[] texturePages) {
@@ -59,6 +62,19 @@ public final class FontLayoutCache {
             }
             this.glyphGeometry = Arrays.copyOf(glyphGeometry, floats);
             this.texturePages = Arrays.copyOf(texturePages, glyphCount);
+            int runs = glyphCount == 0 ? 0 : 1;
+            for (int glyph = 1; glyph < glyphCount; glyph++) {
+                if (texturePages[glyph] != texturePages[glyph - 1]) runs++;
+            }
+            runEnds = runs <= 1 ? null : new int[runs];
+            if (runEnds != null) {
+                int run = 0;
+                for (int glyph = 1; glyph < glyphCount; glyph++) {
+                    if (texturePages[glyph] != texturePages[glyph - 1])
+                        runEnds[run++] = glyph;
+                }
+                runEnds[run] = glyphCount;
+            }
             this.advance = advance;
         }
 
@@ -76,7 +92,31 @@ public final class FontLayoutCache {
         public float getAdvance() { return advance; }
         long retainedBytes() {
             return (long) glyphGeometry.length * 4L
-                + (long) texturePages.length * 4L;
+                + (long) texturePages.length * 4L
+                + (runEnds == null ? 0L : (long) runEnds.length * 4L);
+        }
+
+        public int runCount() {
+            return texturePages.length == 0 ? 0 : runEnds == null ? 1 : runEnds.length;
+        }
+
+        public int runStart(int run) {
+            if (run < 0 || run >= runCount()) throw new IndexOutOfBoundsException("run");
+            return run == 0 ? 0 : runEnds[run - 1];
+        }
+
+        public int runGlyphCount(int run) {
+            int start = runStart(run);
+            return (runEnds == null ? texturePages.length : runEnds[run]) - start;
+        }
+
+        public int runTexturePage(int run) { return texturePages[runStart(run)]; }
+
+        /** Caller binds this run's page after submitting the preceding run. */
+        public boolean recordRun(LwjglHudRenderer renderer, int run, float x, float y) {
+            int first = runStart(run);
+            return renderer != null && renderer.recordValidatedGlyphRange(
+                glyphGeometry, first, runGlyphCount(run), x, y);
         }
 
         public int texturePage(int glyph) {
@@ -88,13 +128,23 @@ public final class FontLayoutCache {
 
         /** Writes the complete cached string atomically into the native stream. */
         public boolean record(LwjglHudRenderer renderer, float x, float y) {
-            return renderer != null && renderer.recordValidatedGlyphRun(
+            return runEnds == null && renderer != null && renderer.recordValidatedGlyphRun(
                 glyphGeometry, texturePages.length, x, y);
         }
 
         /** Exact compatibility replay used only if the bounded stream is unavailable. */
         public void replayLegacy(float x, float y) {
-            for (int glyph = 0; glyph < texturePages.length; glyph++) {
+            if (runEnds != null) throw new IllegalStateException("bind each font texture run");
+            replayLegacyRange(0, texturePages.length, x, y);
+        }
+
+        public void replayLegacyRun(int run, float x, float y) {
+            int first = runStart(run);
+            replayLegacyRange(first, first + runGlyphCount(run), x, y);
+        }
+
+        private void replayLegacyRange(int first, int end, float x, float y) {
+            for (int glyph = first; glyph < end; glyph++) {
                 int base = glyph * 20;
                 boolean begun = false;
                 Throwable failure = null;

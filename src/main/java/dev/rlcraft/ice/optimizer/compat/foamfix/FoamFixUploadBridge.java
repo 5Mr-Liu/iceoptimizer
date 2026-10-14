@@ -96,9 +96,8 @@ public final class FoamFixUploadBridge {
     public static boolean tryUploadLevel(int mipLevel, int[] data, int width, int height,
                                          int originX, int originY, boolean linearFiltering,
                                          boolean clamped, boolean mipFiltering) {
-        // A single TextureUtil level is not a batch. Intercepting it creates one
-        // fence per tiny animated sprite and was measured as a 42-45% render-thread tax.
-        return false;
+        return dev.rlcraft.ice.optimizer.compat.texture.AnimatedTextureUploadBridge.tryUploadLevel(
+            mipLevel, data, width, height, originX, originY, linearFiltering, clamped, mipFiltering);
     }
 
     public static boolean tryUpload(int maxMips, int[][] data, int width, int height, int originX, int originY,
@@ -180,7 +179,6 @@ public final class FoamFixUploadBridge {
     }
 
     private static IntBuffer preparePixels(int[][] data, int width, int height, int mips, int totalInts) {
-        ensureContext(GLContext.getCapabilities());
         int requiredBytes = totalInts * 4;
         if (!ensureStagingCapacity(requiredBytes)) return null;
         staging.clear();

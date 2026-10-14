@@ -17,7 +17,7 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
-/** Replaces SRPMixins' iterator filter with a fail-open compiled bridge. */
+/** Publishes mutation-aware spawn lists and filters their compiled representation. */
 final class SrpSpawnFilterAdapter implements OptimizerBytecodeAdapter {
     static final String TARGET = "srpmixins/handlers/SpawnPotentialsHandler";
     static final String WRAPPER = TARGET + "$BiomeSpawnListEntryWrapper";
@@ -62,12 +62,14 @@ final class SrpSpawnFilterAdapter implements OptimizerBytecodeAdapter {
         validateFilter(filter);
         validateReadOnlyHelper(colony);
         validateReadOnlyHelper(subCap);
+        addColonyInvocationHelper(node, colony);
 
         node.interfaces.add(CALLBACKS);
         node.fields.add(new FieldNode(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC
             | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
             CALLBACK_FIELD, "L" + CALLBACKS + ";", null, null));
         addCallbackInitialization(clinit);
+        installOwnedLists(node, clinit);
         addCallbackMethods(node);
         wrapFilter(node, filter);
         InsnList invalidate = new InsnList();
@@ -82,6 +84,38 @@ final class SrpSpawnFilterAdapter implements OptimizerBytecodeAdapter {
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static void installOwnedLists(ClassNode node, MethodNode clinit) {
+        for (AbstractInsnNode instruction : clinit.instructions.toArray()) {
+            if (!(instruction instanceof FieldInsnNode) || instruction.getOpcode() != Opcodes.PUTSTATIC) continue;
+            FieldInsnNode field = (FieldInsnNode) instruction;
+            String type;
+            if ("allPhaseSpawns".equals(field.name) || "biomeSpawns".equals(field.name))
+                type = BRIDGE + "$SpawnList";
+            else if ("phaseIdSpawns".equals(field.name)) type = BRIDGE + "$SpawnMap";
+            else continue;
+            for (AbstractInsnNode cursor = field.getPrevious(); cursor != null; cursor = cursor.getPrevious()) {
+                if (cursor instanceof MethodInsnNode && "<init>".equals(((MethodInsnNode) cursor).name))
+                    ((MethodInsnNode) cursor).owner = type;
+                if (cursor instanceof TypeInsnNode && cursor.getOpcode() == Opcodes.NEW) {
+                    ((TypeInsnNode) cursor).desc = type;
+                    break;
+                }
+            }
+        }
+        MethodNode custom = requireMethod(node, "getPhaseSpawnListCustom", "(B)Ljava/util/List;");
+        for (AbstractInsnNode instruction : custom.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) instruction;
+            if (!"java/util/stream/Stream".equals(call.owner) || !"collect".equals(call.name)) continue;
+            AbstractInsnNode cast = call.getNext();
+            while (cast != null && cast.getOpcode() < 0) cast = cast.getNext();
+            if (!(cast instanceof TypeInsnNode) || cast.getOpcode() != Opcodes.CHECKCAST)
+                throw new IllegalStateException("SRPMixins collected spawn list changed");
+            custom.instructions.insert(cast, new MethodInsnNode(Opcodes.INVOKESTATIC,
+                BRIDGE, "own", "(Ljava/util/List;)Ljava/util/List;", false));
+        }
     }
 
     private static void validateFilter(MethodNode method) {
@@ -186,15 +220,53 @@ final class SrpSpawnFilterAdapter implements OptimizerBytecodeAdapter {
     }
 
     private static void addColonyCallback(ClassNode node) {
-        MethodNode method = callbackMethod("ice$spawnColonyLocked", "(ILjava/lang/Object;Z)Z");
+        MethodNode method = callbackMethod("ice$spawnColonyLocked", "(ILjava/lang/Object;ZLjava/lang/Object;)Z");
         method.instructions.add(new VarInsnNode(Opcodes.ILOAD, 1));
         method.instructions.add(new VarInsnNode(Opcodes.ALOAD, 2));
         method.instructions.add(new TypeInsnNode(Opcodes.CHECKCAST, WORLD_DATA));
         method.instructions.add(new VarInsnNode(Opcodes.ILOAD, 3));
+        method.instructions.add(new VarInsnNode(Opcodes.ALOAD, 4));
         method.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            TARGET, "isColonyLocked", "(IL" + WORLD_DATA + ";Z)Z", false));
+            TARGET, "ice$isColonyLocked", "(IL" + WORLD_DATA + ";ZLjava/lang/Object;)Z", false));
         method.instructions.add(new InsnNode(Opcodes.IRETURN));
         node.methods.add(method);
+        MethodNode total = callbackMethod("ice$spawnColonyPoints", "(Ljava/lang/Object;I)I");
+        total.instructions.add(new VarInsnNode(Opcodes.ALOAD, 1));
+        total.instructions.add(new TypeInsnNode(Opcodes.CHECKCAST, WORLD_DATA));
+        total.instructions.add(new VarInsnNode(Opcodes.ILOAD, 2));
+        total.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+            WORLD_DATA, "totalColonyPoints", "(I)I", false));
+        total.instructions.add(new InsnNode(Opcodes.IRETURN));
+        node.methods.add(total);
+    }
+
+    private static void addColonyInvocationHelper(ClassNode node, MethodNode original) {
+        MethodNode copy = new MethodNode(Opcodes.ASM5, original.access,
+            "ice$isColonyLocked", "(IL" + WORLD_DATA + ";ZLjava/lang/Object;)Z", null, null);
+        original.accept(copy);
+        copy.name = "ice$isColonyLocked";
+        copy.desc = "(IL" + WORLD_DATA + ";ZLjava/lang/Object;)Z";
+        // The appended context occupies the old first temporary local.
+        for (AbstractInsnNode instruction : copy.instructions.toArray()) {
+            if (instruction instanceof VarInsnNode && ((VarInsnNode) instruction).var >= 3) {
+                ((VarInsnNode) instruction).var++;
+            }
+        }
+        copy.localVariables = null;
+        int totals = 0;
+        for (AbstractInsnNode instruction : copy.instructions.toArray()) {
+            if (!(instruction instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) instruction;
+            if (WORLD_DATA.equals(call.owner) && "totalColonyPoints".equals(call.name)
+                && "(I)I".equals(call.desc)) {
+                copy.instructions.insertBefore(call, new VarInsnNode(Opcodes.ALOAD, 3));
+                copy.instructions.set(call, new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    BRIDGE, "colonyPoints", "(Ljava/lang/Object;ILjava/lang/Object;)I", false));
+                totals++;
+            }
+        }
+        if (totals != 1) throw new IllegalStateException("SRPMixins colony total call changed");
+        node.methods.add(copy);
     }
 
     private static void addSubCapCallback(ClassNode node) {

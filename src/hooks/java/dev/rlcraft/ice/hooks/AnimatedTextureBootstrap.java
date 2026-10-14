@@ -18,7 +18,7 @@ public final class AnimatedTextureBootstrap {
     private static final MethodType BEGIN_TYPE = MethodType.methodType(
         long.class, Object.class);
     private static final MethodType BEFORE_SPRITE_TYPE = MethodType.methodType(
-        void.class, Object.class);
+        void.class, Object.class, boolean.class);
     private static final MethodType AFTER_SPRITE_TYPE = MethodType.methodType(
         void.class);
     private static final MethodType TEXTURE_BARRIER_TYPE = MethodType.methodType(
@@ -41,7 +41,7 @@ public final class AnimatedTextureBootstrap {
             MethodHandles.Lookup lookup = MethodHandles.publicLookup();
             Delegate replacement = new Delegate(
                 lookup.findStatic(bridgeType, "begin", BEGIN_TYPE),
-                lookup.findStatic(bridgeType, "beforeSprite", BEFORE_SPRITE_TYPE),
+                beforeSpriteHandle(lookup, bridgeType),
                 lookup.findStatic(bridgeType, "afterSprite", AFTER_SPRITE_TYPE),
                 lookup.findStatic(bridgeType, "textureBarrier",
                     TEXTURE_BARRIER_TYPE),
@@ -54,6 +54,14 @@ public final class AnimatedTextureBootstrap {
             HookFatalErrors.rethrowIfFatal(incompatibleBridge);
             delegate = null;
             return false;
+        }
+    }
+
+    private static MethodHandle beforeSpriteHandle(MethodHandles.Lookup lookup, Class<?> bridge) throws ReflectiveOperationException {
+        try { return lookup.findStatic(bridge, "beforeSprite", BEFORE_SPRITE_TYPE); }
+        catch (NoSuchMethodException older) {
+            return MethodHandles.dropArguments(lookup.findStatic(bridge, "beforeSprite",
+                MethodType.methodType(void.class, Object.class)), 1, boolean.class);
         }
     }
 
@@ -79,7 +87,7 @@ public final class AnimatedTextureBootstrap {
             return;
         }
         try {
-            current.beforeSprite.invokeExact(sprite);
+            current.beforeSprite.invokeExact(sprite, TextureParameterScope.streamSprite(sprite));
             // A preceding queued upload may flush in the delegate. Start
             // reuse only after that work has finished changing GL state.
             TextureParameterScope.beforeSprite(sprite);
@@ -98,7 +106,10 @@ public final class AnimatedTextureBootstrap {
         Delegate current = delegate;
         if (current == null) return;
         try { current.afterSprite.invokeExact(); }
-        catch (Throwable ignored) { HookFatalErrors.rethrowIfFatal(ignored); }
+        catch (Throwable ignored) {
+            HookFatalErrors.rethrowIfFatal(ignored);
+            if (isUnsafeReplayFailure(ignored)) AnimatedTextureBootstrap.<RuntimeException, Void>raise(ignored);
+        }
     }
 
     public static void textureBarrier() {

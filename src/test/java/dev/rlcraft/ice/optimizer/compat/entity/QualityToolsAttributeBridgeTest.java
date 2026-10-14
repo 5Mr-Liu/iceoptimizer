@@ -12,9 +12,16 @@ import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.inventory.EntityEquipmentSlot;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
+import net.minecraft.nbt.NBTTagString;
 import net.minecraft.init.Bootstrap;
 import net.minecraft.util.EnumHandSide;
 import net.minecraft.world.World;
+import net.minecraft.util.EnumFacing;
+import net.minecraftforge.common.capabilities.Capability;
+import net.minecraftforge.common.capabilities.ICapabilityProvider;
+import net.minecraftforge.common.capabilities.ICapabilitySerializable;
 import org.junit.Test;
 
 public class QualityToolsAttributeBridgeTest {
@@ -41,7 +48,7 @@ public class QualityToolsAttributeBridgeTest {
 
             held.setCount(2);
             entity.ticksExisted = 35;
-            assertTrue("the snapshot is a full ItemStack copy, not an identity check",
+            assertTrue("vanilla equipment replacement inputs still trigger attribute refresh",
                 QualityToolsAttributeBridge.shouldRefresh(entity));
             entity.ticksExisted = 42;
             assertFalse(QualityToolsAttributeBridge.shouldRefresh(entity));
@@ -52,6 +59,68 @@ public class QualityToolsAttributeBridgeTest {
 
             configure(false);
             assertTrue(QualityToolsAttributeBridge.shouldRefresh(entity));
+        } finally {
+            OptimizerConfig.settings.enabled = oldGlobal;
+            OptimizerConfig.settings.qualityToolsEntityAttributes = oldModule;
+            OptimizerRegistry.configure(ClientOptimizerConfig.capture());
+            QualityToolsAttributeBridge.clearForTests();
+        }
+    }
+
+    @Test public void observesNestedQualityChangesWithoutCopyingStacksOrUnrelatedNbt() {
+        boolean oldGlobal = OptimizerConfig.settings.enabled;
+        boolean oldModule = OptimizerConfig.settings.qualityToolsEntityAttributes;
+        try {
+            Bootstrap.register();
+            configure(true);
+            QualityToolsAttributeBridge.clearForTests();
+            TestLiving entity = new TestLiving();
+            ItemStack held = new ItemStack(new Item() {
+                @Override public ICapabilityProvider initCapabilities(ItemStack stack, NBTTagCompound nbt) {
+                    return new ICapabilitySerializable<NBTTagCompound>() {
+                        @Override public boolean hasCapability(Capability<?> capability, EnumFacing facing) { return false; }
+                        @Override public <T> T getCapability(Capability<T> capability, EnumFacing facing) { return null; }
+                        @Override public NBTTagCompound serializeNBT() {
+                            throw new AssertionError("Quality snapshot must not serialize item capabilities");
+                        }
+                        @Override public void deserializeNBT(NBTTagCompound nbt) { }
+                    };
+                }
+            });
+            NBTTagCompound root = new NBTTagCompound();
+            NBTTagCompound quality = new NBTTagCompound();
+            NBTTagList slots = new NBTTagList();
+            slots.appendTag(new NBTTagString("mainhand"));
+            NBTTagList attributes = new NBTTagList();
+            NBTTagCompound attribute = new NBTTagCompound();
+            attribute.setDouble("Amount", 1.0D);
+            attributes.appendTag(attribute);
+            quality.setTag("Slots", slots);
+            quality.setTag("AttributeModifiers", attributes);
+            root.setTag("Quality", quality);
+            held.setTagCompound(root);
+            entity.setItemStackToSlot(EntityEquipmentSlot.MAINHAND, held);
+            assertTrue(QualityToolsAttributeBridge.shouldRefresh(entity));
+            root.setString("unrelated", "changed");
+            assertFalse(QualityToolsAttributeBridge.shouldRefresh(entity));
+            attribute.setDouble("Amount", 2.0D);
+            assertTrue(QualityToolsAttributeBridge.shouldRefresh(entity));
+            assertFalse(QualityToolsAttributeBridge.shouldRefresh(entity));
+            slots.appendTag(new NBTTagString("offhand"));
+            assertTrue(QualityToolsAttributeBridge.shouldRefresh(entity));
+            assertFalse(QualityToolsAttributeBridge.shouldRefresh(entity));
+            NBTTagList baseModifiers = new NBTTagList();
+            NBTTagCompound baseModifier = new NBTTagCompound();
+            baseModifier.setLong("UUIDMost", 23L);
+            baseModifiers.appendTag(baseModifier);
+            root.setTag("AttributeModifiers", baseModifiers);
+            assertTrue(QualityToolsAttributeBridge.shouldRefresh(entity));
+            assertFalse(QualityToolsAttributeBridge.shouldRefresh(entity));
+            ItemStack replacement = new ItemStack(new Item());
+            replacement.setTagCompound(root);
+            entity.setItemStackToSlot(EntityEquipmentSlot.MAINHAND, replacement);
+            assertTrue("changing item identity still refreshes identical qualities", QualityToolsAttributeBridge.shouldRefresh(entity));
+            assertFalse(QualityToolsAttributeBridge.shouldRefresh(entity));
         } finally {
             OptimizerConfig.settings.enabled = oldGlobal;
             OptimizerConfig.settings.qualityToolsEntityAttributes = oldModule;

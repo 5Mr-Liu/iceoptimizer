@@ -66,6 +66,10 @@ public final class LwjglAnimatedTextureUploadStream {
     interface LegacyUploader {
         void upload(int[][] data, int width, int height, int originX,
                     int originY, boolean blur, boolean clamp);
+        default void uploadExact(int[][] data, int width, int height, int x, int y,
+                                 boolean blur, boolean clamp, boolean mipFilter) {
+            upload(data, width, height, x, y, blur, clamp);
+        }
     }
 
     private static final LegacyUploader TEXTURE_UTIL_UPLOADER =
@@ -75,6 +79,10 @@ public final class LwjglAnimatedTextureUploadStream {
                                          boolean blur, boolean clamp) {
                 TextureUtil.uploadTextureMipmap(data, width, height, originX,
                     originY, blur, clamp);
+            }
+            @Override public void uploadExact(int[][] data, int width, int height, int x, int y,
+                                               boolean blur, boolean clamp, boolean mipFilter) {
+                ExactTextureUpload.upload(data, width, height, x, y, blur, clamp, mipFilter);
             }
         };
 
@@ -132,6 +140,12 @@ public final class LwjglAnimatedTextureUploadStream {
                          int originY, boolean blur, boolean clamp) {
         guard.check();
         return commands.offer(data, width, height, originX, originY, blur, clamp);
+    }
+
+    public boolean offerSnapshot(int[][] data, int width, int height, int x, int y,
+                                  boolean blur, boolean clamp, boolean mipFilter) {
+        guard.check();
+        return commands.offer(data, width, height, x, y, blur, clamp, mipFilter, true);
     }
 
     public boolean hasCommands() {
@@ -515,15 +529,19 @@ public final class LwjglAnimatedTextureUploadStream {
 
     private void issueUploads() {
         long offset = 0L;
+        int previousParameters = -1;
         for (int command = 0; command < commands.size(); command++) {
             int[][] levels = commands.data(command);
-            boolean mipFiltering = levels.length > 1;
+            boolean mipFiltering = commands.mipFilter(command);
+            int parameters = (commands.blur(command) ? 1 : 0) | (commands.clamp(command) ? 2 : 0) | (mipFiltering ? 4 : 0);
+            if (parameters != previousParameters) {
+                ExactTextureUpload.parameters(commands.blur(command), commands.clamp(command), mipFiltering);
+                previousParameters = parameters;
+            }
             for (int mip = 0; mip < levels.length; mip++) {
                 int width = commands.width(command) >> mip;
                 int height = commands.height(command) >> mip;
                 if (width <= 0 || height <= 0) break;
-                setTextureParameters(commands.blur(command),
-                    commands.clamp(command), mipFiltering);
                 GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, mip,
                     commands.originX(command) >> mip,
                     commands.originY(command) >> mip, width, height,
@@ -537,30 +555,14 @@ public final class LwjglAnimatedTextureUploadStream {
         }
     }
 
-    private static void setTextureParameters(boolean blur, boolean clamp,
-                                             boolean mipFiltering) {
-        int min = blur ? (mipFiltering ? 9987 : 9729)
-            : (mipFiltering ? 9986 : 9728);
-        int mag = blur ? 9729 : 9728;
-        int wrap = clamp ? 10496 : 10497;
-        GlStateManager.glTexParameteri(GL11.GL_TEXTURE_2D,
-            GL11.GL_TEXTURE_MIN_FILTER, min);
-        GlStateManager.glTexParameteri(GL11.GL_TEXTURE_2D,
-            GL11.GL_TEXTURE_MAG_FILTER, mag);
-        GlStateManager.glTexParameteri(GL11.GL_TEXTURE_2D,
-            GL11.GL_TEXTURE_WRAP_S, wrap);
-        GlStateManager.glTexParameteri(GL11.GL_TEXTURE_2D,
-            GL11.GL_TEXTURE_WRAP_T, wrap);
-    }
-
     private FlushResult legacyAndClear(FlushResult result) {
         Throwable failure = null;
         try {
             for (int command = 0; command < commands.size(); command++) {
-                legacyUploader.upload(commands.data(command),
+                legacyUploader.uploadExact(commands.data(command),
                     commands.width(command), commands.height(command),
                     commands.originX(command), commands.originY(command),
-                    commands.blur(command), commands.clamp(command));
+                    commands.blur(command), commands.clamp(command), commands.mipFilter(command));
             }
         } catch (Throwable error) {
             Throwable infrastructureFailure = lastError;

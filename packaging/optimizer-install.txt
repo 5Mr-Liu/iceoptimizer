@@ -1,14 +1,94 @@
-ICE RLCraft Optimizer installation
-==================================
+ICE 1.20 修订 7 自有地形渲染体验包
+============================
 
-Copy the ONE ice-rlcraft-optimizer-<version>.jar from this ZIP into mods.
-The same JAR contains the ordinary mod, startup transformer and early ABI.
-Stop the game/server and remove older optimizer Main/Core JARs before upgrading.
-Install the exact same optimizer version on client and dedicated server.
-Profiler remains optional; ice-rlcraft-profiler-<version>.jar includes its probes.
+适用环境：Minecraft 1.12.2 / Forge 14.23.5.2860 / RLCraft Dregora。
+自有地形路径需要 OpenGL 4.3，目前仍在开发，本体验版默认开启。
+1.20 是 ICE 模组版本，游戏版本仍为 Minecraft 1.12.2。
+本版修复 F6 切换时区块上传任务与客户端相互等待造成的永久卡死。
+修订 2 另修复空透明层重排序时，把复用缓冲区的旧数据当作新网格而崩溃的问题。
+修订 3 修复绘制队列把编译层标记当作 GPU 网格已就绪，遇到空网格或分层
+更新时触发“ICE visible terrain has no resident mesh”的问题。
+修订 4 针对转向、新地形集中出现时的开销，合并索引上传、批量写入四边形
+索引，并在显存扩容时仅复制已写入范围。卡顿改善幅度尚待实机确认。
+修订 5 修改客户端区块重建调度：将主线程立即重建提交给已有后台队列，
+并用原帧截止时间与约 2 毫秒上传时间片约束正常帧的连续上传。
+取消 OptiFine 在该上传调用中额外放宽约 100 毫秒的效果；剩余任务继续排队。
+修订 6 将复杂区块的面分类和剔除平面计算提前到已有构建线程，随原上传任务
+传递结果，减少单次上传在主线程逐面扫描的工作；透明层排序和画面细节保留。
+修订 7 修复 ICE 的 Phosphor 光照坐标优化在高度边界计算出负数区段下标，
+导致“Exception ticking world / ArrayIndexOutOfBoundsException: -1”的问题。
+恢复按原压缩邻居坐标解码，保留后续局部坐标复用；无需移除 Phosphor 或其
+现有修复模组。此前地形调度和后台面准备保留。
+F6 切换保留区块对象和 VBO 编号，仅清理旧网格并重新构建，减少重复创建资源。
+此前的 1.20 JAR 也需要替换；新旧 JAR 文件名相同，以本包内文件为准。
 
-安装方法：把 ZIP 内唯一的 ice-rlcraft-optimizer-<版本>.jar 放入 mods。
-这个文件已包含普通模组入口、启动转换器和早期接口。
-升级前关闭游戏/服务端，移除旧版 optimizer Main/Core 两个 JAR。
-客户端和独立服务端必须安装完全相同的优化器版本。
-Profiler 是单独发布的可选工具，单个 ice-rlcraft-profiler-<版本>.jar 已含探针。
+安装与启用
+----------
+1. 退出游戏。保留当前 ICE JAR 和 config/ice-optimizer.cfg 的备份，便于回退。
+   将 mods 中旧的 ice-rlcraft-optimizer JAR（包括旧 Main/Core 拆分包）移出，
+   再放入本包唯一的 ice-rlcraft-optimizer-1.20.jar。
+   不要把整个 ZIP 放入 mods，也不要同时保留多个 ICE 优化器版本。
+   联机时客户端与服务端都需要使用相同的 ICE 1.20 版本。
+
+2. 测试 ICE 自有地形时，将 Nothirium JAR 移出 mods 并保留备份。
+   如果装有 Nothirium，ICE 会优先采用兼容方案，自有路径不会启用。
+   保留整合包现有的 RenderLib；已验证版本为 RenderLib 1.12.2-1.4.5，
+   不需要重复安装。不要添加旧的 ice-nothirium-fog-experiment.jar。
+
+3. 直接启动即可：新配置或旧配置缺少 nativeTerrainRenderer 时，首次启动
+   就默认启用自有地形，不需要先启动一次生成配置再手动开启。
+   如果此前已经在 config/ice-optimizer.cfg 的 general → settings 中显式
+   设置 B:enabled=false 或 B:nativeTerrainRenderer=false，仍尊重这个关闭
+   设置；需要使用新路径时把原位置的值改成 true，再完整重启。
+
+4. 使用已测图形条件：光影包关闭；OptiFine Smart Animations、Fast Render、
+   Render Regions 关闭。纹理动画保持开启，画质和视距无需降低。
+   这些对应 optionsof.txt 中：
+   ofSmartAnimations:false
+   ofFastRender:false
+   ofRenderRegions:false
+
+5. 正常启动并进入世界。logs/latest.log 中应出现：
+   ICE_NATIVE_TERRAIN active: resident geometry, ordered MDI, ICE shaders; no external renderer
+   这表示已经进入 ICE 自有地形路径。无需安装 profiler、测试夹具或诊断 agent。
+
+体验与反馈
+----------
+进入世界后默认开启优化。按 F6 关闭 ICE 当前启用的优化，包括自有地形；
+再按 F6 恢复此前启用的优化。原配置中关闭、兼容性禁用或熔断的模块不会
+被强制开启，F6 状态也不会写入配置文件。重新启动游戏仍按配置默认开启。
+关闭时地形使用保留的原有遍历、VBO 上传和绘制实现，开启时使用 ICE。
+两种模式使用不同的 GPU 几何存储，切换会取消区块构建并重新生成网格，可能
+短暂停顿或出现区块逐步显示。请等区块加载、帧率稳定后，在相同位置和
+视角比较。切换瞬间的卡顿不适合作为两种模式的稳定性能差异。
+本次按用户要求只编译打包，没有运行自动测试或启动游戏；实机验证由用户
+完成。修订 2 的六次 F6 测试不能当作本修订已验证，仍不保证消除所有卡顿。
+索引批处理会复用较大的暂存缓冲区，内存占用与一次地形准备中改变的索引量
+有关。工作线程、构建器和距离优先队列继续复用，主线程提交方式已调整。
+平滑处理可能让部分区块逐步出现或方块编辑的画面稍后刷新，不减少区块内容。
+上传时间片在任务之间检查，单个大任务仍可能超时，不能保证每帧停顿低于 2 毫秒。
+修订 6 没有把单次 GPU 上传拆开；显存扩容、传输和绘制前索引准备仍可能停顿。
+待上传任务会暂存面分类结果，不复制整份顶点数据；没有可用工作线程时仍在
+原直接上传路径计算。这不是已测量的大型建筑加载加速结论。
+此处优化的是客户端网格构建/上传，不是服务端区块生成；F6 关闭时恢复原调度。
+F6 是游戏内运行开关；已经加载的类、对象和必要的缓存失效记录仍保留，
+不是卸载 JAR，不能用于比较启动耗时或完全卸载后的内存占用。
+左上角分析文字来自单独的 ice-rlcraft-profiler；本包没有该分析器。
+按你的安排，自行移出原游戏里的旧分析器即可，本版未改它的显示设置。
+
+可重点体验静止转向、常规移动、区块加载、放置/破坏方块、透明方块和实体显示。
+如出现问题，保留当次 logs/latest.log、crash-reports（若有）、复现位置和截图；
+反馈时注明是否启用了 nativeTerrainRenderer，以及是否安装 Nothirium/光影包。
+
+回退
+----
+退出游戏，移出本次 JAR，恢复此前的 ICE JAR 和配置备份；如果此前使用
+Nothirium 兼容方案，再放回该 JAR。仅关闭新路径也可将
+B:nativeTerrainRenderer=false 后重启，但这不等于恢复旧版本。
+
+版本与性能状态
+--------------
+具体 Build、哈希和验证记录见本体验包 BUILD-INFO.txt（若提供）。
+1.20 自有地形仍在开发，尚未证明相对 ICE + Nothirium 再提升 20%。
+历史约 60% 的组合成绩存在实体渲染距离不一致问题，不作为同画质达标证明。
+本包不包含 Nothirium、RenderLib、测试夹具或诊断工具，也不会自动修改游戏目录。

@@ -166,6 +166,18 @@ public final class LwjglParticleRenderer {
         }
     }
 
+    /** Create the small shared pipeline before bulk terrain pages consume the budget. */
+    public boolean initializeGpuResources(long resources, long context) {
+        prepare(resources, context);
+        try {
+            return ensurePipeline();
+        } catch (Throwable error) {
+            lastError = error;
+            FatalErrors.rethrowIfFatal(error);
+            return false;
+        }
+    }
+
     public boolean canRecord() {
         return !closed && instanceCount < maximumInstances
             && instances.remaining()
@@ -218,7 +230,12 @@ public final class LwjglParticleRenderer {
             return FlushResult.LEGACY_APPENDED;
         }
         try {
-            ensurePipeline();
+            if (!ensurePipeline()) {
+                appendTo(fallback);
+                legacyFlushes++;
+                clear();
+                return FlushResult.LEGACY_APPENDED;
+            }
         } catch (Throwable error) {
             lastError = error;
             clearAndRethrowFatal(error);
@@ -359,14 +376,6 @@ public final class LwjglParticleRenderer {
             int index = (nextSlot + checked) % slots.length;
             Slot slot = slots[index];
             if (slot.poisoned) continue;
-            if (slot.bufferId == 0) {
-                try { createSlot(slot); }
-                catch (Throwable error) {
-                    slot.poisoned = true;
-                    lastError = error;
-                    return null;
-                }
-            }
             if (slot.fence != null) {
                 boolean signaled;
                 try { signaled = slot.fence.isSignaled(); }
@@ -378,6 +387,17 @@ public final class LwjglParticleRenderer {
                 if (!signaled) continue;
                 try {
                     destroySlotFence(slot);
+                } catch (Throwable error) {
+                    slot.poisoned = true;
+                    lastError = error;
+                    return null;
+                }
+            }
+            int requiredBytes = instanceCount * ParticleGpuInstanceEncoder.BYTES_PER_INSTANCE;
+            if (slot.bufferId == 0 || slot.handle != null
+                && slot.handle.getBytes() < requiredBytes) {
+                try {
+                    if (!createSlot(slot, capacityFor(requiredBytes))) continue;
                 } catch (Throwable error) {
                     slot.poisoned = true;
                     lastError = error;
@@ -402,15 +422,19 @@ public final class LwjglParticleRenderer {
         }
     }
 
-    private void createSlot(Slot slot) {
+    private int capacityFor(int requiredBytes) {
+        int capacity = 64 * ParticleGpuInstanceEncoder.BYTES_PER_INSTANCE;
+        while (capacity < requiredBytes && capacity < instances.capacity()) capacity *= 2;
+        return Math.min(capacity, instances.capacity());
+    }
+
+    private boolean createSlot(Slot slot, int capacity) {
         if (resourceGeneration <= 0L || contextGeneration <= 0L) {
             throw new IllegalStateException("particle generation not prepared");
         }
         CacheBudget.Reservation reservation = ledger.reserveGpu(
-            instances.capacity());
-        if (reservation == null) {
-            throw new IllegalStateException("particle GPU budget exhausted");
-        }
+            capacity);
+        if (reservation == null) return false;
         int id = 0;
         boolean allocationReturned = false;
         boolean nativeNameCreated = false;
@@ -422,7 +446,7 @@ public final class LwjglParticleRenderer {
             }
             nativeNameCreated = true;
             RenderHandle handle = ledger.registerReserved(
-                RenderResourceKind.BUFFER, id, instances.capacity(),
+                RenderResourceKind.BUFFER, id, capacity,
                 resourceGeneration, contextGeneration, reservation);
             if (handle == null) {
                 throw new IllegalStateException("particle GPU budget exhausted");
@@ -431,8 +455,25 @@ public final class LwjglParticleRenderer {
             id = 0;
             nativeNameCreated = false;
             reservation = null;
+            RenderHandle previous = slot.handle;
             slot.bufferId = publishedId;
             slot.handle = handle;
+            if (previous != null) {
+                // Its last draw's fence has completed. Detach the VAO before
+                // returning the old storage's charge to the shared budget.
+                int savedVao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+                int savedBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+                try {
+                    GL30.glBindVertexArray(vertexArrayId);
+                    GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, publishedId);
+                    setupInstanceAttributes();
+                } finally {
+                    GL30.glBindVertexArray(savedVao);
+                    GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, savedBuffer);
+                }
+                ledger.retire(previous, null);
+            }
+            return true;
         } catch (Throwable error) {
             Throwable failure = error;
             boolean deleteCompleted = false;
@@ -457,13 +498,13 @@ public final class LwjglParticleRenderer {
                 }
             }
             rethrow(failure);
-            return;
+            return false;
         }
     }
 
-    private void ensurePipeline() {
+    private boolean ensurePipeline() {
         if (programId != 0 && vertexArrayId != 0
-            && programHandle != null && vertexArrayHandle != null) return;
+            && programHandle != null && vertexArrayHandle != null) return true;
         if (resourceGeneration <= 0L || contextGeneration <= 0L) {
             throw new IllegalStateException("particle generation not prepared");
         }
@@ -475,23 +516,32 @@ public final class LwjglParticleRenderer {
         int createdProgram = 0;
         int createdVertexArray = 0;
         ProgramBuildState programBuild = new ProgramBuildState();
+        boolean vertexArrayAllocationAttempted = false;
         boolean vertexArrayAllocationReturned = false;
         CacheBudget.Reservation programReservation =
             ledger.reserveNativeObject(RenderResourceKind.PROGRAM);
-        if (programReservation == null) {
-            throw new IllegalStateException("particle program budget exhausted");
+        if (programReservation == null) return false;
+        CacheBudget.Reservation vertexArrayReservation = ledger.reserveNativeObject(
+            RenderResourceKind.VERTEX_ARRAY);
+        if (vertexArrayReservation == null) {
+            programReservation.close();
+            return false;
         }
-        CacheBudget.Reservation vertexArrayReservation = null;
+        TemporaryShaderStage stage = TemporaryShaderStage.reserve(budget,
+            new TemporaryGpuResourceScope.IntDestroyer() {
+                @Override public void destroy(int id) { GL20.glDeleteShader(id); }
+            });
+        if (stage == null) {
+            vertexArrayReservation.close();
+            programReservation.close();
+            return false;
+        }
         RenderHandle createdProgramHandle = null;
         RenderHandle createdVertexArrayHandle = null;
         Throwable failure = null;
         try {
-            createdProgram = createInstancingProgram(budget, programBuild);
-            vertexArrayReservation = ledger.reserveNativeObject(
-                RenderResourceKind.VERTEX_ARRAY);
-            if (vertexArrayReservation == null) {
-                throw new IllegalStateException("particle VAO budget exhausted");
-            }
+            createdProgram = createInstancingProgram(programBuild, stage);
+            vertexArrayAllocationAttempted = true;
             createdVertexArray = GL30.glGenVertexArrays();
             vertexArrayAllocationReturned = true;
             if (createdVertexArray <= 0) {
@@ -521,7 +571,7 @@ public final class LwjglParticleRenderer {
             programHandle = createdProgramHandle;
             vertexArrayHandle = createdVertexArrayHandle;
             capabilities = current;
-            return;
+            return true;
         } catch (Throwable error) {
             failure = error;
         }
@@ -543,7 +593,7 @@ public final class LwjglParticleRenderer {
             } catch (Throwable error) {
                 failure = appendFailure(failure, error);
             }
-        } else if (vertexArrayAllocationReturned
+        } else if ((!vertexArrayAllocationAttempted || vertexArrayAllocationReturned)
             && vertexArrayReservation != null) {
             try { vertexArrayReservation.close(); }
             catch (Throwable error) {
@@ -575,6 +625,7 @@ public final class LwjglParticleRenderer {
             }
         }
         rethrow(failure);
+        return false;
     }
 
     static boolean supportsInstancing(ContextCapabilities value) {
@@ -597,6 +648,11 @@ public final class LwjglParticleRenderer {
             });
         if (stage == null) throw new IllegalStateException(
             "particle shader-stage GPU budget exhausted");
+        return createInstancingProgram(programBuild, stage);
+    }
+
+    private static int createInstancingProgram(ProgramBuildState programBuild,
+                                               TemporaryShaderStage stage) {
         int shader = 0;
         int program = 0;
         Throwable failure = null;

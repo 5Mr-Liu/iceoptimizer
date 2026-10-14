@@ -58,15 +58,32 @@ final class CommonModelStateBatchAdapter implements OptimizerBytecodeAdapter {
                 || !"func_78785_a".equals(call.name) || !"(F)V".equals(call.desc)) continue;
             AbstractInsnNode loadScale = previousInstruction(call);
             AbstractInsnNode loadPart = previousInstruction(loadScale);
-            if (!(loadPart instanceof FieldInsnNode)
-                || !headField.equals(((FieldInsnNode) loadPart).name)) continue;
+            if (!(loadPart instanceof FieldInsnNode)) continue;
+            String field = ((FieldInsnNode) loadPart).name;
+            if (!headField.equals(field)) {
+                int index = rootIndex(biped, field);
+                if (index < 1) throw new IllegalStateException("reviewed common root field changed");
+                InsnList advance = new InsnList();
+                LabelNode unchanged = new LabelNode();
+                advance.add(new VarInsnNode(Opcodes.ILOAD, scopeLocal));
+                advance.add(new InsnNode(Opcodes.ICONST_2));
+                advance.add(new JumpInsnNode(Opcodes.IF_ICMPNE, unchanged));
+                advance.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                advance.add(new InsnNode(biped ? Opcodes.ICONST_1 : Opcodes.ICONST_2));
+                advance.add(new org.objectweb.asm.tree.IntInsnNode(Opcodes.BIPUSH, index));
+                advance.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "beforeRoot",
+                    "(Ljava/lang/Object;II)V", false));
+                advance.add(unchanged);
+                render.instructions.insertBefore(call, advance);
+                continue;
+            }
             // Both branches have already run the animation callback. The adult
             // Biped branch has also completed Entity.isSneaking before this point.
             InsnList begin = new InsnList();
             begin.add(new VarInsnNode(Opcodes.ALOAD, 0));
             begin.add(new InsnNode(biped ? Opcodes.ICONST_1 : Opcodes.ICONST_2));
             begin.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BRIDGE, "beginRoots",
-                "(Ljava/lang/Object;I)Z", false));
+                "(Ljava/lang/Object;I)I", false));
             begin.add(new VarInsnNode(Opcodes.ISTORE, scopeLocal));
             render.instructions.insertBefore(call, begin);
             headCalls++;
@@ -102,6 +119,15 @@ final class CommonModelStateBatchAdapter implements OptimizerBytecodeAdapter {
             ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
         node.accept(writer);
         return writer.toByteArray();
+    }
+
+    private static int rootIndex(boolean biped, String field) {
+        String[] roots = biped ? new String[]{"field_78116_c", "field_78115_e", "field_178723_h",
+            "field_178724_i", "field_178721_j", "field_178722_k", "field_178720_f"}
+            : new String[]{"field_78150_a", "field_78148_b", "field_78149_c", "field_78146_d",
+                "field_78147_e", "field_78144_f"};
+        for (int index = 0; index < roots.length; index++) if (roots[index].equals(field)) return index;
+        return -1;
     }
 
     private static AbstractInsnNode previousInstruction(AbstractInsnNode instruction) {

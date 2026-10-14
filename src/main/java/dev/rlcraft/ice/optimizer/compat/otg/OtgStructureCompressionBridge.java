@@ -3,15 +3,15 @@ package dev.rlcraft.ice.optimizer.compat.otg;
 import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.zip.Deflater;
 
-/** Same default zlib stream; reuse only the output scratch, never a native compressor. */
+/** Same default zlib stream, with one reusable compressor per calling thread. */
 public final class OtgStructureCompressionBridge {
     private static final int BUFFER_BYTES = 64 * 1024;
-    private static final ThreadLocal<byte[]> SCRATCH = new ThreadLocal<byte[]>() {
-        @Override protected byte[] initialValue() { return new byte[BUFFER_BYTES]; }
+    private static final ThreadLocal<Workspace> WORKSPACE = new ThreadLocal<Workspace>() {
+        @Override protected Workspace initialValue() { return new Workspace(); }
     };
     private OtgStructureCompressionBridge() { }
 
@@ -24,20 +24,38 @@ public final class OtgStructureCompressionBridge {
     }
 
     public static byte[] compress(byte[] input) throws IOException {
-        Deflater deflater = new Deflater();
+        if (input == null) throw new NullPointerException("input");
+        Workspace workspace = WORKSPACE.get();
+        boolean borrowed = !workspace.inUse;
+        Deflater deflater = borrowed ? workspace.deflater : new Deflater();
+        if (borrowed) workspace.inUse = true;
         try {
             deflater.setInput(input);
-            ByteArrayOutputStream output = new ByteArrayOutputStream(input.length);
             deflater.finish();
-            byte[] scratch = SCRATCH.get();
+            // Write directly into the owned result; no input-sized preallocation
+            // and no scratch -> ByteArrayOutputStream copy on every deflate call.
+            byte[] output = new byte[Math.min(BUFFER_BYTES, Math.max(32, input.length / 8))];
+            int length = 0;
             while (!deflater.finished()) {
-                int count = deflater.deflate(scratch);
-                output.write(scratch, 0, count);
+                if (length == output.length) {
+                    int expanded = output.length <= (Integer.MAX_VALUE - 8) / 2
+                        ? output.length * 2 : Integer.MAX_VALUE - 8;
+                    if (expanded <= output.length) throw new OutOfMemoryError("compressed structure too large");
+                    output = Arrays.copyOf(output, expanded);
+                }
+                length += deflater.deflate(output, length, output.length - length);
             }
-            output.close();
-            return output.toByteArray();
+            return length == output.length ? output : Arrays.copyOf(output, length);
         } finally {
-            deflater.end();
+            if (borrowed) {
+                try { deflater.reset(); }
+                finally { workspace.inUse = false; }
+            } else deflater.end();
         }
+    }
+
+    private static final class Workspace {
+        private final Deflater deflater = new Deflater();
+        private boolean inUse;
     }
 }

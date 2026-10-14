@@ -12,6 +12,35 @@ import org.junit.Test;
 
 public final class AdaptiveBackendControllerTest {
     @Test
+    public void explicitBackendActivatesWithoutOutputTrialsOrFrameBenchmarks() {
+        AdaptiveBackendController controller = new AdaptiveBackendController(configuredBreaker(),
+            EnumSet.of(ModernCapability.BUFFER_OBJECT));
+        controller.configureDirectActivation(true);
+        controller.begin(1L);
+        controller.capabilityResult(CapabilityReport.builder()
+            .pass(ModernCapability.BUFFER_OBJECT).build());
+        assertEquals(BackendLifecycleState.MODERN, controller.lifecycleState());
+        assertFalse(controller.advanceFrame(20000L));
+        assertTrue(controller.activateAtSafeBoundary());
+        for (long frame = 1; frame < 1000; frame++) {
+            assertTrue(controller.isModernActive());
+            assertTrue(controller.prepareProfiledWorkload((int) (frame % 8), frame));
+            assertFalse(controller.shouldMeasureFrame(frame));
+        }
+        assertFalse(controller.activateAtSafeBoundary());
+    }
+
+    @Test
+    public void explicitBackendStillRequiresSupportedOperations() {
+        AdaptiveBackendController controller = new AdaptiveBackendController(configuredBreaker(),
+            EnumSet.of(ModernCapability.BUFFER_OBJECT));
+        controller.configureDirectActivation(true);
+        controller.begin(1L);
+        controller.capabilityResult(CapabilityReport.builder().build());
+        assertEquals(BackendLifecycleState.QUARANTINED, controller.lifecycleState());
+        assertFalse(controller.isModernActive());
+    }
+    @Test
     public void certifiedBackendKeepsRenderingBetweenRegressionSamples() {
         AdaptiveBackendController controller = readyForMeasurement(configuredBreaker());
         for (long frame = 1L; frame <= 32L; frame++) {

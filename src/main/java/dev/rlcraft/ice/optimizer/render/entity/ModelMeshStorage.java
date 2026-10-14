@@ -37,6 +37,10 @@ final class ModelMeshStorage {
     private final int stride;
     private final ArrayList<Page> pages = new ArrayList<Page>();
     private long nextAllocationId = 1L;
+    private long reusableStorageSerial;
+    private boolean hasRetiredRanges;
+    private boolean allocationBlockedByCapacity;
+    private boolean allocationChangedBinding;
 
     ModelMeshStorage(ResourceLedger resources, CacheBudget budget, int stride) {
         this(resources, budget, stride, PAGE_BYTES, new LwjglDriver());
@@ -56,6 +60,8 @@ final class ModelMeshStorage {
     }
 
     Allocation allocate(int bytes, FrameStamp stamp) {
+        allocationBlockedByCapacity = false;
+        allocationChangedBinding = false;
         if (bytes <= 0 || bytes > MAX_PAYLOAD_BYTES || bytes % stride != 0
             || stamp == null) return null;
         collect(COLLECTION_CHECKS);
@@ -65,7 +71,10 @@ final class ModelMeshStorage {
             ArenaRange range = page.ranges.allocate(bytes);
             if (range != null) return allocation(page, range);
         }
-        if (pages.size() >= MAX_PAGES) return null;
+        if (pages.size() >= MAX_PAGES) {
+            allocationBlockedByCapacity = true;
+            return null;
+        }
         int capacity = Math.max(pageBytes, bytes);
         Page page = createPage(capacity, stamp);
         if (page == null) return null;
@@ -76,6 +85,7 @@ final class ModelMeshStorage {
     }
 
     void upload(Allocation allocation, ByteBuffer vertices) {
+        allocationChangedBinding = true;
         driver.upload(allocation.page.handle.getNativeId(),
             allocation.range.getOffset(), vertices);
     }
@@ -89,6 +99,7 @@ final class ModelMeshStorage {
         } else {
             page.ranges.free(allocation.range);
             page.liveRanges--;
+            reusableStorageSerial++;
         }
         allocation.live = false;
     }
@@ -104,12 +115,14 @@ final class ModelMeshStorage {
             allocation.next = page.pending;
             page.pending = allocation;
             page.liveRanges--;
+            hasRetiredRanges = true;
         }
         allocation.live = false;
     }
 
     /** Zero-timeout range collection, never called by a draw. */
     int collect(int maximumChecks) {
+        if (!hasRetiredRanges) return 0;
         int checks = 0;
         int released = 0;
         for (Page page : pages) {
@@ -141,6 +154,7 @@ final class ModelMeshStorage {
                         value.fence = null;
                         value.next = null;
                         released++;
+                        reusableStorageSerial++;
                         value = next;
                         continue;
                     }
@@ -148,6 +162,11 @@ final class ModelMeshStorage {
                 previous = value;
                 value = next;
             }
+        }
+        hasRetiredRanges = false;
+        for (Page page : pages) if (page.pending != null) {
+            hasRetiredRanges = true;
+            break;
         }
         return released;
     }
@@ -158,7 +177,7 @@ final class ModelMeshStorage {
         while (iterator.hasNext()) {
             Page page = iterator.next();
             if (contextValid && !page.closed) {
-                try { resources.retire(page.handle, driver.fence(resources)); }
+                try { retirePageObjects(page); }
                 catch (Throwable error) {
                     failure = appendFailure(failure, error);
                     if (resources.isLive(page.handle)) continue;
@@ -177,6 +196,14 @@ final class ModelMeshStorage {
 
     int pageCount() { return pages.size(); }
 
+    long admissionProgress() {
+        collect(COLLECTION_CHECKS);
+        return reusableStorageSerial;
+    }
+
+    boolean lastAllocationBlockedByCapacity() { return allocationBlockedByCapacity; }
+    boolean lastAllocationChangedBinding() { return allocationChangedBinding; }
+
     private Allocation allocation(Page page, ArenaRange range) {
         Allocation value;
         try {
@@ -194,7 +221,10 @@ final class ModelMeshStorage {
 
     private Page createPage(int capacity, FrameStamp stamp) {
         CacheBudget.Reservation reservation = resources.reserveGpu(capacity);
-        if (reservation == null) return null;
+        if (reservation == null) {
+            allocationBlockedByCapacity = true;
+            return null;
+        }
         int buffer = 0;
         boolean creationReturned = false;
         RenderHandle handle = null;
@@ -203,6 +233,7 @@ final class ModelMeshStorage {
             buffer = driver.create();
             creationReturned = true;
             if (buffer <= 0) return null;
+            allocationChangedBinding = true;
             driver.allocate(buffer, capacity);
             handle = resources.registerReserved(RenderResourceKind.BUFFER,
                 buffer, capacity, stamp.getResourceGeneration(),
@@ -213,6 +244,7 @@ final class ModelMeshStorage {
             Page page = new Page(handle, new GpuArenaAllocator(capacity,
                 capacity, 8L, stamp.getGlContextGeneration(), budget));
             pages.add(page);
+            reusableStorageSerial++;
             handle = null;
             return page;
         } catch (Throwable error) {
@@ -236,7 +268,7 @@ final class ModelMeshStorage {
     }
 
     private void retirePage(Page page) {
-        try { resources.retire(page.handle, driver.fence(resources)); }
+        try { retirePageObjects(page); }
         catch (Throwable failure) {
             // The ledger may have completed ownership transfer before throwing.
             if (!resources.isLive(page.handle)) page.closed = true;
@@ -245,6 +277,17 @@ final class ModelMeshStorage {
         page.closed = true;
         releasePageMetadata(page, true);
         pages.remove(page);
+        reusableStorageSerial++;
+    }
+
+    private void retirePageObjects(Page page) {
+        if (page.vertexArray != null) {
+            try { resources.retire(page.vertexArray, driver.fence(resources)); }
+            finally {
+                if (!resources.isLive(page.vertexArray)) page.vertexArray = null;
+            }
+        }
+        resources.retire(page.handle, driver.fence(resources));
     }
 
     private static void releasePageMetadata(Page page, boolean contextValid) {
@@ -298,11 +341,14 @@ final class ModelMeshStorage {
         }
 
         RenderHandle handle() { return page.handle; }
+        RenderHandle vertexArray() { return page.vertexArray; }
+        void vertexArray(RenderHandle value) { page.vertexArray = value; }
         boolean isLive() { return live && !page.closed; }
     }
 
     private static final class Page {
         private final RenderHandle handle;
+        private RenderHandle vertexArray;
         private final GpuArenaAllocator ranges;
         private int liveRanges;
         private Allocation pending;

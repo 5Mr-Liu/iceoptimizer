@@ -228,6 +228,55 @@ public final class OtgSynchronousIoRealJarTest {
         }
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    public void runtimePauseLetsAnAcceptedMetadataHitFinishOnlyOnce() throws Exception {
+        File jar = realJar();
+        URLClassLoader loader = new URLClassLoader(new URL[] { jar.toURI().toURL() },
+            getClass().getClassLoader());
+        Path directory = workspaceDirectory("ice-otg-pause-");
+        boolean previouslyPaused = OptimizerRegistry.isRuntimePaused();
+        OptimizerRegistry.setRuntimePaused(false);
+        try {
+            Class<?> tagClass = loader.loadClass("com.pg85.otg.util.bo3.NamedBinaryTag");
+            Path file = directory.resolve("tile.nbt");
+            Files.write(file, gzip(sampleNbt()));
+            Map<String, Object> cache = (Map<String, Object>)
+                OtgSynchronousIoBridge.createMetadataMap(tagClass);
+            String path = file.toFile().getCanonicalPath();
+            assertFalse(cache.containsKey(path));
+            Object loaded = OtgSynchronousIoBridge.readNamedBinaryTag(
+                Files.newInputStream(file), true, tagClass);
+            cache.put(path, loaded);
+
+            assertTrue(cache.containsKey(path));
+            OptimizerRegistry.setRuntimePaused(true);
+            assertTrue(OptimizerRegistry.breaker(OptimizationModule.OTG_SYNC_FILE_CACHE)
+                .isOperational());
+            Object accepted = cache.get(path);
+            assertTagTreeEquals(loaded, accepted, tagClass);
+            assertNotSame(loaded, accepted);
+            assertEquals("only the accepted lookup completes while paused", null, cache.get(path));
+            assertFalse(cache.containsKey(path));
+
+            OptimizerRegistry.setRuntimePaused(false);
+            assertTrue(cache.containsKey(path));
+            OptimizerRegistry.setRuntimePaused(true);
+            assertFalse("a new paused lookup discards an older pending hit", cache.containsKey(path));
+            assertEquals(null, cache.get(path));
+
+            OptimizerRegistry.setRuntimePaused(false);
+            assertTrue(cache.containsKey(path));
+            OptimizerRegistry.setRuntimePaused(true);
+            OtgSynchronousIoBridge.advanceConfigurationGeneration();
+            assertEquals("resource invalidation still overrides an accepted hit", null, cache.get(path));
+        } finally {
+            OptimizerRegistry.setRuntimePaused(previouslyPaused);
+            deleteTree(directory);
+            loader.close();
+        }
+    }
+
     public static final class FatalTag {
         public enum Type {
             TAG_End, TAG_Byte, TAG_Short, TAG_Int, TAG_Long, TAG_Float,

@@ -40,8 +40,9 @@ public final class F3OptimizerSummary {
         String core = status.isCoreModPresent() ? "OK" : "INACTIVE";
         List<String> lines = new ArrayList<String>(5);
         lines.add(String.format(Locale.ROOT,
-            "ICE Opt: CORE %s | HIT %d | PATCH %d | MISS %d | ERR %d",
-            core, hit, patched, missed, errors));
+            "ICE Opt: %sCORE %s | HIT %d | PATCH %d | MISS %d | ERR %d",
+            status.isRuntimePaused() ? "PAUSED | " : "", core,
+            status.isRuntimePaused() ? 0 : hit, patched, missed, errors));
 
         ChunkRenderStatus chunk = status.getChunkRender();
         if (chunk != null) {
@@ -71,10 +72,11 @@ public final class F3OptimizerSummary {
                     || state == BackendLifecycleState.LEGACY) fallback++;
                 else validating++;
             }
-            lines.add("ICE GL: " + (modern.isInitialized() ? "READY" : "LEGACY")
-                + " | MODERN " + active + " | LEARN " + validating
+            lines.add("ICE GL: " + (status.isRuntimePaused() ? "PAUSED"
+                : modern.isInitialized() ? "READY" : "LEGACY")
+                + " | MODERN " + (status.isRuntimePaused() ? 0 : active) + " | LEARN " + validating
                 + " | FALLBACK " + fallback);
-            String rendererSummary = ModernRendererDiagnostics.summary();
+            String rendererSummary = status.isRuntimePaused() ? "" : ModernRendererDiagnostics.summary();
             if (!rendererSummary.isEmpty()) {
                 lines.add("ICE " + rendererSummary);
             }

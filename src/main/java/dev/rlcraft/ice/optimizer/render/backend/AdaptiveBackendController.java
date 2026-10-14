@@ -81,6 +81,16 @@ public final class AdaptiveBackendController {
     private BackendLifecycleState awaitingCandidateState;
     private BackendLifecycleState parentSuspendedState;
     private boolean modernWorkObserved;
+    private boolean directActivation;
+
+    /** Explicit features use the supported backend without output trials or benchmarks. */
+    public void configureDirectActivation(boolean enabled) {
+        directActivation = enabled;
+    }
+
+    public boolean isDirectActivation() {
+        return directActivation;
+    }
 
     public AdaptiveBackendController(ModuleCircuitBreaker breaker,
                                      EnumSet<ModernCapability> requiredCapabilities) {
@@ -203,8 +213,9 @@ public final class AdaptiveBackendController {
             quarantine("required executable capability self-test failed");
             return;
         }
-        state = BackendLifecycleState.WARMUP;
-        detail = "warmup";
+        state = directActivation ? BackendLifecycleState.MODERN
+            : BackendLifecycleState.WARMUP;
+        detail = directActivation ? "configured; awaiting activation" : "warmup";
     }
 
     public void warmupFrame(boolean stable) {
@@ -237,6 +248,7 @@ public final class AdaptiveBackendController {
 
     /** Qualification measures every frame; certified rendering only samples. */
     public boolean shouldMeasureFrame(long frameId) {
+        if (directActivation) return false;
         return frameId > 0L && (state == BackendLifecycleState.PAIRED_MEASURE
             || state == BackendLifecycleState.REGRESSION_MONITOR
                 && frameId % REGRESSION_SAMPLE_INTERVAL == 0L);
@@ -250,6 +262,7 @@ public final class AdaptiveBackendController {
      * strictly heavier buckets may consume one of the bounded retry slots.
      */
     public boolean prepareProfiledWorkload(int requestedBucket, long frameId) {
+        if (directActivation) return shouldInspectCandidate();
         profiledWorkloads = true;
         int bucket = Math.max(0, Math.min(WORKLOAD_BUCKETS - 1,
             requestedBucket));
@@ -358,6 +371,7 @@ public final class AdaptiveBackendController {
      * instead of charging every remaining frame in the session.
      */
     public boolean advanceFrame(long frameId) {
+        if (directActivation) return false;
         if (frameId <= 0L || !isTimedTransition(state)) {
             resetTransitionTimer();
             return false;
@@ -518,10 +532,12 @@ public final class AdaptiveBackendController {
 
     /** Must be called only at a frame/pass ownership boundary. */
     public boolean activateAtSafeBoundary() {
-        if (state != BackendLifecycleState.MODERN) return false;
+        if (state != BackendLifecycleState.MODERN || active) return false;
         active = true;
-        state = BackendLifecycleState.REGRESSION_MONITOR;
-        detail = "modern active; regression monitoring";
+        state = directActivation ? BackendLifecycleState.MODERN
+            : BackendLifecycleState.REGRESSION_MONITOR;
+        detail = directActivation ? "modern active; explicit configuration"
+            : "modern active; regression monitoring";
         breaker.activate(detail);
         return true;
     }
@@ -624,7 +640,8 @@ public final class AdaptiveBackendController {
     }
 
     public boolean isModernActive() {
-        return active && state == BackendLifecycleState.REGRESSION_MONITOR
+        return active && (state == BackendLifecycleState.REGRESSION_MONITOR
+            || directActivation && state == BackendLifecycleState.MODERN)
             && breaker.isOperational();
     }
 

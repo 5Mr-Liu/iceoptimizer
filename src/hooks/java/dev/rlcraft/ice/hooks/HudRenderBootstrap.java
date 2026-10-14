@@ -3,6 +3,7 @@ package dev.rlcraft.ice.hooks;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.util.function.IntConsumer;
 import net.minecraftforge.fml.common.eventhandler.Event;
 import net.minecraftforge.fml.common.eventhandler.EventBus;
 import org.lwjgl.opengl.GL11;
@@ -64,6 +65,7 @@ public final class HudRenderBootstrap {
         try {
             MethodHandles.Lookup lookup = MethodHandles.publicLookup();
             delegate = new Delegate(
+                bridgeType,
                 lookup.findStatic(bridgeType, "begin", BEGIN),
                 lookup.findStatic(bridgeType, "barrier", VOID),
                 lookup.findStatic(bridgeType, "post", POST),
@@ -106,7 +108,7 @@ public final class HudRenderBootstrap {
     public static void barrier() {
         Delegate current = delegate;
         if (current == null) return;
-        try { current.barrier.invokeExact(); }
+        try { current.barrier.run(); }
         catch (Throwable ignored) { HookFatalErrors.rethrowIfFatal(ignored); }
     }
 
@@ -288,7 +290,7 @@ public final class HudRenderBootstrap {
     public static void textureBarrier(int texture) {
         Delegate current = delegate;
         if (current == null) return;
-        try { current.textureBarrier.invokeExact(texture); }
+        try { current.textureBarrier.accept(texture); }
         catch (Throwable ignored) { HookFatalErrors.rethrowIfFatal(ignored); }
     }
 
@@ -311,7 +313,7 @@ public final class HudRenderBootstrap {
 
     private static final class Delegate {
         private final MethodHandle begin;
-        private final MethodHandle barrier;
+        private final Runnable barrier;
         private final MethodHandle post;
         private final MethodHandle rectInt;
         private final MethodHandle rectFloat;
@@ -329,9 +331,9 @@ public final class HudRenderBootstrap {
         private final MethodHandle fontVertex;
         private final MethodHandle fontEnd;
         private final MethodHandle directColor;
-        private final MethodHandle textureBarrier;
+        private final IntConsumer textureBarrier;
 
-        private Delegate(MethodHandle begin, MethodHandle barrier,
+        private Delegate(Class<?> bridgeType, MethodHandle begin, MethodHandle barrier,
                          MethodHandle post, MethodHandle rectInt,
                          MethodHandle rectFloat, MethodHandle rectSprite,
                          MethodHandle rectCustom, MethodHandle rectScaled,
@@ -342,9 +344,21 @@ public final class HudRenderBootstrap {
                          MethodHandle fontStringAbort, MethodHandle fontBegin,
                          MethodHandle fontTexCoord, MethodHandle fontVertex,
                          MethodHandle fontEnd, MethodHandle directColor,
-                         MethodHandle textureBarrier) {
+                         MethodHandle textureBarrier) throws Exception {
+            Object[] callbacks = null;
+            try {
+                callbacks = (Object[]) bridgeType.getMethod("barrierCallbacks").invoke(null);
+                if (callbacks == null || callbacks.length != 2
+                    || !(callbacks[0] instanceof Runnable) || !(callbacks[1] instanceof IntConsumer))
+                    throw new IllegalArgumentException("HUD barrier callback ABI");
+            } catch (NoSuchMethodException oldBridge) {
+                // Keep the existing installation contract for external bridges.
+            }
             this.begin = begin;
-            this.barrier = barrier;
+            this.barrier = callbacks != null ? (Runnable) callbacks[0] : () -> {
+                try { barrier.invokeExact(); }
+                catch (Throwable failure) { HookFatalErrors.rethrowIfFatal(failure); }
+            };
             this.post = post;
             this.rectInt = rectInt;
             this.rectFloat = rectFloat;
@@ -362,7 +376,10 @@ public final class HudRenderBootstrap {
             this.fontVertex = fontVertex;
             this.fontEnd = fontEnd;
             this.directColor = directColor;
-            this.textureBarrier = textureBarrier;
+            this.textureBarrier = callbacks != null ? (IntConsumer) callbacks[1] : texture -> {
+                try { textureBarrier.invokeExact(texture); }
+                catch (Throwable failure) { HookFatalErrors.rethrowIfFatal(failure); }
+            };
         }
     }
 }

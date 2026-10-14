@@ -138,10 +138,11 @@ public final class ModelBackendRecoveryProbe {
                 OptimizationModule.MODERN_ENTITY_BACKEND, OptimizationModule.MODERN_TESR_BACKEND }) {
                 AdaptiveBackendController backend = runtime.components.backends.get(module);
                 SceneFingerprint scene = new SceneFingerprint(0, 0, 0, 0, 0, 0, 0, 20, 5, 8, SIZE, SIZE, 0, 1L, 1L);
-                backend.recordMeasurement(scene, MeasurementArm.LEGACY, 100L, true);
-                require(backend.expectedMeasurementArm() == MeasurementArm.MODERN, "Legacy baseline advances to Modern arm");
                 RenderPass pass = module == OptimizationModule.MODERN_TESR_BACKEND
                     ? RenderPass.TESR_PASS_0 : RenderPass.ENTITY_PASS_0;
+                measureOriginalList(runtime, module, pass, scene, frame, displayList, legacy);
+                require(backend.expectedMeasurementArm() == MeasurementArm.MODERN,
+                    "real original-list CPU/GPU sample advances to Modern arm");
                 ModernRendererRuntime.RenderBackendSample sample = new ModernRendererRuntime.RenderBackendSample(
                     module, BackendLifecycleState.PAIRED_MEASURE, MeasurementArm.MODERN, scene, null, null, 0L, frame);
                 Object traversal = openTraversal(module, pass, sample);
@@ -165,6 +166,35 @@ public final class ModelBackendRecoveryProbe {
                     traversals().remove();
                 }
             }
+            // Exercise the actual call-list hook, including a stale traversal
+            // sample after the final validation advances to paired measurement.
+            for (OptimizationModule module : new OptimizationModule[] {
+                OptimizationModule.MODERN_ENTITY_BACKEND, OptimizationModule.MODERN_TESR_BACKEND }) {
+                AdaptiveBackendController backend = runtime.components.backends.get(module);
+                field(AdaptiveBackendController.class, "state").set(backend, BackendLifecycleState.OUTPUT_VALIDATE);
+                field(AdaptiveBackendController.class, "validationsSeen").setInt(backend,
+                    field(AdaptiveBackendController.class, "validationFrames").getInt(backend) - 1);
+                RenderPass pass = module == OptimizationModule.MODERN_TESR_BACKEND ? RenderPass.TESR_PASS_0 : RenderPass.ENTITY_PASS_0;
+                ModernRendererRuntime.RenderBackendSample sample = new ModernRendererRuntime.RenderBackendSample(
+                    module, BackendLifecycleState.OUTPUT_VALIDATE, MeasurementArm.LEGACY, null, null, null, 0, frame);
+                openTraversal(module, pass, sample);
+                long[][] reasons = (long[][]) field(ModernRendererRuntime.class, "modelDrawReasons").get(runtime);
+                int modernReason = modernDrawReason();
+                int index = module == OptimizationModule.MODERN_TESR_BACKEND ? 1 : 0;
+                long before = reasons[index][modernReason];
+                try {
+                    require(RenderLibRenderBridge.isModelValidationTraversal(), "validation traversal visible to call-list hook");
+                    prepareDrawState(); GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+                    ModelMeshCaptureBridge.callList(displayList);
+                    require(backend.lifecycleState() == BackendLifecycleState.PAIRED_MEASURE, "real call-list validation advances controller");
+                    require(Arrays.equals(legacy, pixels()), "validation draws original list");
+                    prepareDrawState(); GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+                    ModelMeshCaptureBridge.callList(displayList);
+                    require(Arrays.equals(legacy, pixels()), "stale validation sample keeps original list");
+                    require(reasons[index][modernReason] == before, "validation hook never emits a modern duplicate");
+                } finally { traversals().remove(); }
+            }
+            System.out.println("validation_callsite_progresses=true stale_validation_does_not_draw=true");
             runtime.endFrame();
             require(GL11.glGetError() == GL11.GL_NO_ERROR, "no native GL errors");
             runtime.shutdown();
@@ -223,6 +253,41 @@ public final class ModelBackendRecoveryProbe {
     }
 
     private static double[][] corners() { return new double[][] { { -.5D, -.5D }, { .5D, -.5D }, { .5D, .5D }, { -.5D, .5D } }; }
+
+    @SuppressWarnings("unchecked")
+    private static void measureOriginalList(ModernRendererRuntime runtime, OptimizationModule module,
+        RenderPass pass, SceneFingerprint scene, long frame, int displayList, byte[] expected) throws Exception {
+        RenderMeasurementRuntime measurements = (RenderMeasurementRuntime)
+            field(ModernRendererRuntime.class, "measurements").get(runtime);
+        dev.rlcraft.ice.optimizer.render.telemetry.RenderProfileKey key =
+            new dev.rlcraft.ice.optimizer.render.telemetry.RenderProfileKey(runtime.currentStamp(), pass,
+                dev.rlcraft.ice.optimizer.render.backend.RenderBackendId.LEGACY);
+        Class<?> pendingType = Class.forName(RenderMeasurementRuntime.class.getName() + "$BackendGpuSample");
+        java.lang.reflect.Constructor<?> constructor = pendingType.getDeclaredConstructor(
+            OptimizationModule.class, SceneFingerprint.class, MeasurementArm.class);
+        constructor.setAccessible(true);
+        ((Map) measurements.backendGpuSamples).put(key, constructor.newInstance(module, scene, MeasurementArm.LEGACY));
+        prepareDrawState(); GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+        dev.rlcraft.ice.optimizer.render.telemetry.CorrelatedRenderProfiler.GpuScope gpu =
+            runtime.components.profiler.beginGpu(runtime.currentStamp(), pass,
+                dev.rlcraft.ice.optimizer.render.backend.RenderBackendId.LEGACY, measurements.backendGpuCompletion);
+        require(gpu != null, "real timer query allocated for Legacy model arm");
+        ModernRendererRuntime.RenderBackendSample sample = new ModernRendererRuntime.RenderBackendSample(
+            module, BackendLifecycleState.PAIRED_MEASURE, MeasurementArm.LEGACY, scene, key, gpu,
+            System.nanoTime(), frame);
+        Object traversal = openTraversal(module, pass, sample);
+        try {
+            ModelMeshCaptureBridge.callList(displayList);
+            int eligible = field(traversal.getClass(), "eligibleDraws").getInt(traversal);
+            require(eligible == 1 && field(traversal.getClass(), "modernDraws").getInt(traversal) == 0,
+                "original shortcut contributes one real Legacy draw and no Modern draw");
+            runtime.endRenderBackendSample(sample, eligible > 0, false);
+            GL11.glFinish(); runtime.components.profiler.pollGpu(256);
+            require(runtime.components.backends.get(module).snapshot().getMeasurementSamples() == 1,
+                "completed native timer sample accepted by ABBA controller");
+            require(Arrays.equals(expected, pixels()), "measured Legacy list preserves pixels");
+        } finally { traversals().remove(); }
+    }
 
     private static byte[] pixels() {
         ByteBuffer buffer = BufferUtils.createByteBuffer(SIZE * SIZE * 4);

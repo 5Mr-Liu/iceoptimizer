@@ -51,7 +51,7 @@ public final class ModelStateBatchBridge {
                 // rescan the same rejected graph, producing quadratic work.
                 return true;
             }
-            if (!cache.beginStateBatch()) {
+            if (!cache.beginStateBatch(state.entries, state.count)) {
                 cache.rejectStateBatch();
                 return true;
             }
@@ -71,40 +71,72 @@ public final class ModelStateBatchBridge {
      * The caller supplies its constant kind; subclasses retain their original
      * animation and virtual render behavior before entering this base-method tail.
      */
-    public static boolean beginRoots(Object owner, int kind) {
+    public static int beginRoots(Object owner, int kind) {
         if (!(kind == 1 && owner instanceof ModelBiped)
-            && !(kind == 2 && owner instanceof ModelQuadruped)) return false;
+            && !(kind == 2 && owner instanceof ModelQuadruped)) return 0;
         State state = STATES.get();
-        if (state.scopeOpened) return false;
+        if (state.scopeOpened) return 0;
         ModernRendererRuntime runtime = ClientOptimizerRuntime.INSTANCE.modernRenderer();
-        if (runtime == null) return false;
+        if (runtime == null) return 0;
         LwjglModelMeshCache cache = runtime.modelStateBatchCandidate();
-        if (cache == null) return false;
+        if (cache == null) return 0;
         state.cache = cache;
         state.stamp = runtime.modelStateBatchStamp();
         state.runtime = runtime;
         state.scopeOpened = true;
         try {
-            boolean collected = true;
-            for (int index = 0, count = kind == 1 ? 7 : 6; index < count; index++) {
-                if (!collect(rootAt(owner, kind, index), state, 0)) {
-                    collected = false;
-                    break;
-                }
-            }
-            if (!collected || state.count < 2 || !cache.beginStateBatch()) {
-                cache.rejectStateBatch();
-                return true;
-            }
-            state.active = true;
-            hasActiveBatch = true;
-            return true;
+            beginRootSegment(owner, kind, 0, state);
+            // The complete sequence keeps the old single begin/end hot path.
+            // Only a split sequence needs the per-root boundary hook.
+            return state.segmentEnd == (kind == 1 ? 7 : 6) ? 1 : 2;
         } catch (Throwable failure) {
             reportFailure(runtime, failure);
             state.clear();
             rethrow(failure);
-            return false;
+            return 0;
         }
+    }
+
+    /** Close before an unreviewed root; plan the following segment only after it runs. */
+    public static void beforeRoot(Object owner, int kind, int index) {
+        State state = STATES.get();
+        if (!state.scopeOpened || index < state.segmentEnd) return;
+        finishBatch(state);
+        if (index == state.blockedRoot) return;
+        // The intervening root may change GL state, visibility or mesh lifetime.
+        // Reuse the ordinary scope-entry synchronization at that real boundary.
+        LwjglModelMeshCache cache = state.runtime.modelStateBatchCandidate();
+        if (cache == null) return;
+        state.cache = cache;
+        state.stamp = state.runtime.modelStateBatchStamp();
+        try { beginRootSegment(owner, kind, index, state); }
+        catch (Throwable failure) {
+            reportFailure(state.runtime, failure);
+            rethrow(failure);
+        }
+    }
+
+    private static void beginRootSegment(Object owner, int kind, int first, State state) {
+        int roots = kind == 1 ? 7 : 6;
+        state.segmentEnd = roots;
+        state.blockedRoot = -1;
+        for (int index = first; index < roots; index++) {
+            int before = state.count;
+            if (!collect(rootAt(owner, kind, index), state, 0)) {
+                Arrays.fill(state.entries, before, state.count, null);
+                state.count = before;
+                state.segmentEnd = state.blockedRoot = index;
+                state.cache.rejectStateBatch();
+                break;
+            }
+        }
+        if (state.count < 2) return;
+        if (!state.cache.beginStateBatch(state.entries, state.count)) {
+            state.cache.rejectStateBatch();
+            return;
+        }
+        state.active = true;
+        hasActiveBatch = true;
     }
 
     /** The two reviewed branches render these roots in the same order. */
@@ -194,6 +226,11 @@ public final class ModelStateBatchBridge {
     public static void end() {
         State state = STATES.get();
         if (!state.scopeOpened) return;
+        try { finishBatch(state); }
+        finally { state.clear(); }
+    }
+
+    private static void finishBatch(State state) {
         try {
             Throwable failure = null;
             try {
@@ -216,7 +253,7 @@ public final class ModelStateBatchBridge {
             }
         } finally {
             hasActiveBatch = false;
-            state.clear();
+            state.clearParts();
         }
     }
 
@@ -259,16 +296,24 @@ public final class ModelStateBatchBridge {
         private int next;
         private boolean active;
         private boolean scopeOpened;
+        private int segmentEnd;
+        private int blockedRoot;
         private LwjglModelMeshCache cache;
         private FrameStamp stamp;
         private ModernRendererRuntime runtime;
 
-        private void clear() {
+        private void clearParts() {
             Arrays.fill(entries, 0, count, null);
             count = 0;
             next = 0;
             active = false;
+        }
+
+        private void clear() {
+            clearParts();
             scopeOpened = false;
+            segmentEnd = 0;
+            blockedRoot = -1;
             cache = null;
             stamp = null;
             runtime = null;

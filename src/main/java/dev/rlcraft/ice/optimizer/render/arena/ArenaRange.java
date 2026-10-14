@@ -10,6 +10,7 @@ public final class ArenaRange {
     private final long length;
     private final long generation;
     private CacheBudget.Reservation heapReservation;
+    private GpuArenaAllocator publishedOwner;
 
     ArenaRange(long id, long serial, long offset, long length, long generation) {
         this(id, serial, offset, length, generation,
@@ -34,7 +35,11 @@ public final class ArenaRange {
     public long getLength() { return length; }
     public long getGeneration() { return generation; }
 
+    void publishedBy(GpuArenaAllocator owner) { publishedOwner = owner; }
+    boolean hasPublishedOwner(GpuArenaAllocator owner) { return publishedOwner == owner; }
+
     void releaseHeapReservation() {
+        publishedOwner = null;
         CacheBudget.Reservation owned = heapReservation;
         heapReservation = null;
         if (owned != null) owned.close();

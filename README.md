@@ -1,9 +1,13 @@
 # ICE RLCraft Optimizer + ICE Performance Recorder
 
+> **最新预发布 / Latest pre-release:** [v1.20 — 修订 7](https://github.com/5Mr-Liu/iceoptimizer/releases/tag/v1.20)
 > **当前稳定版 / Current stable release:** [v1.0.13](https://github.com/5Mr-Liu/iceoptimizer/releases/tag/v1.0.13)
 
-> **当前源码 / Current source:** 1.0.13，修复地形后端休眠后的恢复和无效动画扫描，减少 OTG 配置读取、区块保存与 Profiler 的重复工作。Optimizer / Profiler 各一个安装 JAR，正式安装文件见上方 Release。<br>
-> 1.0.13 fixes terrain recovery and dormant animation scans, reduces OTG loading and save work, and corrects hitch capture overhead and attribution. Optimizer and Profiler each use one installation JAR. Installation files are available in the release linked above.
+当前源码为 ICE 1.20 修订 7。自有地形渲染默认开启，F6 关闭/恢复当前已启用优化；包含区块调度、后台面准备，以及空网格、F6 生命周期和 Phosphor 坐标边界修复。**1.20 是模组版本，Minecraft 版本仍为 1.12.2。**
+
+Current source: ICE 1.20 revision 7. Native terrain is enabled by default; F6 pauses/resumes enabled optimizations. This includes chunk scheduling, worker-side face preparation and lifecycle/lighting crash fixes.
+
+完整变更、附件、运行要求和验证边界：[1.20 发布说明](docs/ICE-1.20-RELEASE-NOTES.md)。修订 7 仅编译打包，尚未进行自动测试或实机验证；不将历史结果作为本制品的性能或稳定性保证。
 
 > [!IMPORTANT]
 > **兼容范围 / Compatibility scope:** 从 1.0.5 起，ICE 仅支持 RLCraft Dregora，不再支持原版 RLCraft。原版 RLCraft 用户请继续使用 1.0.4 或更早版本；由原版 RLCraft 模组组合引起的启动或注入冲突不在 1.0.5 及后续版本的支持范围内。<br>
@@ -27,30 +31,32 @@ Optimizer and Profiler can be installed independently, each with one JAR. Starti
 
 1. 完全退出 Minecraft，并备份实例。<br>Exit Minecraft completely and back up the instance.
 2. 从 `mods` 删除所有旧版 ICE Optimizer/Profiler JAR，禁止混装。<br>Remove every older ICE Optimizer/Profiler JAR from `mods`; never mix versions.
-3. 仅优化：将 `ice-rlcraft-optimizer-1.0.13.jar` 放入 `mods`；升级时也删除旧 optimizer Core。<br>Optimizer only: put `ice-rlcraft-optimizer-1.0.13.jar` in `mods`; remove the old optimizer Core when upgrading.
-4. 完整诊断：安装 `ice-rlcraft-profiler-1.0.13.jar`；升级时删除旧 profiler Main/Core。Profiler 也可单独安装。<br>Full diagnostics: install `ice-rlcraft-profiler-1.0.13.jar`, removing older profiler Main/Core JARs. Profiler can also be installed alone.
+3. 仅优化：将 `ice-rlcraft-optimizer-1.20.jar` 放入 `mods`；升级时也删除旧 optimizer Core。<br>Optimizer only: put `ice-rlcraft-optimizer-1.20.jar` in `mods`; remove the old optimizer Core when upgrading.
+4. 本次 Release 仅包含 Optimizer，不包含新构建的 Profiler；分析器可单独管理。<br>This release contains Optimizer only; no newly built Profiler is attached.
 5. 联机时，客户端与服务端必须使用相同版本的 optimizer。<br>For multiplayer, client and server must use the same optimizer version.
 
 正式安装文件位于 `build/libs`。`build/intermediates` 是内部构建产物。<br>
 Installation files are in `build/libs`. `build/intermediates` contains internal build artifacts.
 
+自有地形要求 **OpenGL 4.3**，保留整合包已有的 RenderLib。使用该路径时移出 Nothirium，关闭光影包、OptiFine Smart Animations、Fast Render 和 Render Regions。不支持 OpenGL 4.3 时，在启动前设置 `B:nativeTerrainRenderer=false` 并重启。若安装 Nothirium，ICE 会采用兼容方案而不启用自有地形；同一个 JAR 不绑定某台电脑，但兼容性与性能仍需要在目标机器确认。
+
 ## 主要能力 / Key Features
 
-- **现代渲染 / Modern rendering** — 安全的 Terrain batching、MDI、HZB、上传环与对象/Pass 级兼容回退。<br>Safe terrain batching, MDI, HZB, upload rings, and object/pass-level compatibility fallback.
+- **自有地形 / Native terrain** — 常驻网格、有序索引和批量间接绘制，分摊区块重建/上传工作。<br>Resident geometry, ordered indices, indirect draws and scheduled chunk rebuilding/uploads.
 - **CPU 与世界生成 / CPU and world generation** — 有界工作队列、确定性缓存、OTG/BO3/BO4 解析优化及 NBT 压缩。<br>Bounded work queues, deterministic caches, OTG/BO3/BO4 parsing improvements, and NBT compression.
 - **模组适配 / Mod adapters** — 按真实类结构认证 RLCraft 常见模组；单个目标不兼容时只回退该目标。<br>Structural certification for common RLCraft mods; an incompatible target falls back independently.
 - **性能取证 / Profiling** — 自动捕获卡顿、帧/Tick/JVM 指标、精确探针、根因聚类和离线 HTML 报告。<br>Automatic hitch capture, frame/tick/JVM metrics, precise probes, root-cause clustering, and offline HTML reports.
-- **语义安全 / Semantic safety** — 不删内容、不降画质、不跳 Tick、不异步修改世界；错误时保留原实现。<br>No content removal, quality reduction, skipped ticks, or asynchronous world mutation; failures preserve original behavior.
+- **内容保留 / Content preservation** — 不通过删除内容、降低画质、跳过 Tick 或异步修改世界取得提升。<br>No content removal, quality reduction, skipped ticks or asynchronous world mutation is used to obtain gains.
 
-## 1.0.13 状态 / 1.0.13 Status
+## 1.20 状态 / 1.20 Status
 
-- 优化器与 Profiler 各一个安装 JAR，启动补丁、早期接口与普通模组入口合并打包，运行时和 hooks 保持独立编译/重混淆边界。<br>Optimizer and Profiler each use one installation JAR containing their startup patches, early interfaces, and ordinary mod entry, while preserving the runtime/hooks compilation and remapping boundary.
-- 地形后端在出现新的区块上传后恢复原验证与测量，休眠时跳过动画反射/扫描；待上传纹理仍在绘制前追赶。<br>Terrain retries resume from new chunk uploads; dormant animation reflection/scans stop while pending textures still catch up before drawing.
-- 精简模型/粒子提交、纹理参数调用、OTG 文件解析与结构保存；区块 NBT 按本次保存的调色板复用注册 ID，压缩格式及写入顺序保留。<br>Model/particle submission, texture parameter calls, OTG parsing, and structure saving use less work; chunk NBT resolves local palette IDs per save while preserving compression formats and write order.
-- Profiler 合并触发不再复制无用预窗口，固定预算内优先保留卡顿区间证据；按客户端/服务端角色归因，明确标出缺样尖峰。<br>Merged Profiler triggers reuse the active capture, retain hitch evidence within the fixed budget, attribute client/server work separately, and mark peaks with missing samples.
+- 当前为修订 7 预发布；优化器编译、重混淆和包内容核对完成，尚未实机验证。
+- F6 支持暂停/恢复当前已启用的优化，包括自有地形；切换仍需重建网格。
+- 光照修复保留 Phosphor 原压缩坐标解码，避免高度边界产生负数区段索引。
+- 约 2ms 的上传时间片不是单帧耗时保证；单个大任务、显存扩容和服务端生成仍可能停顿。
+- 历史 Build10 对比 ICE + Nothirium 的约 +7.43% 不是当前修订结果；尚未证明 +20% 目标。历史约 60% 的结果不满足严格同画质比较条件。
 
-现代路径只在能力、兼容性和正确性认证通过时接管；高 GPU 使用率本身不是目标。<br>
-Modern paths take ownership only after capability, compatibility, and correctness certification; high GPU utilization alone is not the goal.
+This pre-release is compile/package checked, not runtime validated. F6 rebuilds terrain during switching; upload slices do not guarantee a frame-time ceiling. Performance targets and cross-hardware validation remain open.
 
 ## 使用 / Usage
 
@@ -64,6 +70,9 @@ By default, ICE does not resolve incomplete player-skull profiles online: placed
 
 只安装 Optimizer 时，原版 F3 右侧显示简要状态；可通过 `display.showF3Summary=false` 关闭。<br>
 With Optimizer only, a compact status appears on the vanilla F3 screen; disable it with `display.showF3Summary=false`.
+
+Optimizer 默认快捷键为 `F6`：暂停/恢复所有可即时切换的 ICE 优化。在“选项 → 控制 → ICE 优化”中改键，键位由游戏保存；暂停状态仅本次运行有效，不改模块配置。切换会重建地形，等区块重新加载稳定后再比较 FPS；F3 的 `PAUSED` 表示暂停。单人集成服一同切换，远程服务器不受客户端按键影响。已加载启动补丁和已建立的缓存/对象保留，因此暂停不等于卸载 ICE。<br>
+Optimizer hotkey: `F6` pauses/resumes runtime-switchable ICE optimizations. Rebind it under Options → Controls → ICE Optimizer. The game saves the binding; pause is session-only and preserves module settings. Wait for terrain rebuilding to settle before comparing FPS. F3 shows `PAUSED`. The integrated server shares the switch; remote servers are unaffected. Loaded startup patches and existing caches/objects remain, so pausing is not equivalent to uninstalling ICE.
 
 Profiler 快捷键 / Profiler hotkeys:
 
@@ -93,6 +102,9 @@ ice-profiler/sessions/<session-id>/
 
 每个 Session 包含摘要、时间线、卡顿聚类、探针、折叠栈、HTML 报告和导出 ZIP。默认不记录玩家名、世界种子或精确坐标。<br>
 Each session contains a summary, timeline, hitch clusters, probes, folded stacks, an HTML report, and an export ZIP. Player names, world seeds, and exact coordinates are not recorded by default.
+
+1.0.16 同装时自动记录 F6 切换事件；时间线新增 `optimizer_runtime_state`（`1` 开启、`0` 暂停、`2` 本采样区间发生切换、`-1` 无状态来源）。FPS 按实际采样时间计算，同时保存 `frame_count` 和 `sample_interval_ns`；详细二进制格式升级为 ICECAP v5。状态记录只订阅切换事件，不参与优化启用判断。<br>
+When installed together, 1.0.16 records F6 state changes and labels timeline intervals (1 unpaused, 0 paused, 2 changed within the interval, -1 unavailable). This describes the runtime switch, not each module's active coverage. FPS is normalized by elapsed sample time, with raw frame counts and nanosecond intervals retained. Binary captures use ICECAP v5. Recording observes switch events and never controls optimization admission.
 
 ## 构建与验证 / Build and Verification
 

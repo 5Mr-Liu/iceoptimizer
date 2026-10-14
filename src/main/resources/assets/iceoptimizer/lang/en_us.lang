@@ -1,0 +1,5 @@
+key.categories.iceoptimizer=ICE Optimizer
+key.iceoptimizer.toggle_optimizations=Pause/resume ICE optimizations
+message.iceoptimizer.paused=§e[ICE] Optimizations off; terrain rebuilding. F6 to resume
+message.iceoptimizer.resumed=§a[ICE] Optimizations resumed with previous settings
+message.iceoptimizer.toggle_unavailable=§c[ICE] Could not switch; current state unchanged

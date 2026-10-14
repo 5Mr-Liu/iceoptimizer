@@ -205,6 +205,43 @@ public final class ModelBackendRecoveryTest {
     }
 
     @Test
+    public void originalListObservationCountsMeasuredWorkWithoutEnablingModernDrawing() throws Exception {
+        ThreadLocal<?> traversals = (ThreadLocal<?>) field(RenderLibRenderBridge.class, "TRAVERSALS").get(null);
+        traversals.remove();
+        try {
+            Object stack = traversals.get();
+            Object traversal = ((Object[]) field(stack.getClass(), "values").get(stack))[0];
+            field(stack.getClass(), "size").setInt(stack, 1);
+            field(traversal.getClass(), "objectActive").setBoolean(traversal, true);
+            field(traversal.getClass(), "objectCandidateAllowed").setBoolean(traversal, true);
+            Field eligible = field(traversal.getClass(), "eligibleDraws");
+            Field sampleField = field(traversal.getClass(), "sample");
+            assertFalse(RenderLibRenderBridge.observeOriginalModelDraw());
+            assertEquals(0, eligible.getInt(traversal));
+            sampleField.set(traversal, new ModernRendererRuntime.RenderBackendSample(
+                OptimizationModule.MODERN_ENTITY_BACKEND, BackendLifecycleState.PAIRED_MEASURE,
+                MeasurementArm.LEGACY, scene(), null, null, 0L, 1L));
+            assertFalse(RenderLibRenderBridge.observeOriginalModelDraw());
+            assertEquals(1, eligible.getInt(traversal));
+            assertFalse(RenderLibRenderBridge.candidateAllowed());
+            assertEquals(0, field(traversal.getClass(), "modernDraws").getInt(traversal));
+            field(traversal.getClass(), "objectCandidateAllowed").setBoolean(traversal, false);
+            assertFalse(RenderLibRenderBridge.observeOriginalModelDraw());
+            assertEquals(1, eligible.getInt(traversal));
+            field(traversal.getClass(), "objectCandidateAllowed").setBoolean(traversal, true);
+            field(traversal.getClass(), "objectOverflowDepth").setInt(traversal, 1);
+            assertFalse(RenderLibRenderBridge.observeOriginalModelDraw());
+            assertEquals(1, eligible.getInt(traversal));
+            field(traversal.getClass(), "objectOverflowDepth").setInt(traversal, 0);
+            sampleField.set(traversal, new ModernRendererRuntime.RenderBackendSample(
+                OptimizationModule.MODERN_ENTITY_BACKEND, BackendLifecycleState.OUTPUT_VALIDATE,
+                MeasurementArm.LEGACY, scene(), null, null, 0L, 1L));
+            assertTrue(RenderLibRenderBridge.observeOriginalModelDraw());
+            assertEquals(1, eligible.getInt(traversal));
+        } finally { traversals.remove(); }
+    }
+
+    @Test
     public void unstableEmptyModernSamplesDoNotSuspendButEightStableEmptyFramesDo() throws Exception {
         ModernRendererRuntime runtime = runtime();
         initializeFixture(runtime);

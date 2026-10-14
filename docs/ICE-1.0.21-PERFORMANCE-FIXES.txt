@@ -1,0 +1,43 @@
+ICE 1.0.21 性能修复（2026-10-10）
+
+本版处理 1.0.20 新游戏记录确认的三类额外开销。没有增加按 FPS 收益自动关闭、相机静止限制、冷却窗口或每帧自检。F6 仍控制可以即时切换的优化，现有画面语义和资源生命周期约束保留。
+
+HUD
+- 每个流缓冲槽保留固定 VAO；热路径不再 Push/PopClientAttrib 或逐批重设 vertex/texcoord 指针。
+- Forge HUD 事件前正常提交待画数据，事件后标记状态失效；取消已知重复的通用 LegacyGlIsland 恢复。
+- 多个连续事件不立即查询驱动。下一次实际 HUD 几何仅同步需要的 program、VAO/VBO、texture、viewport 等状态，不伪造完整 OpenGL 状态镜像。
+- 原生事件探针：12 个已预热批次的统计调用从 144 到 72；连续 6 个事件的状态查询从 144 到 0，下一实际绘制一次查询 8；重复通用恢复异常从 2 到 0。
+- 外部非零 VAO 和 VAO 0 的 vertex/normal/color、多纹理坐标数组以及当前颜色都验证保留；16384 字节像素完全一致。上传/绘制故障路径也验证状态还原和不重复提交。
+
+混合地形
+- 普通独立 VBO 与 arena 网格共用同一着色器、参数流和连续提交范围。每个普通 VBO 的 VAO 只初始化一次，沿现有删除/迁移事件释放，不复制原顶点数据。
+- early VertexBuffer accessor 直接读取实际 vertexCount，上传/删除钩子继续维护所有权。保持可见列表顺序、原地形缩放、相机位移和 ChunkAnimator 位移。
+- OptiFine VboRegion 仍使用其真实存储和提交接口。
+- 合成 384 网格、191 个普通 VBO 的交错场景：program 绑定 384→2，buffer 绑定 578→5，四类顶点指针合计 764→0，矩阵 push/pop 各 191→0。绘制仍为 383 次，未把独立 VBO 谎称成一个批次。
+- 本机 RTX 4060 Laptop 上最终候选的 7 轮交错短测，整层提交加 glFinish 中位约 425.3→61.7 微秒；全部 arena 约 33.9→30.1 微秒。这些是合成场景的局部测量，最终画面回归以实际最终构建日志为准，不能转换成游戏 FPS。
+
+遮挡数据和算法
+- 完成区块编译后，在 dispatcher 排队上传之前构建不可变遮挡网格；通常发生在已有区块编译线程。主线程上传消费交接结果，不再重复扫描、分类和矩形排序；同步编译路径仍按同一入口处理。
+- atlas opacity 与 UV 范围仅在主线程资源事件复制成不可变证据，worker 不访问可变的 TextureAtlasSprite。F6 暂停期间的资源重载也更新证据，代次切换清除旧准备结果。
+- 矩形合并改用 primitive 工作区和稳定归并，去掉逐矩形对象及对象 TimSort。已有上传生命周期管理 chunk 索引，查询不再走弱引用哈希表；包围盒投影复用共享乘积，保留原覆盖结果和预算。
+- 保留当前帧视角输入，不增加“移动就停用”的条件，也不降低遮挡预算。
+- 合成的 512 区块移动场景（零隐藏）：完整 filter 旧 95.5/95.6 微秒，新 88.3/83.9 微秒。2048 quad 捕获示例约 203.6→173.9 微秒，临时分配约 50952→23568 字节。算法量化与线程迁移分开记录，不把 worker CPU 耗时说成消失。
+
+验证与安装产物
+最终离线构建通过：1126 项常规测试中 1106 通过、20 跳过、0 失败；10 项成品启动测试通过。
+14 项原生图形探针通过，另有真实 OptiFine G5 的 VBO 生命周期字节码验证通过。
+原生验证使用最终 Gradle 编译的生产类；所有调用计数与故障注入仅作用于独立离线工具副本。
+完整构建、实际模组 JAR 适配测试、成品启动测试和最终原生回归结果记录于：
+.refactor-backups/1.0.21-final/verification.json
+构建脚本：.refactor-backups/run-1.0.21-package.ps1
+基础原生回归：.refactor-backups/verify-1.0.21-native.ps1
+HUD 边界回归：.refactor-backups/1.0.21-hud/run-hud-boundary-native.ps1
+地形调用/像素证据：.refactor-backups/1.0.21-terrain/
+遮挡算法对照：.refactor-backups/1.0.21-occlusion/
+
+build/libs/ice-rlcraft-optimizer-1.0.21.jar
+build/libs/ice-rlcraft-profiler-1.0.21.jar
+build/libs/ice-rlcraft-optimizer-bundle-1.0.21.zip
+
+没有自动安装或启动游戏，没有改变实例 JVM 内存配置。游戏帧率提升幅度尚需实际运行验证；局部加速不等于已证明所有场景开启 ICE 都更快。
+更大规模的 GPU 批量提交和可见性计算设计见 docs/ICE-GPU-RENDERING-PROPOSAL.txt，明确标为后续方案，并非本版已经实现。

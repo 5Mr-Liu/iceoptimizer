@@ -14,6 +14,7 @@ import java.util.List;
 public final class ClientOptimizerStatus {
     private final boolean initialized;
     private final boolean coreModPresent;
+    private final boolean runtimePaused;
     private final PackLockStatus packLock;
     private final WorkerStatus workers;
     private final RenderQueueStatus renderQueue;
@@ -38,8 +39,19 @@ public final class ClientOptimizerStatus {
                                  EpochToken epochs, ChunkRenderStatus chunkRender,
                                  ModernRendererStatus modernRenderer,
                                  List<ModuleStatus> modules) {
+        this(initialized, coreModPresent, false, packLock, workers, renderQueue,
+            cacheBudget, epochs, chunkRender, modernRenderer, modules);
+    }
+
+    public ClientOptimizerStatus(boolean initialized, boolean coreModPresent, boolean runtimePaused,
+                                 PackLockStatus packLock, WorkerStatus workers,
+                                 RenderQueueStatus renderQueue, CacheBudgetStatus cacheBudget,
+                                 EpochToken epochs, ChunkRenderStatus chunkRender,
+                                 ModernRendererStatus modernRenderer,
+                                 List<ModuleStatus> modules) {
         this.initialized = initialized;
         this.coreModPresent = coreModPresent;
+        this.runtimePaused = runtimePaused;
         this.packLock = packLock;
         this.workers = workers;
         this.renderQueue = renderQueue;
@@ -52,6 +64,7 @@ public final class ClientOptimizerStatus {
 
     public boolean isInitialized() { return initialized; }
     public boolean isCoreModPresent() { return coreModPresent; }
+    public boolean isRuntimePaused() { return runtimePaused; }
     public PackLockStatus getPackLock() { return packLock; }
     public WorkerStatus getWorkers() { return workers; }
     public RenderQueueStatus getRenderQueue() { return renderQueue; }

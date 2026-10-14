@@ -385,13 +385,9 @@ final class OptifineShaderRuntime {
                 RenderBackendId.OF_COMPAT_REGION, RenderCounter.DRAW,
                 sample.commandCount);
         }
-        // VboRegion is OptiFine's compatibility fallback, not an ICE candidate
-        // that may be artificially slowed for ABBA.  Once structural/output
-        // validation completes, stop its candidate state machine explicitly;
-        // the current-generation observation above remains the availability
-        // authority for backend selection.
-        if (backend != null && backend.lifecycleState()
-            == BackendLifecycleState.PAIRED_MEASURE) {
+        // One successful observation establishes this generation's OptiFine
+        // fallback. Further draw timing and queue scans add no readiness evidence.
+        if (backend != null) {
             backend.fallback("OptiFine-owned compatibility backend observed; "
                 + "no ICE replacement selected", false);
         }

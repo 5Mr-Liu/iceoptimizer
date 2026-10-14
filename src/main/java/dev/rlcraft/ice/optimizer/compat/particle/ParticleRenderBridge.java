@@ -6,12 +6,10 @@ import dev.rlcraft.ice.optimizer.client.ClientOptimizerRuntime;
 import dev.rlcraft.ice.optimizer.client.ModernRendererRuntime;
 import dev.rlcraft.ice.optimizer.compat.gl.EarlyGlStateTracker;
 import dev.rlcraft.ice.optimizer.compat.texture.AnimatedTextureVisibilityBridge;
-import dev.rlcraft.ice.optimizer.render.backend.BackendLifecycleState;
 import dev.rlcraft.ice.optimizer.render.backend.RenderBackendId;
 import dev.rlcraft.ice.optimizer.render.frame.RenderPass;
 import dev.rlcraft.ice.optimizer.render.particle.ParticleInstanceStream;
 import dev.rlcraft.ice.optimizer.render.particle.LwjglParticleRenderer;
-import dev.rlcraft.ice.optimizer.render.particle.ParticleOutputValidator;
 import dev.rlcraft.ice.optimizer.render.particle.ParticleState;
 import dev.rlcraft.ice.optimizer.render.particle.VanillaBillboardEmitter;
 import dev.rlcraft.ice.optimizer.runtime.MonotonicTokenCounter;
@@ -103,13 +101,6 @@ public final class ParticleRenderBridge {
                     renderer.discard();
                     renderer.prepare(runtime.resourceGeneration(),
                         runtime.glContextGeneration());
-                }
-                if (sample != null
-                    && sample.lifecycleState() == BackendLifecycleState.OUTPUT_VALIDATE) {
-                    ParticleOutputValidator.Result validation =
-                        ParticleOutputValidator.validate();
-                    runtime.recordValidation(OptimizationModule.MODERN_PARTICLE_BACKEND,
-                        validation.isEquivalent(), validation.getDetail());
                 }
                 modern = sample != null && sample.usesModernArm()
                     && renderer != null

@@ -3,6 +3,13 @@ package dev.rlcraft.ice.hooks;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -63,6 +70,68 @@ public final class AnimatedTextureVisibilityAdapterTest {
             DISPLAY_RENDER_LIST, renderList(DISPLAY_RENDER_LIST));
         assertEquals(1, calls(vbo, BOOTSTRAP, "terrainDraw"));
         assertEquals(1, calls(display, BOOTSTRAP, "terrainDraw"));
+    }
+
+    @Test public void finalBoundaryDominatesNativeAndLegacyDrawsInBothTransformerOrders() {
+        for (boolean visibilityFirst : new boolean[] {false, true}) {
+            byte[] bytes = renderList(VBO_RENDER_LIST);
+            ModernTerrainAdapter modern = new ModernTerrainAdapter(ModernTerrainAdapter.Part.VBO_RENDER_LIST);
+            if (visibilityFirst) bytes = transform(AnimatedTextureVisibilityAdapter.Part.CHUNK_DRAW, VBO_RENDER_LIST, bytes);
+            bytes = modern.transform(VBO_RENDER_LIST.replace('/', '.'), bytes, null);
+            if (!visibilityFirst) bytes = transform(AnimatedTextureVisibilityAdapter.Part.CHUNK_DRAW, VBO_RENDER_LIST, bytes);
+            assertEquals(1, calls(bytes, BOOTSTRAP, "terrainDraw"));
+            ClassNode node = new ClassNode(Opcodes.ASM5);
+            new ClassReader(bytes).accept(node, 0);
+            for (MethodNode method : node.methods) if ("func_178001_a".equals(method.name)) {
+                MethodInsnNode first = null;
+                for (AbstractInsnNode instruction : method.instructions.toArray())
+                    if (instruction instanceof MethodInsnNode) { first = (MethodInsnNode) instruction; break; }
+                assertNotNull(first);
+                assertEquals(BOOTSTRAP, first.owner);
+                assertEquals("terrainDraw", first.name);
+            }
+        }
+    }
+
+    @Test public void reviewedContainersCollectAtDrawWhileSubclassesKeepTheEarlyFallback() throws Exception {
+        for (String owner : new String[] {VBO_RENDER_LIST, DISPLAY_RENDER_LIST}) {
+            FixtureLoader loader = new FixtureLoader();
+            Class<?> base = loader.define(CONTAINER, transform(AnimatedTextureVisibilityAdapter.Part.CHUNK_CONTAINER,
+                CONTAINER, container(false)));
+            Class<?> emitter = loader.define(owner, transform(AnimatedTextureVisibilityAdapter.Part.CHUNK_DRAW,
+                owner, renderList(owner)));
+            ClassWriter child = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+            child.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, "fixture/UnreviewedTerrainList", null, owner, null);
+            constructor(child, owner); child.visitEnd();
+            Class<?> subclass = loader.define("fixture/UnreviewedTerrainList", child.toByteArray());
+            Method add = base.getMethod("func_178002_a", net.minecraft.client.renderer.chunk.RenderChunk.class,
+                net.minecraft.util.BlockRenderLayer.class);
+            Method draw = emitter.getMethod("func_178001_a", net.minecraft.util.BlockRenderLayer.class);
+            assertTrue(AnimatedTextureVisibilityBootstrap.install(CountingVisibilityBridge.class));
+            try {
+                CountingVisibilityBridge.early = CountingVisibilityBridge.finalDraw = 0;
+                Object normal = emitter.newInstance();
+                for (int i = 0; i < 100; i++) add.invoke(normal, null, null);
+                assertEquals(0, CountingVisibilityBridge.early);
+                draw.invoke(normal, new Object[] {null});
+                assertEquals(1, CountingVisibilityBridge.finalDraw);
+                add.invoke(subclass.newInstance(), null, null);
+                add.invoke(base.newInstance(), null, null);
+                assertEquals(2, CountingVisibilityBridge.early);
+            } finally { AnimatedTextureVisibilityBootstrap.resetForTest(); }
+        }
+    }
+
+    public static final class CountingVisibilityBridge {
+        static int early, finalDraw;
+        public static Object[] visibilityCallbacks() {
+            return new Object[] {(BiConsumer<Object, Object>) (a, b) -> early++,
+                (BiConsumer<Object, Object>) (a, b) -> finalDraw++, (Consumer<Object>) a -> {}};
+        }
+    }
+    private static final class FixtureLoader extends ClassLoader {
+        FixtureLoader() { super(AnimatedTextureVisibilityAdapterTest.class.getClassLoader()); }
+        Class<?> define(String name, byte[] bytes) { return defineClass(name.replace('/', '.'), bytes, 0, bytes.length); }
     }
 
     @Test(expected = IllegalStateException.class)
@@ -188,6 +257,7 @@ public final class AnimatedTextureVisibilityAdapterTest {
             | ClassWriter.COMPUTE_FRAMES);
         writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, CONTAINER, null,
             "java/lang/Object", null);
+        constructor(writer, "java/lang/Object");
         MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC,
             "func_178002_a", "(Lnet/minecraft/client/renderer/chunk/RenderChunk;"
                 + "Lnet/minecraft/util/BlockRenderLayer;)V", null, null);
@@ -234,6 +304,7 @@ public final class AnimatedTextureVisibilityAdapterTest {
             | ClassWriter.COMPUTE_FRAMES);
         writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, owner, null,
             CONTAINER, null);
+        constructor(writer, CONTAINER);
         MethodVisitor method = writer.visitMethod(Opcodes.ACC_PUBLIC,
             "func_178001_a", "(Lnet/minecraft/util/BlockRenderLayer;)V",
             null, null);
@@ -257,6 +328,13 @@ public final class AnimatedTextureVisibilityAdapterTest {
             "net/minecraft/client/renderer/WorldVertexBufferUploader",
             "func_181679_a", "(Lnet/minecraft/client/renderer/BufferBuilder;)V",
             false);
+    }
+
+    private static void constructor(ClassWriter writer, String parent) {
+        MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode(); init.visitVarInsn(Opcodes.ALOAD, 0);
+        init.visitMethodInsn(Opcodes.INVOKESPECIAL, parent, "<init>", "()V", false);
+        init.visitInsn(Opcodes.RETURN); init.visitMaxs(0, 0); init.visitEnd();
     }
 
     private static int calls(byte[] bytes, final String owner,

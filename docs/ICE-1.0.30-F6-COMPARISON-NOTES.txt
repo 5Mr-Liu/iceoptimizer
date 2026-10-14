@@ -1,0 +1,89 @@
+ICE 1.0.30 Build15 — explicit in-game comparison switch
+2026-10-13
+
+User requirement
+---------------
+Default to enabled. F6 must switch the enabled ICE optimizations off/on together,
+including native terrain, preserving individual configuration and compatibility
+decisions. The user will remove the separate profiler; do not alter its HUD or
+deploy into the original game. This explicitly requested manual switch is not
+an automatic performance gate or adaptive fallback.
+
+Implementation
+--------------
+First launch and older configs missing nativeTerrainRenderer now select native
+terrain immediately. Explicit enabled=false/nativeTerrainRenderer=false and
+external Nothirium ownership remain respected. Bootstrap tests cover both cases.
+
+The existing registry pause already clears both operational masks and stops ICE
+workers, render submissions, async skull lookup and compression producers.
+Keep that shared gate, including rejection/disabled state on resume. Many
+bytecode-installed optimizations already have an original branch selected by
+the module gate (for example NormalStringPool's constant-key rewrite); installing
+a bytecode hook at startup does not by itself mean the algorithm stays enabled.
+
+Native terrain was the important missing execution path: its four original
+entry points had been discarded. Retain the incoming setupTerrain,
+renderBlockLayer, VboRenderList.renderChunkLayer and dispatcher VBO uploader in
+private synthetic methods. A single pause check selects the incoming body on
+F6-off. On F6-on the native traversal/upload/draw body remains direct. Preserve
+other mods' incoming implementations rather than reconstructing vanilla code.
+
+On the client thread, drain/cancel chunk construction before changing the gate,
+release native GPU ownership, then reload terrain in the selected mode. Rebuild
+in both directions; do not share arena ranges with vanilla per-chunk VBOs or
+retain a second GPU copy. Clear upload context while paused. The same lifecycle
+is in ClientOptimizerRuntime.setRuntimePaused, so F6 and the test fixture use
+the same implementation. Repeated requests for the same state do not rebuild.
+
+The change does not unload classes or reverse already completed initialization.
+Added interfaces, existing data and mutation/invalidation bookkeeping remain
+resident for correctness when resuming. This is an execution/FPS comparison,
+not a no-JAR startup-time or heap-residency comparison. Other mods are unaffected.
+Both transitions rebuild chunks and can hitch; compare only after settling.
+
+Verification completed before live smoke
+---------------------------------------
+build/fps-target/130-native-build15-f6-build.log: build + optimizerBundleZip +
+verifyArtifactStartup succeeded. 1293 JUnit cases: 1163 passed, 130 skipped,
+0 failures/errors. Ten final artifact/coremod discovery tests passed separately.
+New tests execute a retained original and optimized body repeatedly with wide
+arguments and JVM verification, assert handoff ordering across pause/resume,
+and inspect captured real RenderGlobal bytecode for the preserved filter loop.
+Existing worker test covers late results after a pause/resume. Existing mask
+test covers both words and ensures disabled/rejected/tripped modules stay off.
+
+No performance acceptance claim. Build10 remains the latest formal comparison;
+Build12 neighbor-cache and Build13 float-frustum experiments remain rejected.
+
+Live smoke completed
+--------------------
+Fresh isolated copy: C:/Users/32884/.codex/scratch/ice-fps-target/live-130-native-build15-f6-smoke
+Original DregoraRL4 was copied; original game was not modified. No Nothirium,
+no profiler, no diagnostic agent; frozen 130-fixed-path-fixture-v7 test harness.
+Existing original config had no nativeTerrainRenderer key; native was selected
+on startup. Stable creative, 1920x1080, view distance 15, yaw 180/pitch 8,
+60-second warmup, 20-second scenes with the fixture's 5-second settling period.
+Sequence enabled/paused/paused/enabled completed and JVM exited normally.
+19:47:47 off: native resources rebuilt into incoming renderer.
+19:48:12 repeated off: no extra terrain rebuild.
+19:48:38 on: terrain rebuilt and ICE_NATIVE_TERRAIN active was logged again.
+19:49:03 ICE_BENCH COMPLETE. Screenshot inspection found visible terrain in all
+three inspected states (0/on, 1/off, 3/on); not a pixel-equivalence assertion.
+The first original OptiFine traversal logged its Chunk.hasEntities reflection
+probe warning (NullPointerException, field not present). It was handled by
+OptiFine; no crash and RenderLib still renders the entities. Preserve this
+observation; do not describe the run as warning-free or suppress the original
+code just to make the off-mode log cleaner.
+This is a functional smoke test, not a formal performance result: terrain
+rebuild/settling and changing entities prevent an acceptance claim.
+JAR SHA256: D00DC7A56B5C7DB5A65F93A0CD0AD2798116170B8189BAFBB674998931EBB6F9
+
+Superseded after user report (2026-10-13)
+----------------------------------------
+Build15's smoke test missed a real F6 deadlock during chunk rebuilding. The
+actual key-handler stress test reproduced it on switch four. Do not distribute
+Build15. Internal Build16 fixes cancellation before the blocking dispatcher
+drain; all six stress switches completed. The user requested release version
+1.20 for this substantial update. See ICE-1.0.30-F6-DEADLOCK-FIX.txt for the
+reproduction, fix and validation, and the 1.20 package for the release artifact.

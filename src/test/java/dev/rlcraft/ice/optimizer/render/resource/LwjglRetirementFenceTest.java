@@ -13,7 +13,7 @@ public class LwjglRetirementFenceTest {
     private static final long CHARGE = ResourceLedger.syncObjectCharge();
 
     @Test
-    public void successfulFenceOwnsAndReleasesOneToken() {
+    public void successfulFenceIsDeletedOnce() {
         CacheBudget budget = budget();
         FakeDriver driver = new FakeDriver();
         driver.waitResult = ARBSync.GL_ALREADY_SIGNALED;
@@ -26,6 +26,25 @@ public class LwjglRetirementFenceTest {
         fence.destroy();
         assertEquals(1, driver.createCalls);
         assertEquals(1, driver.waitCalls);
+        assertEquals(1, driver.deleteCalls);
+        assertEquals(0L, budget.snapshot().getGpuUsed());
+    }
+
+    @Test
+    public void exhaustedPayloadBudgetStillAllowsCompletionFence() {
+        CacheBudget budget = new CacheBudget(1L, 1L, 4096L);
+        CacheBudget.Reservation payload = budget.tryReserve(
+            dev.rlcraft.ice.optimizer.memory.BudgetKind.GPU, 4096L);
+        FakeDriver driver = new FakeDriver();
+        driver.waitResult = ARBSync.GL_ALREADY_SIGNALED;
+        LwjglRetirementFence fence =
+            LwjglRetirementFence.tryAfterCurrentCommands(budget, driver);
+        assertNotNull(fence);
+        assertTrue(fence.isSignaled());
+        assertEquals(4096L, budget.snapshot().getGpuUsed());
+        fence.destroy();
+        payload.close();
+        assertEquals(1, driver.createCalls);
         assertEquals(1, driver.deleteCalls);
         assertEquals(0L, budget.snapshot().getGpuUsed());
     }

@@ -13,8 +13,8 @@ import net.minecraftforge.fml.common.ObfuscationReflectionHelper;
 /**
  * Replaces Konkrete's two reflective field searches plus full locale-map scan
  * with one immutable reverse index per resource generation. The adapter keeps
- * Konkrete's original method and calls it whenever this bridge cannot prove the
- * standard vanilla Locale map shape.
+ * Konkrete's original method for nonstandard Locale maps, whose lookups may
+ * mutate iteration order or otherwise have side effects.
  */
 public final class KonkreteLocaleBridge {
     private static final int MODULE = OptimizationModule.KONKRETE_LOCALE_LOOKUP.ordinal();
@@ -38,18 +38,18 @@ public final class KonkreteLocaleBridge {
             int size = source.size();
             if (current == null || current.source != source
                 || current.resourceGeneration != generation || current.sourceSize != size) {
-                current = rebuild(source, generation, size);
+                current = rebuild(source, generation, size, false);
                 if (current == null) return FALLBACK;
             }
             String key = current.reverse.get(value);
             // Detect same-size replacement of the cached key's value. Normal
             // locale reloads are already covered by the resource generation.
             if (key != null && !value.equals(source.get(key))) {
-                current = rebuild(source, generation, source.size());
+                current = rebuild(source, generation, source.size(), true);
                 if (current == null) return FALLBACK;
                 key = current.reverse.get(value);
             }
-            if (ACTIVATED.compareAndSet(false, true)) {
+            if (!ACTIVATED.get() && ACTIVATED.compareAndSet(false, true)) {
                 OptimizerBridge.activate(MODULE,
                     "Konkrete 本地化值已使用资源代际反向索引，移除逐次反射和全表扫描");
             }
@@ -69,11 +69,12 @@ public final class KonkreteLocaleBridge {
         cache = null;
     }
 
-    private static Cache rebuild(Map<?, ?> source, long generation, int expectedSize) {
+    private static Cache rebuild(Map<?, ?> source, long generation, int expectedSize,
+                                 boolean valueChanged) {
         synchronized (KonkreteLocaleBridge.class) {
             Cache current = cache;
             int size = source.size();
-            if (current != null && current.source == source
+            if (!valueChanged && current != null && current.source == source
                 && current.resourceGeneration == generation && current.sourceSize == size) {
                 return current;
             }

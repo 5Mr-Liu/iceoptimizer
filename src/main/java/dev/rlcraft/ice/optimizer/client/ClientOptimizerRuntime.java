@@ -24,6 +24,7 @@ import dev.rlcraft.ice.optimizer.lock.PackLockStatus;
 import dev.rlcraft.ice.optimizer.lock.PackLockState;
 import dev.rlcraft.ice.optimizer.memory.CacheBudget;
 import dev.rlcraft.ice.optimizer.memory.BudgetKind;
+import dev.rlcraft.ice.optimizer.render.terrain.NativeTerrainRenderer;
 import dev.rlcraft.ice.optimizer.runtime.BoundedRenderQueue;
 import dev.rlcraft.ice.optimizer.runtime.ClientEpochs;
 import dev.rlcraft.ice.optimizer.runtime.ClientWorkerRuntime;
@@ -40,10 +41,11 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     private volatile boolean coreModPresent;
     private ClientOptimizerConfig config;
     private ClientEpochs epochs;
-    private BoundedRenderQueue renderQueue;
-    private ClientWorkerRuntime workers;
+    private volatile BoundedRenderQueue renderQueue;
+    private volatile ClientWorkerRuntime workers;
     private CacheBudget cacheBudget;
-    private ModernRendererRuntime modernRenderer;
+    private volatile ModernRendererRuntime modernRenderer;
+    private NativeTerrainPauseLifecycle nativeTerrainPause;
     private PackLockStatus packLock = new PackLockStatus(PackLockState.DISCOVERY, "尚未初始化", Collections.emptyList(), null);
 
     private ClientOptimizerRuntime() {
@@ -65,7 +67,10 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         renderQueue = new BoundedRenderQueue(epochs, config.getRenderQueueCapacity());
         workers = new ClientWorkerRuntime(epochs, renderQueue, config.getWorkerThreads(), config.getWorkerQueueCapacity());
         cacheBudget = new CacheBudget(config.getHeapCacheBudgetBytes(), config.getDirectCacheBudgetBytes(), config.getGpuCacheBudgetBytes());
-        modernRenderer = new ModernRendererRuntime(epochs, cacheBudget);
+        if (!config.usesExternalTerrainRenderer() && !config.usesNativeTerrainRenderer()) {
+            modernRenderer = new ModernRendererRuntime(epochs, cacheBudget);
+        }
+        if (config.usesNativeTerrainRenderer()) nativeTerrainPause = new NativeTerrainPauseLifecycle();
         SkullProfileBridge.configure(config.isIncompletePlayerSkullProfileLookupAllowed(),
             config.enabled(OptimizationModule.SKULL_PROFILE_ASYNC), config.getSkullProfileCacheEntries(),
             config.getSkullProfilePositiveTtlMinutes(), config.getSkullProfileNegativeTtlSeconds(),
@@ -100,48 +105,96 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         return epochs.nextClientTick();
     }
 
+    /** Called on the client thread between rendered frames. Does not rewrite module configuration. */
+    public synchronized boolean setRuntimePaused(boolean paused) {
+        if (!initialized || !config.isEnabled()) return false;
+        boolean previous = OptimizerRegistry.isRuntimePaused();
+        if (previous == paused) return true;
+        IceMod.LOGGER.info("ICE 优化总开关切换请求：{}", paused ? "关闭" : "开启");
+        if (nativeTerrainPause != null) nativeTerrainPause.beforeChange();
+        if (paused) OptimizerRegistry.setRuntimePaused(true);
+        ModernRendererRuntime renderer = modernRenderer;
+        if (renderer != null && !renderer.setRuntimePaused(paused)) {
+            OptimizerRegistry.setRuntimePaused(previous);
+            return false;
+        }
+        if (paused) {
+            ClientWorkerRuntime oldWorkers = workers;
+            workers = null;
+            renderQueue = null;
+            // A stopped queue also rejects completions from a worker finishing after resume.
+            if (oldWorkers != null) oldWorkers.shutdown();
+            ChunkSaveCompressionBridge.pause();
+        } else {
+            BoundedRenderQueue nextQueue = new BoundedRenderQueue(epochs, config.getRenderQueueCapacity());
+            renderQueue = nextQueue;
+            workers = new ClientWorkerRuntime(epochs, nextQueue,
+                config.getWorkerThreads(), config.getWorkerQueueCapacity());
+        }
+        if (config.isIncompletePlayerSkullProfileLookupAllowed()
+            && config.enabled(OptimizationModule.SKULL_PROFILE_ASYNC)) {
+            SkullProfileBridge.configure(true, !paused,
+                config.getSkullProfileCacheEntries(), config.getSkullProfilePositiveTtlMinutes(),
+                config.getSkullProfileNegativeTtlSeconds(), config.getSkullProfileQueueCapacity());
+        }
+        if (!paused) OptimizerRegistry.setRuntimePaused(false);
+        if (nativeTerrainPause != null) nativeTerrainPause.afterChange();
+        IceMod.LOGGER.info("ICE 优化总开关：{}{}", paused ? "关闭" : "开启",
+            nativeTerrainPause == null ? "" : "；地形资源已按当前模式重建");
+        return true;
+    }
+
+    public boolean isRuntimePaused() { return OptimizerRegistry.isRuntimePaused(); }
+
+    public boolean isCoreModPresent() { return coreModPresent; }
+
     public void worldChanged() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(true);
         epochs.invalidateWorld();
         epochs.invalidateViewFrustum();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateWorld();
         ChunkSaveCompressionBridge.reset();
         RenderLibTileEntityBridge.reset();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void resourcesReloaded() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(true);
         epochs.invalidateResources();
         resetResourceCaptureBridges();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateResources();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void atlasChanged() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(true);
         epochs.invalidateResources();
         epochs.invalidateAtlas();
         epochs.invalidateShaderPermutation();
         resetResourceCaptureBridges();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateResources();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void modelsChanged() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(true);
         epochs.invalidateResources();
         resetResourceCaptureBridges();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateResources();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void glContextReset() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(false);
         long oldGeneration = epochs.currentGlContextGeneration();
         epochs.invalidateGlContext();
         FoamFixUploadBridge.contextLost(oldGeneration);
@@ -151,17 +204,18 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         ModelMeshCaptureBridge.reset();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateContext(oldGeneration);
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void shaderPackChanged() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(true);
         epochs.invalidateShaderPack();
         epochs.invalidateShaderPermutation();
         OptifineShaderSourceBridge.reset();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateResources();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void shaderPackStateObserved(boolean known, boolean active) {
@@ -175,16 +229,17 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         OptifineShaderSourceBridge.reset();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateResources();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void vertexFormatChanged() {
         if (epochs == null) return;
+        NativeTerrainRenderer.reset(true);
         epochs.invalidateVertexFormat();
         ModelMeshCaptureBridge.reset();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateResources();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public void viewFrustumChanged() {
@@ -192,12 +247,18 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         epochs.invalidateViewFrustum();
         ModernRendererRuntime renderer = modernRenderer;
         if (renderer != null) renderer.invalidateWorld();
-        if (workers != null) workers.discardStaleQueuedTasks();
+        discardStaleWorkerTasks();
     }
 
     public int drainRenderQueue() {
-        if (renderQueue == null || config == null) return 0;
-        return renderQueue.drain(config.getRenderDrainBudgetNanos(), 4096);
+        BoundedRenderQueue queue = renderQueue;
+        if (queue == null || config == null) return 0;
+        return queue.drain(config.getRenderDrainBudgetNanos(), 4096);
+    }
+
+    private void discardStaleWorkerTasks() {
+        ClientWorkerRuntime currentWorkers = workers;
+        if (currentWorkers != null) currentWorkers.discardStaleQueuedTasks();
     }
 
     public EpochToken captureEpochs() {
@@ -231,7 +292,8 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
 
     public <T> boolean submit(OptimizationModule module, EpochToken token, int epochMask,
                               Callable<T> computation, Consumer<T> renderCompletion) {
-        return workers != null && workers.submit(module, token, epochMask, computation, renderCompletion);
+        ClientWorkerRuntime currentWorkers = workers;
+        return currentWorkers != null && currentWorkers.submit(module, token, epochMask, computation, renderCompletion);
     }
 
     public CacheBudget.Reservation tryReserve(BudgetKind kind, long bytes) {
@@ -242,6 +304,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     public CacheBudget cacheBudget() { return cacheBudget; }
 
     public synchronized void shutdown() {
+        NativeTerrainRenderer.reset(true);
         // Stop every producer before disposing render-thread state. A worker
         // which outlives its bounded join is still unable to enqueue a late
         // completion because ClientWorkerRuntime closes the render queue first.
@@ -261,6 +324,7 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
         workers = null;
         renderQueue = null;
         modernRenderer = null;
+        nativeTerrainPause = null;
         cacheBudget = null;
         epochs = null;
         OptimizerRegistry.shutdown("客户端优化运行时已停止");
@@ -269,9 +333,11 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
     }
 
     public ClientOptimizerStatus status() {
-        return new ClientOptimizerStatus(initialized, coreModPresent, packLock,
-            workers == null ? null : workers.snapshot(),
-            renderQueue == null ? null : renderQueue.snapshot(),
+        ClientWorkerRuntime currentWorkers = workers;
+        BoundedRenderQueue currentQueue = renderQueue;
+        return new ClientOptimizerStatus(initialized, coreModPresent, isRuntimePaused(), packLock,
+            currentWorkers == null ? null : currentWorkers.snapshot(),
+            currentQueue == null ? null : currentQueue.snapshot(),
             cacheBudget == null ? null : cacheBudget.snapshot(),
             epochs == null ? null : epochs.snapshot(), safeChunkRenderStatus(),
             modernRenderer == null ? null : modernRenderer.status(),

@@ -26,6 +26,94 @@ import org.objectweb.asm.tree.analysis.BasicVerifier;
 import net.minecraft.util.EnumFacing;
 
 public final class PrimitiveTerrainVisibilityAdapterTest {
+    @Test public void nativeCapturedChunkPublishesBothCompiledAndDummyWrites() throws Exception {
+        File captured = new File("C:/Users/32884/.codex/scratch/ice-fps-target/live-130-native-build3-coarse-v2/ice-benchmark/class-dump/net_minecraft_client_renderer_chunk_RenderChunk.class");
+        Assume.assumeTrue("captured pack RenderChunk", captured.isFile());
+        byte[] source = java.nio.file.Files.readAllBytes(captured.toPath());
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false, true);
+        try {
+            byte[] transformed = transform(PrimitiveTerrainVisibilityAdapter.Part.RENDER_CHUNK,
+                PrimitiveTerrainVisibilityAdapter.RENDER_CHUNK, source);
+            verify(transformed, PrimitiveTerrainVisibilityAdapter.RENDER_CHUNK);
+            assertTrue(hasInterface(transformed,"dev/rlcraft/ice/optimizer/compat/chunk/NativeTerrainChunkAccessor"));
+            assertTrue(hasMethod(transformed,"ice$nativeSection","()Ljava/lang/Object;"));
+            assertTrue(hasMethod(transformed,"ice$nativeSection","(Ljava/lang/Object;)V"));
+            final int[] writes = {0};
+            new ClassReader(source).accept(new ClassVisitor(Opcodes.ASM5) {
+                @Override public MethodVisitor visitMethod(int access,String name,String desc,String signature,String[] exceptions) {
+                    return new MethodVisitor(Opcodes.ASM5) {
+                        @Override public void visitFieldInsn(int opcode,String owner,String name,String desc) {
+                            if(opcode==Opcodes.PUTFIELD && name.equals("field_178590_b"))writes[0]++;
+                        }
+                    };
+                }
+            },ClassReader.SKIP_DEBUG|ClassReader.SKIP_FRAMES);
+            assertTrue(writes[0]>=3);
+            assertEquals(writes[0],countCalls(transformed,NativeTerrainFrameAdapter.RENDERER,"publish",
+                "(Lnet/minecraft/client/renderer/chunk/RenderChunk;Lnet/minecraft/client/renderer/chunk/CompiledChunk;)V"));
+        } finally { dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false); }
+    }
+    @Test public void nativeCapturedOptifineClassHasDirectTraversalAndOneFramePreparation() throws Exception {
+        File captured = new File("C:/Users/32884/.codex/scratch/ice-fps-target/live-130-native-build3-coarse-v2/ice-benchmark/class-dump/net_minecraft_client_renderer_RenderGlobal.class");
+        Assume.assumeTrue("captured pack RenderGlobal", captured.isFile());
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false, true);
+        try {
+            byte[] transformed = transform(PrimitiveTerrainVisibilityAdapter.Part.RENDER_GLOBAL,
+                PrimitiveTerrainVisibilityAdapter.RENDER_GLOBAL, java.nio.file.Files.readAllBytes(captured.toPath()));
+            verify(transformed, PrimitiveTerrainVisibilityAdapter.RENDER_GLOBAL);
+            assertTrue(hasMethod(transformed, NativeTerrainPauseAdapter.PREFIX + "func_174970_a",
+                PrimitiveTerrainVisibilityAdapter.SETUP_TERRAIN_DESC));
+            assertEquals(1,countCallsInMethod(transformed,NativeTerrainPauseAdapter.PREFIX + "func_174977_a",
+                ModernTerrainAdapter.CONTAINER,"func_178002_a",
+                "(Lnet/minecraft/client/renderer/chunk/RenderChunk;Lnet/minecraft/util/BlockRenderLayer;)V"));
+            assertEquals(1,countCalls(transformed,NativeTerrainFrameAdapter.RENDERER,"beginFrame","()V"));
+            assertEquals(1,countCalls(transformed,NativeTerrainFrameAdapter.RENDERER,"prepareLayer",
+                "(Ljava/lang/Object;Ljava/lang/Object;Lnet/minecraft/util/BlockRenderLayer;)I"));
+            assertEquals(1,countCalls(transformed,NativeTerrainFrameAdapter.VISIBILITY,"traverse",
+                "(Ljava/lang/Object;Ljava/util/Queue;Ljava/lang/Object;Ljava/lang/Object;IZZILnet/minecraft/entity/Entity;D)V"));
+            assertEquals(0,countCalls(transformed,PrimitiveTerrainVisibilityAdapter.BRIDGE,"tryTraverse",
+                "(Ljava/lang/Object;Ljava/util/Queue;Ljava/lang/Object;Ljava/lang/Object;IZZIZ)Z"));
+            assertEquals(0,countCallsInMethod(transformed,"func_174970_a","java/util/Deque","poll","()Ljava/lang/Object;"));
+            assertEquals(0,countCallsInMethod(transformed,"func_174977_a",ModernTerrainAdapter.CONTAINER,"func_178002_a",
+                "(Lnet/minecraft/client/renderer/chunk/RenderChunk;Lnet/minecraft/util/BlockRenderLayer;)V"));
+            assertEquals(0,countCallsInMethod(transformed,"ice$appendRenderInfo","net/optifine/util/ChunkUtils",
+                "hasEntities","(Lnet/minecraft/world/chunk/Chunk;)Z"));
+            assertEquals(0,countCallsInMethod(transformed,"ice$appendRenderInfo",PrimitiveTerrainVisibilityAdapter.COMPILED_CHUNK,
+                "func_178485_b","()Ljava/util/List;"));
+            assertEquals(1,countCallsInMethod(transformed,"ice$appendRenderInfo","java/util/List","add","(Ljava/lang/Object;)Z"));
+        } finally { dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false); }
+    }
+
+    @Test public void entityListRemainsWhenRenderLibDoesNotUnconditionallySkipItsConsumer() throws Exception {
+        File captured = new File("C:/Users/32884/.codex/scratch/ice-fps-target/live-130-native-build3-coarse-v2/ice-benchmark/class-dump/net_minecraft_client_renderer_RenderGlobal.class");
+        Assume.assumeTrue("captured pack RenderGlobal",captured.isFile());
+        ClassNode node=new ClassNode(Opcodes.ASM5);
+        new ClassReader(java.nio.file.Files.readAllBytes(captured.toPath())).accept(node,ClassReader.EXPAND_FRAMES);
+        boolean changed=false;
+        for(MethodNode method:node.methods) for(org.objectweb.asm.tree.AbstractInsnNode n:method.instructions.toArray()) {
+            if(!(n instanceof org.objectweb.asm.tree.MethodInsnNode))continue;
+            org.objectweb.asm.tree.MethodInsnNode call=(org.objectweb.asm.tree.MethodInsnNode)n;
+            if(!call.owner.equals("meldexun/renderlib/renderer/EntityRenderManager") || !call.name.equals("renderEntities"))continue;
+            org.objectweb.asm.tree.AbstractInsnNode zero=n.getNext();
+            while(zero.getOpcode()<0)zero=zero.getNext();
+            assertEquals(Opcodes.ICONST_0,zero.getOpcode());
+            method.instructions.set(zero,new org.objectweb.asm.tree.InsnNode(Opcodes.ICONST_1));
+            changed=true;
+        }
+        assertTrue(changed);
+        ClassWriter writer=new ClassWriter(0);node.accept(writer);
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false,true);
+        try {
+            byte[] transformed=transform(PrimitiveTerrainVisibilityAdapter.Part.RENDER_GLOBAL,
+                PrimitiveTerrainVisibilityAdapter.RENDER_GLOBAL,writer.toByteArray());
+            verify(transformed,PrimitiveTerrainVisibilityAdapter.RENDER_GLOBAL);
+            assertEquals(1,countCallsInMethod(transformed,"ice$appendRenderInfo","net/optifine/util/ChunkUtils",
+                "hasEntities","(Lnet/minecraft/world/chunk/Chunk;)Z"));
+            assertEquals(0,countCallsInMethod(transformed,"ice$appendRenderInfo",PrimitiveTerrainVisibilityAdapter.COMPILED_CHUNK,
+                "func_178485_b","()Ljava/util/List;"));
+        } finally {dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false);}
+    }
+
     @Test
     public void syntheticSrgLoopGetsOneTransactionalDecisionAndCompletionHook() {
         byte[] transformed = transform(PrimitiveTerrainVisibilityAdapter.Part.RENDER_GLOBAL,

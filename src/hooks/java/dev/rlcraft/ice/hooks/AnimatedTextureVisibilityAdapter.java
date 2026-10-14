@@ -3,9 +3,15 @@ package dev.rlcraft.ice.hooks;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
+import org.objectweb.asm.tree.LabelNode;
+import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
@@ -27,6 +33,8 @@ final class AnimatedTextureVisibilityAdapter implements OptimizerBytecodeAdapter
         "net/minecraft/client/renderer/Tessellator";
     private static final String BOOTSTRAP =
         "dev/rlcraft/ice/hooks/AnimatedTextureVisibilityBootstrap";
+    static final String FINAL_BOUNDARY =
+        "dev/rlcraft/ice/optimizer/compat/texture/FinalTerrainVisibilityBoundary";
     private final Part part;
 
     AnimatedTextureVisibilityAdapter(Part part) {
@@ -74,6 +82,23 @@ final class AnimatedTextureVisibilityAdapter implements OptimizerBytecodeAdapter
         before.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BOOTSTRAP,
             "terrainDraw", "(Ljava/lang/Object;Ljava/lang/Object;)V", false));
         draw.instructions.insert(before);
+        if (node.interfaces.contains(FINAL_BOUNDARY)) throw new IllegalStateException("duplicate final sprite boundary");
+        node.interfaces.add(FINAL_BOUNDARY);
+        MethodNode certified = new MethodNode(Opcodes.ASM5,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
+            "ice$hasFinalSpriteVisibilityBoundary", "()Z", null, null);
+        LabelNode subclass = new LabelNode();
+        certified.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        certified.instructions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+            "java/lang/Object", "getClass", "()Ljava/lang/Class;", false));
+        certified.instructions.add(new LdcInsnNode(Type.getObjectType(node.name)));
+        certified.instructions.add(new JumpInsnNode(Opcodes.IF_ACMPNE, subclass));
+        certified.instructions.add(new InsnNode(Opcodes.ICONST_1));
+        certified.instructions.add(new InsnNode(Opcodes.IRETURN));
+        certified.instructions.add(subclass);
+        certified.instructions.add(new InsnNode(Opcodes.ICONST_0));
+        certified.instructions.add(new InsnNode(Opcodes.IRETURN));
+        node.methods.add(certified);
     }
 
     private static void patchContainer(ClassNode node) {
@@ -94,11 +119,43 @@ final class AnimatedTextureVisibilityAdapter implements OptimizerBytecodeAdapter
                 "animated visibility container graph changed: " + listAdds);
         }
         InsnList before = new InsnList();
+        LabelNode early = new LabelNode(), published = new LabelNode();
+        before.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        before.add(new TypeInsnNode(Opcodes.INSTANCEOF, FINAL_BOUNDARY));
+        before.add(new JumpInsnNode(Opcodes.IFEQ, early));
+        before.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        before.add(new TypeInsnNode(Opcodes.CHECKCAST, FINAL_BOUNDARY));
+        before.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, FINAL_BOUNDARY,
+            "ice$hasFinalSpriteVisibilityBoundary", "()Z", true));
+        before.add(new JumpInsnNode(Opcodes.IFNE, published));
+        before.add(early);
         before.add(new VarInsnNode(Opcodes.ALOAD, 1));
         before.add(new VarInsnNode(Opcodes.ALOAD, 2));
         before.add(new MethodInsnNode(Opcodes.INVOKESTATIC, BOOTSTRAP,
             "terrainChunk", "(Ljava/lang/Object;Ljava/lang/Object;)V", false));
+        before.add(published);
         add.instructions.insert(before);
+    }
+
+    /** Keep the final boundary outside a later installed native/legacy wrapper. */
+    static InsnList detachFinalBoundaryPrefix(ClassNode node, MethodNode draw) {
+        InsnList prefix = new InsnList();
+        if (!node.interfaces.contains(FINAL_BOUNDARY)) return prefix;
+        AbstractInsnNode first = draw.instructions.getFirst();
+        while (first != null && first.getOpcode() < 0) first = first.getNext();
+        AbstractInsnNode second = first == null ? null : first.getNext();
+        AbstractInsnNode third = second == null ? null : second.getNext();
+        if (!(first instanceof VarInsnNode) || first.getOpcode() != Opcodes.ALOAD
+            || ((VarInsnNode) first).var != 0 || !(second instanceof VarInsnNode)
+            || second.getOpcode() != Opcodes.ALOAD || ((VarInsnNode) second).var != 1
+            || !(third instanceof MethodInsnNode) || third.getOpcode() != Opcodes.INVOKESTATIC
+            || !BOOTSTRAP.equals(((MethodInsnNode) third).owner)
+            || !"terrainDraw".equals(((MethodInsnNode) third).name)
+            || !"(Ljava/lang/Object;Ljava/lang/Object;)V".equals(((MethodInsnNode) third).desc))
+            throw new IllegalStateException("final sprite visibility boundary was moved by another transformer");
+        draw.instructions.remove(first); draw.instructions.remove(second); draw.instructions.remove(third);
+        prefix.add(first); prefix.add(second); prefix.add(third);
+        return prefix;
     }
 
     private static void patchTessellator(ClassNode node) {

@@ -4,6 +4,7 @@ import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -11,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ChunkPrimitiveSortBridge {
     private static final String MODULE = "vanilla-chunk-sort";
     private static final int MAX_QUADS = 1 << 20;
+    private static final int RADIX_MIN_QUADS = 512;
     private static final ThreadLocal<Scratch> SCRATCH = new ThreadLocal<Scratch>() {
         @Override protected Scratch initialValue() { return new Scratch(); }
     };
@@ -27,7 +29,7 @@ public final class ChunkPrimitiveSortBridge {
             if (quads < 0) return false;
             sortValidated(accessor, x, y, z, quads, SCRATCH.get());
             SORTED_QUADS.addAndGet(quads);
-            if (ACTIVATED.compareAndSet(false, true)) {
+            if (!ACTIVATED.get() && ACTIVATED.compareAndSet(false, true)) {
                 OptimizerBridge.activate(MODULE,
                     "透明区块四边形已使用逐线程原始类型稳定排序");
             }
@@ -78,11 +80,65 @@ public final class ChunkPrimitiveSortBridge {
         FloatBuffer floats = accessor.ice$sortFloatBuffer();
         scratch.ensureQuads(quads);
         int quadStride = stride * 4;
-        for (int quad = 0; quad < quads; quad++) {
-            scratch.distances[quad] = distanceSq(floats, x, y, z, stride, quad * quadStride);
-            scratch.order[quad] = quad;
+        boolean ordered = true;
+        if (quads < RADIX_MIN_QUADS) {
+            int quad = 0;
+            for (; quad < quads; quad++) {
+                scratch.smallDistances[quad] = distanceSq(floats, x, y, z, stride, quad * quadStride);
+                scratch.order[quad] = quad;
+                if (quad > 0 && Float.compare(scratch.smallDistances[quad - 1],
+                    scratch.smallDistances[quad]) < 0) { ordered = false; quad++; break; }
+            }
+            if (ordered) {
+                ints.limit(ints.capacity());
+                ints.position(requiredInts);
+                return;
+            }
+            for (; quad < quads; quad++) {
+                scratch.smallDistances[quad] = distanceSq(floats, x, y, z, stride, quad * quadStride);
+                scratch.order[quad] = quad;
+            }
+            stableSort(scratch.smallDistances, scratch.order, scratch.merge, quads);
+        } else {
+            int quad = 0;
+            for (; quad < quads; quad++) {
+                int key = descendingKey(distanceSq(floats, x, y, z, stride, quad * quadStride));
+                scratch.distanceKeys[quad] = key;
+                scratch.order[quad] = quad;
+                if (quad > 0 && Integer.compareUnsigned(
+                    scratch.distanceKeys[quad - 1], key) > 0) { ordered = false; quad++; break; }
+            }
+            // Ordered input needs neither histogram construction nor payload
+            // writes. Once the first inversion is found, stop testing order
+            // and retain the original tight histogram loop for the remainder.
+            if (ordered) {
+                ints.limit(ints.capacity());
+                ints.position(requiredInts);
+                return;
+            }
+            Arrays.fill(scratch.counts, 0);
+            for (int prefix = 0; prefix < quad; prefix++) {
+                int key = scratch.distanceKeys[prefix];
+                scratch.counts[key & 255]++;
+                scratch.counts[256 + ((key >>> 8) & 255)]++;
+                scratch.counts[512 + ((key >>> 16) & 255)]++;
+                scratch.counts[768 + (key >>> 24)]++;
+            }
+            for (; quad < quads; quad++) {
+                int key = descendingKey(
+                    distanceSq(floats, x, y, z, stride, quad * quadStride));
+                scratch.distanceKeys[quad] = key;
+                // All four histograms depend only on keys, not on the current
+                // permutation. Build them once while those keys are in registers.
+                scratch.counts[key & 255]++;
+                scratch.counts[256 + ((key >>> 8) & 255)]++;
+                scratch.counts[512 + ((key >>> 16) & 255)]++;
+                scratch.counts[768 + (key >>> 24)]++;
+                scratch.order[quad] = quad;
+            }
+            radixSort(scratch.distanceKeys, scratch.order, scratch.merge,
+                scratch.counts, quads);
         }
-        stableSort(scratch.distances, scratch.order, scratch.merge, quads);
 
         scratch.ensureRaw(requiredInts);
         ints.position(0);
@@ -109,6 +165,13 @@ public final class ChunkPrimitiveSortBridge {
         }
         ints.limit(ints.capacity());
         ints.position(requiredInts);
+    }
+
+    /** Unsigned ascending key with exactly Float.compare's descending order. */
+    static int descendingKey(float value) {
+        // Canonical NaNs preserve the original comparator's equal-NaN ties.
+        int bits = Float.floatToIntBits(value);
+        return bits < 0 ? bits : ~(bits ^ Integer.MIN_VALUE);
     }
 
     private static void stableSort(float[] distances, int[] order, int[] merge, int size) {
@@ -139,6 +202,38 @@ public final class ChunkPrimitiveSortBridge {
             source = target;
             target = swap;
             if (width > (Integer.MAX_VALUE >>> 1)) break;
+        }
+        if (source != order) System.arraycopy(source, 0, order, 0, size);
+    }
+
+    /** Stable LSD distribution of indirect 32-bit keys; no boxed comparator. */
+    private static void radixSort(int[] keys, int[] order, int[] merge,
+                                  int[] counts, int size) {
+        int[] source = order;
+        int[] target = merge;
+        for (int shift = 0; shift < 32; shift += 8) {
+            int histogram = shift << 5;
+            int position = 0;
+            boolean uniform = false;
+            for (int digit = 0; digit < 256; digit++) {
+                int at = histogram + digit;
+                int count = counts[at];
+                if (count == size) {
+                    uniform = true;
+                    break;
+                }
+                counts[at] = position;
+                position += count;
+            }
+            // A constant digit leaves the permutation unchanged.
+            if (uniform) continue;
+            for (int i = 0; i < size; i++) {
+                int index = source[i];
+                target[counts[histogram + ((keys[index] >>> shift) & 255)]++] = index;
+            }
+            int[] swap = source;
+            source = target;
+            target = swap;
         }
         if (source != order) System.arraycopy(source, 0, order, 0, size);
     }
@@ -194,15 +289,17 @@ public final class ChunkPrimitiveSortBridge {
     }
 
     private static final class Scratch {
-        private float[] distances = new float[0];
+        private final float[] smallDistances = new float[RADIX_MIN_QUADS];
+        private int[] distanceKeys = new int[0];
         private int[] order = new int[0];
         private int[] merge = new int[0];
+        private final int[] counts = new int[4 * 256];
         private int[] raw = new int[0];
 
         private void ensureQuads(int required) {
-            if (distances.length >= required) return;
-            int length = grownLength(distances.length, required);
-            distances = new float[length];
+            if (distanceKeys.length >= required) return;
+            int length = grownLength(distanceKeys.length, required);
+            distanceKeys = new int[length];
             order = new int[length];
             merge = new int[length];
         }

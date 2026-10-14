@@ -14,6 +14,26 @@ import org.objectweb.asm.Opcodes;
 
 public final class ModernTerrainAdapterTest {
     @Test
+    public void nativeEmitterRetainsIncomingBodyForExplicitPauseOnly() {
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false, true);
+        try {
+            byte[] transformed = transform(ModernTerrainAdapter.Part.VBO_RENDER_LIST,
+                ModernTerrainAdapter.VBO_RENDER_LIST, syntheticVboRenderList());
+            org.junit.Assert.assertFalse(hasMethod(transformed, ModernTerrainAdapter.ORIGINAL_RENDER,
+                ModernTerrainAdapter.RENDER_LAYER_DESC));
+            assertTrue(hasMethod(transformed, NativeTerrainPauseAdapter.PREFIX + ModernTerrainAdapter.RENDER_LAYER,
+                ModernTerrainAdapter.RENDER_LAYER_DESC));
+            assertEquals(0, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+                "beginRender", "(Lnet/minecraft/util/BlockRenderLayer;)J"));
+            assertEquals(0, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+                "tryRender", "(Ljava/lang/Object;Lnet/minecraft/util/BlockRenderLayer;)Z"));
+            assertEquals(1, countCalls(transformed,
+                "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainRenderer", "draw",
+                "(Ljava/lang/Object;Lnet/minecraft/util/BlockRenderLayer;)V"));
+        } finally { dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false); }
+    }
+
+    @Test
     public void exposesOnlyTheRequiredContainerState() {
         byte[] transformed = transform(ModernTerrainAdapter.Part.CONTAINER_ACCESS,
             ModernTerrainAdapter.CONTAINER, syntheticContainer());
@@ -87,6 +107,13 @@ public final class ModernTerrainAdapterTest {
     public void publishesUploadContextImmediatelyBeforeThePrivateUpload() {
         byte[] transformed = transform(ModernTerrainAdapter.Part.UPLOAD_CONTEXT,
             ModernTerrainAdapter.DISPATCHER, syntheticDispatcher());
+        assertEquals(1, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+            "prepareUpload", "(Lnet/minecraft/util/BlockRenderLayer;"
+                + "Lnet/minecraft/client/renderer/BufferBuilder;"
+                + "Lnet/minecraft/client/renderer/chunk/RenderChunk;"
+                + "Lnet/minecraft/client/renderer/chunk/CompiledChunk;)V"));
+        assertTrue(callBefore(transformed, ModernTerrainAdapter.UPLOAD_CHUNK,
+            ModernTerrainAdapter.RENDER_BRIDGE, "prepareUpload", ModernTerrainAdapter.UPLOAD_CONTEXT, "begin"));
         assertEquals(1, countCalls(transformed, ModernTerrainAdapter.UPLOAD_CONTEXT,
             "begin", "(Lnet/minecraft/util/BlockRenderLayer;"
                 + "Lnet/minecraft/client/renderer/chunk/RenderChunk;"
@@ -94,6 +121,23 @@ public final class ModernTerrainAdapterTest {
         assertTrue(callBefore(transformed, ModernTerrainAdapter.UPLOAD_CHUNK,
             ModernTerrainAdapter.UPLOAD_CONTEXT, "begin", ModernTerrainAdapter.DISPATCHER,
             ModernTerrainAdapter.UPLOAD_VBO));
+    }
+
+    @Test public void nativeUploadDoesNotInstallLegacyObservation() {
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false, true);
+        try {
+            byte[] transformed = transform(ModernTerrainAdapter.Part.UPLOAD_CONTEXT,
+                ModernTerrainAdapter.DISPATCHER, syntheticDispatcher());
+            assertEquals(0, countCalls(transformed, ModernTerrainAdapter.RENDER_BRIDGE,
+                "prepareUpload", "(Lnet/minecraft/util/BlockRenderLayer;"
+                    + "Lnet/minecraft/client/renderer/BufferBuilder;"
+                    + "Lnet/minecraft/client/renderer/chunk/RenderChunk;"
+                    + "Lnet/minecraft/client/renderer/chunk/CompiledChunk;)V"));
+            assertEquals(1, countCalls(transformed, ModernTerrainAdapter.UPLOAD_CONTEXT,
+                "begin", "(Lnet/minecraft/util/BlockRenderLayer;"
+                    + "Lnet/minecraft/client/renderer/chunk/RenderChunk;"
+                    + "Lnet/minecraft/client/renderer/chunk/CompiledChunk;)V"));
+        } finally { dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false); }
     }
 
     private static byte[] transform(ModernTerrainAdapter.Part part, String className,

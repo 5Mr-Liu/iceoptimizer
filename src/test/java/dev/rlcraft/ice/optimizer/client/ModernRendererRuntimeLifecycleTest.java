@@ -140,6 +140,9 @@ public final class ModernRendererRuntimeLifecycleTest {
             assertTrue("the full snapshot deliberately lacks unrelated state",
                 EarlyGlStateTracker.snapshot() == null);
             assertTrue(ModernRendererRuntime.modelPublicationComplete());
+            EarlyMatrixStateTracker.invalidate();
+            assertTrue("ordinary model publication uses the driver's matrix stack",
+                ModernRendererRuntime.modelPublicationComplete());
         } finally {
             EarlyGlStateTracker.invalidate();
             EarlyMatrixStateTracker.invalidate();

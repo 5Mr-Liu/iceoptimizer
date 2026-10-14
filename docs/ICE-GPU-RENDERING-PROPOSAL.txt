@@ -1,0 +1,66 @@
+ICE GPU 渲染优化方案（2026-10-10）
+
+1.0.22 实现状态
+跨 VBO 命令和当前帧 GPU 遮挡已实现，详见 ICE-1.0.22-GPU-RENDERING.txt。
+下面保留原方案及其依据；实现有三点具体差异：
+- GPU 遮挡使用平面保守深度格直接测试候选，没有保留原计划的多层深度归约；离线测量用于选择更少工作的算法，没有在游戏内加入收益检测。
+- 相机相对 bounds、实际遮挡面及候选索引每层打包上传，计算结果和命令不读回 CPU；目前尚未实现跨帧 GPU 网格元数据常驻。
+- 实体部分减少已有模型批次的多余 VAO 切换；跨实体实例合并尚未实现。扩大姿态批处理到小模型的实验开销更高，因此没有纳入构建。
+
+结论
+GPU 可以承担更多可见性计算和绘制命令处理。针对目前记录，最有潜力的方案是“跨 VBO 批量提交 + GPU 生成可见性命令”。该架构未装进 1.0.21；1.0.21 修复了 HUD、混合地形提交和 CPU 遮挡数据准备的已知额外开销，1.0.22 在此基础上实现地形 GPU 路径。
+
+GPU 使用率二十多只能说明观测时利用率较低，不能单独证明某个 CPU 函数就是瓶颈。限帧、同步等待、主线程提交不足都可能造成低利用率。用户记录中的主线程栈和本机离线调用对照，支持优先消除 CPU 提交开销。总 CPU 占用也不能代表 Minecraft 主渲染线程是否已经饱和。[1][2]
+
+已确认的约束与证据
+- 当前现代地形已有 MDI，但一个普通 MDI 调用使用同一顶点输入状态，跨不同 VBO 仍要重新绑定；不能把调用名称换成 MDI 就当成充分批处理。[3]
+- 1.0.20 记录的现代地形每次 draw 平均仅约 1.93～1.99 条命令，共享 ICE GPU 预算 256 MiB 经常接近用完。这个预算是模组自己的记账上限，并非显卡物理显存总容量。
+- 1.0.21 已让普通 28 字节地形 VBO 和 arena 页连续使用同一着色器；不复制普通 VBO 的顶点数据。原顺序、ChunkAnimator 位移以及旧路径的 1.000001 缩放保持一致。
+- 本机离线 OpenGL 上下文：NVIDIA GeForce RTX 4060 Laptop GPU，OpenGL 4.6.0 NVIDIA 592.82；GL_NV_bindless_multi_draw_indirect、GL_NV_vertex_buffer_unified_memory、GL_NV_shader_buffer_load 均支持。这是离线 Pbuffer 的实测能力，不冒充游戏进程的当前 GPU 负载。
+
+核心实现设计
+1. 跨存储对象批量提交
+   在 LwjglTerrainBatchRenderer 中增加使用 GPU 地址的命令格式，把每个已存在的 VBO/page 地址、长度、顶点范围及 per-draw 参数放进间接命令流。在支持上述 NVIDIA 扩展的设备上，同一兼容渲染状态下的多个独立 VBO 可以由一次调用提交。[4]
+   1.0.21 的 384 网格交错测试虽然减少了状态切换，仍有 383 次 draw；这项工作直接针对剩下的 draw 数量。目标是把一个连续兼容 layer 的提交收敛到一次或少数几次，且不额外复制整套地形顶点。这个目标是工程验收指标，不是已测得的游戏收益。
+   修改位置：LwjglTerrainBatchRenderer、LwjglTerrainArena 的布局/命令记录、VBO 上传和删除生命周期。地址 resident/non-resident 必须与实际 buffer storage 生命周期绑定；bufferData、删除或 context reset 后旧地址不再复用。利用已有上传/释放事件处理，无需每帧扫描、查询可用内存或 glIsBuffer。
+   不支持该扩展的设备继续使用标准 OpenGL 路径。若需要同等跨厂商批量化，应改为共享存储和稳定 suballocation，不能假定普通 MDI 可切换 VBO。OptiFine VboRegion 有自己的批次所有权，须按其实际接口接入。
+
+2. GPU 可见性和间接命令生成
+   区块变化时更新紧凑的 bounds/mesh 元数据；每帧只提交相机矩阵和候选顺序。Compute shader 对候选进行视锥判断，并直接写入 draw 命令的 instanceCount；不把每个区块的结果读回 CPU。随后使用明确的 command memory barrier 再执行间接绘制。[5][6]
+   对遮挡部分，使用当前视角渲染的保守实心遮挡面建立低分辨率深度，再生成最大深度层级并测试包围盒。只让有完整覆盖证据的像素参与剔除，空洞和 cutout 不能被当作实心墙。沿用真实不透明证据，不能用包围盒填满原有孔洞。
+   避免依赖上帧可见列表或“相机静止才工作”；每帧计算适用于移动与转视角。当前帧遮挡深度必须由真实遮挡面生成，不能循环依赖已经被剔除的候选。此设计让 GPU 承担工作，也会增加深度和 compute 成本，需要比较整个 pass，而非只测 compute kernel。
+   固定命令槽并置零 instanceCount 可避免把可见数量同步读回 CPU；透明层保留原顺序，不用无序原子追加改变混合结果。帧间存储沿用已有资源退休机制。
+   修改位置：新的 GPU 可见性执行器、间接命令流及现有 frame pass 接口；替换同一 pass 中重复的 CPU 软件遮挡工作，不能两套剔除同时重复计算。
+
+3. 模型实例数据批量化
+   对相同网格、材质和渲染状态的实体部件，把 transform/light/color 写到实例缓冲，通过实例索引读取。现有合并模型捕获和姿态数据可作为输入。跨 Forge 自定义渲染回调不能随意重排；透明顺序及不同光照/材质需要体现在实际批次数据中。
+   收益取决于场景中能合并的模型数量，不能假设几千个实体都能变为一个 draw。这项工作与地形批量化共同减少主线程向驱动发出的小调用。
+
+内存应如何处理
+20 个新会话合并成 810 个唯一记录区间，Java 堆实际使用约 2726～5506 MiB，中位约 4453 MiB；已提交容量最高 7168 MiB。提交容量、实际使用、进程工作集、direct buffer 和显存是不同指标。
+记录区间累计约 832 秒，GC 时间增量合计约 12.84 秒，含初始加载段，单个区间最大 3.43 秒。它说明存在 GC 停顿，不能把这些累计量解释成稳定游戏每帧损失，也不能据此证明泄漏。
+GPU 不能直接接管 Java 世界对象图、SRP AI 和 Forge 事件回调。把这些数据反复序列化、上传、读回可能更慢。CPU 侧应继续减少每帧临时对象和重复容器，按实际分配热点优化；不自动增大 -Xmx，也不把普通堆占用伪装为可迁移显存。1.0.21 的 primitive 遮挡合并与顶点布局复用已按这个方向修改。
+
+验收方式
+必须保持画面内容、可见范围与移动行为一致。离线验证实际像素、调用数、生命周期与 frame pass 总成本；游戏验证用同一移动路线/转视角动作，多组交错 F6 数据，观察平均帧时间和 P95/P99，而非只看 GPU 百分比。Profiler 只在验证时使用，不添加运行时“收益不够自动停用”、冷却、静止判定或逐帧自测。
+能否大幅提高 FPS，取决于 CPU 提交在总帧时间中的比例。例如实际总帧 6 ms，其中可消除部分 2 ms，消除一半后为 5 ms，FPS 约提高 20%；这是计算示例，不是本模组的收益承诺。局部函数快数倍也不能直接称整帧快数倍。
+
+官方资料（2026-10-10 核对）
+[1] Intel: Identify Basic GPU-CPU Bound Scenarios
+https://www.intel.com/content/www/us/en/docs/gpa/cookbook/2023-3/identify-basic-gpu-cpu-bound-scenarios.html
+[2] NVIDIA: GPU Gems, Chapter 28, Graphics Pipeline Performance
+https://developer.nvidia.com/gpugems/gpugems/part-v-performance-and-practicalities/chapter-28-graphics-pipeline-performance
+[3] Khronos: ARB_multi_draw_indirect
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_multi_draw_indirect.txt
+[4] Khronos/NVIDIA: NV_bindless_multi_draw_indirect
+https://registry.khronos.org/OpenGL/extensions/NV/NV_bindless_multi_draw_indirect.txt
+[5] Khronos: ARB_compute_shader
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_compute_shader.txt
+[6] Khronos: ARB_shader_image_load_store（memory barrier 语义）
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_shader_image_load_store.txt
+
+本地证据
+.refactor-backups/profiler-20261010-v20/frame-findings-cn.txt
+.refactor-backups/1.0.21-root/memory-evidence.json
+.refactor-backups/1.0.21-terrain/final-hybrid-count-native.log
+.refactor-backups/1.0.21-terrain/final-hybrid-cost-native.log

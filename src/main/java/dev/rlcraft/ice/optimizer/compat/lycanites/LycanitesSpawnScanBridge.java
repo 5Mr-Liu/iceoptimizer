@@ -1,8 +1,8 @@
 package dev.rlcraft.ice.optimizer.compat.lycanites;
 
+import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import java.util.AbstractMap;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -19,7 +19,7 @@ import org.agrona.collections.Object2IntHashMap;
 
 /** Call-scoped helpers for the exact Lycanites BlockSpawnLocation scan. */
 public final class LycanitesSpawnScanBridge {
-    private static final String MODULE = "lycanites-spawn-scan";
+    private static final int MODULE = OptimizationModule.LYCANITES_SPAWN_SCAN.ordinal();
     private static final String TARGET =
         "com.lycanitesmobs.core.spawner.location.BlockSpawnLocation";
     private static final ThreadLocal<ScopeStack> SCOPES = new ThreadLocal<ScopeStack>() {
@@ -61,15 +61,29 @@ public final class LycanitesSpawnScanBridge {
 
     /** Exact first World.getBlockState call in getSpawnPositions. */
     public static IBlockState scanState(World world, BlockPos position) {
+        return scanState(world, position, SCOPES.get().current());
+    }
+
+    public static Object currentContext() { return SCOPES.get().current(); }
+
+    public static boolean activeContext(Object context) {
+        return context != null && ((Scope) context).active;
+    }
+
+    public static IBlockState scanState(World world, BlockPos position, Object context) {
         IBlockState state = world.getBlockState(position);
-        Scope scope = SCOPES.get().current();
+        Scope scope = (Scope) context;
         if (scope != null && scope.active) scope.remember(world, position, state);
         return state;
     }
 
     /** Exact World.getBlockState call in isValidBlock. */
     public static IBlockState validationState(World world, BlockPos position) {
-        Scope scope = SCOPES.get().current();
+        return validationState(world, position, SCOPES.get().current());
+    }
+
+    public static IBlockState validationState(World world, BlockPos position, Object context) {
+        Scope scope = (Scope) context;
         if (scope != null && scope.canReuse(world, position)) {
             IBlockState state = scope.consumeCandidate();
             Block block = state.getBlock();
@@ -84,8 +98,12 @@ public final class LycanitesSpawnScanBridge {
 
     /** Replaces only the local HashMap construction; inactive calls receive a normal HashMap. */
     public static Map<Object, Integer> newBlockCounter(Object owner) {
+        return newBlockCounter(owner, SCOPES.get().current());
+    }
+
+    public static Map<Object, Integer> newBlockCounter(Object owner, Object context) {
         try {
-            Scope scope = SCOPES.get().current();
+            Scope scope = (Scope) context;
             if (scope == null || !scope.active || scope.owner != owner) {
                 return new HashMap<Object, Integer>();
             }
@@ -164,6 +182,8 @@ public final class LycanitesSpawnScanBridge {
         private LycanitesSpawnScanAccessor owner;
         private List<ResourceLocation> blockIds;
         private boolean active;
+        private World scanWorld;
+        private boolean standardWorld;
         private World candidateWorld;
         private long candidatePosition;
         private IBlockState candidateState;
@@ -178,6 +198,10 @@ public final class LycanitesSpawnScanBridge {
         }
 
         private void remember(World world, BlockPos position, IBlockState state) {
+            if (scanWorld != world) {
+                scanWorld = world;
+                standardWorld = vanillaWorldImplementation(world);
+            }
             candidateWorld = world;
             candidatePosition = positionKey(position);
             candidateState = state;
@@ -186,13 +210,13 @@ public final class LycanitesSpawnScanBridge {
 
         private boolean canReuse(World world, BlockPos position) {
             if (!candidateAvailable || candidateWorld != world
-                || candidatePosition != positionKey(position) || !vanillaWorldImplementation(world)) {
+                || candidatePosition != positionKey(position) || !standardWorld) {
                 return false;
             }
             List<ResourceLocation> currentIds = owner.ice$spawnBlockIds();
             return owner.ice$spawnSurface() && owner.ice$spawnUnderground()
-                && currentIds == blockIds && currentIds != null
-                && currentIds.getClass() == ArrayList.class;
+                && currentIds == blockIds
+                && LycanitesBlockMembershipBridge.hasStandardMembership(currentIds);
         }
 
         private IBlockState consumeCandidate() {
@@ -213,6 +237,8 @@ public final class LycanitesSpawnScanBridge {
             owner = null;
             blockIds = null;
             active = false;
+            scanWorld = null;
+            standardWorld = false;
             discardCandidate();
         }
     }

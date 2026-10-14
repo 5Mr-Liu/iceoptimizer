@@ -50,6 +50,7 @@ public final class SpriteVisibilityTracker implements AutoCloseable {
         private final int originY;
         private final boolean blur;
         private final boolean clamp;
+        private final boolean mipFilter;
         private final long resourceGeneration;
         private final long atlasGeneration;
         private final long sequence;
@@ -59,7 +60,7 @@ public final class SpriteVisibilityTracker implements AutoCloseable {
         private DeferredUpload(Object sprite, int spriteIndex, int textureId,
                                int[][] source, int width, int height,
                                int originX, int originY, boolean blur,
-                               boolean clamp, long resourceGeneration,
+                               boolean clamp, boolean mipFilter, long resourceGeneration,
                                long atlasGeneration, long sequence,
                                long byteCount,
                                CacheBudget.Reservation reservation) {
@@ -75,6 +76,7 @@ public final class SpriteVisibilityTracker implements AutoCloseable {
             this.originY = originY;
             this.blur = blur;
             this.clamp = clamp;
+            this.mipFilter = mipFilter;
             this.resourceGeneration = resourceGeneration;
             this.atlasGeneration = atlasGeneration;
             this.sequence = sequence;
@@ -91,6 +93,7 @@ public final class SpriteVisibilityTracker implements AutoCloseable {
         public int getOriginY() { return originY; }
         public boolean isBlur() { return blur; }
         public boolean isClamp() { return clamp; }
+        public boolean isMipFilter() { return mipFilter; }
         public long getResourceGeneration() { return resourceGeneration; }
         public long getAtlasGeneration() { return atlasGeneration; }
         public long getSequence() { return sequence; }
@@ -409,6 +412,14 @@ public final class SpriteVisibilityTracker implements AutoCloseable {
                                                  boolean blur, boolean clamp,
                                                  long visibilityFrame,
                                                  long resources, long atlas) {
+        return deferIfInvisible(sprite, spriteIndex, textureId, pixels, width, height, originX,
+            originY, blur, clamp, pixels != null && pixels.length > 1, visibilityFrame, resources, atlas);
+    }
+
+    public synchronized boolean deferIfInvisible(Object sprite, int spriteIndex, int textureId,
+                                                 int[][] pixels, int width, int height, int originX, int originY,
+                                                 boolean blur, boolean clamp, boolean mipFilter,
+                                                 long visibilityFrame, long resources, long atlas) {
         if (catchUpSink == null || !trusted || sprite == null || textureId <= 0
             || visibilityFrame <= 0L || resources != resourceGeneration
             || atlas != atlasGeneration || lastCompleteFrame != visibilityFrame
@@ -449,7 +460,7 @@ public final class SpriteVisibilityTracker implements AutoCloseable {
         }
         try {
             replacement = new DeferredUpload(sprite, spriteIndex, textureId,
-                pixels, width, height, originX, originY, blur, clamp,
+                pixels, width, height, originX, originY, blur, clamp, mipFilter,
                 resources, atlas, sequence + 1L, bytes, reservation);
             reservation = null;
         } catch (Throwable copyFailure) {

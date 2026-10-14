@@ -37,13 +37,11 @@ public final class ResourceLedger {
         void destroy();
     }
 
+    public interface GpuReclaimer {
+        void reclaim();
+    }
+
     private static final int DEFAULT_MAX_FENCE_POLLS = 4096;
-    // Driver-private storage for these objects cannot be queried portably.
-    // Charge a conservative minimum token before native creation so a failed
-    // create/delete cannot retry forever merely because the public object has
-    // no byte-sized payload of its own.
-    private static final long SMALL_NATIVE_OBJECT_CHARGE = 4L * 1024L;
-    private static final long PROGRAM_NATIVE_OBJECT_CHARGE = 64L * 1024L;
     private static final RenderResourceKind[] DESTRUCTION_ORDER = {
         RenderResourceKind.FRAMEBUFFER,
         RenderResourceKind.VERTEX_ARRAY,
@@ -75,6 +73,8 @@ public final class ResourceLedger {
     private long abandoned;
     private long rejected;
     private long timedOut;
+    private long storageReleaseSerial;
+    private GpuReclaimer gpuReclaimer;
     private boolean poisonTexturePayloads;
     private boolean poisonBufferPayloads;
     private boolean poisonShaderPayloads;
@@ -163,7 +163,7 @@ public final class ResourceLedger {
         threadGuard.check();
         validateRegistration(kind, nativeId, bytes, resourceGeneration,
             contextGeneration);
-        if (bytes <= 0L || !budget.owns(reservation, BudgetKind.GPU, bytes)) {
+        if (!budget.owns(reservation, BudgetKind.GPU, bytes)) {
             throw new IllegalArgumentException("foreign GPU reservation");
         }
         if (!hasRegistrationCapacity()) return null;
@@ -174,28 +174,40 @@ public final class ResourceLedger {
     /** Reserves GPU bytes before entering an outcome-producing native allocator. */
     public CacheBudget.Reservation reserveGpu(long bytes) {
         threadGuard.check();
-        if (bytes <= 0L) throw new IllegalArgumentException("GPU reservation bytes");
+        if (bytes < 0L) throw new IllegalArgumentException("GPU reservation bytes");
         CacheBudget.Reservation reservation = budget.tryReserve(
             BudgetKind.GPU, bytes);
+        if (reservation == null && gpuReclaimer != null) {
+            gpuReclaimer.reclaim();
+            reservation = budget.tryReserve(BudgetKind.GPU, bytes);
+        }
         if (reservation == null) rejected++;
         return reservation;
     }
 
+    public void setGpuReclaimer(GpuReclaimer reclaimer) {
+        threadGuard.check();
+        gpuReclaimer = reclaimer;
+    }
+
+    /** Advances only when previously published storage actually becomes reusable. */
+    public long storageReleaseSerial() { return storageReleaseSerial; }
+
     /**
-     * Reserves a conservative driver-storage token before creating a GL
-     * object whose real byte size is opaque (program, VAO, FBO, or query).
+     * Opaque names are lifetime-tracked without invented payload sizes.
+     * A full cache must not prevent the GL objects needed to draw or retire it.
      */
     public CacheBudget.Reservation reserveNativeObject(
         RenderResourceKind kind) {
         return reserveGpu(nativeObjectCharge(kind));
     }
 
-    /** Reserves a driver-storage token before creating an opaque GL sync. */
+    /** Synchronization is independent of cached payload capacity. */
     public CacheBudget.Reservation reserveSyncObject() {
         return reserveGpu(syncObjectCharge());
     }
 
-    public static long syncObjectCharge() { return SMALL_NATIVE_OBJECT_CHARGE; }
+    public static long syncObjectCharge() { return 0L; }
 
     /** Adopts a pre-allocation token for an opaque-size native object. */
     public RenderHandle registerReservedObject(RenderResourceKind kind,
@@ -210,13 +222,13 @@ public final class ResourceLedger {
     public static long nativeObjectCharge(RenderResourceKind kind) {
         if (kind == RenderResourceKind.PROGRAM
             || kind == RenderResourceKind.SHADER) {
-            return PROGRAM_NATIVE_OBJECT_CHARGE;
+            return 0L;
         }
         if (kind == RenderResourceKind.VERTEX_ARRAY
             || kind == RenderResourceKind.FRAMEBUFFER
             || kind == RenderResourceKind.RENDERBUFFER
             || kind == RenderResourceKind.QUERY) {
-            return SMALL_NATIVE_OBJECT_CHARGE;
+            return 0L;
         }
         throw new IllegalArgumentException(
             "native object requires exact byte accounting: " + kind);
@@ -540,12 +552,17 @@ public final class ResourceLedger {
             rethrow(failure);
         }
         destroyed++;
-        if (!payloadReservationPoisoned(kind)) entry.reservation.close();
+        if (!payloadReservationPoisoned(kind)) releaseStorage(entry);
     }
 
     private void abandon(Entry entry) {
-        entry.reservation.close();
+        releaseStorage(entry);
         abandoned++;
+    }
+
+    private void releaseStorage(Entry entry) {
+        entry.reservation.close();
+        if (entry.handle.getBytes() > 0L) storageReleaseSerial++;
     }
 
     private void destroyFence(RetirementFence fence,

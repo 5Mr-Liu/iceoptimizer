@@ -118,6 +118,7 @@ public final class GlStateTrackingAdapterTest {
         addTwoReturnStatic(writer, "func_153171_g", "(II)V", 0);
         addTwoReturnStatic(writer, "func_176072_g", "(II)V", 0);
         addReturnStatic(writer, "func_77472_b", "(I)V");
+        addReturnStatic(writer, "func_77473_a", "(I)V");
         addReturnStatic(writer, "func_148821_a", "(IIII)V");
         writer.visitEnd();
         return writer.toByteArray();

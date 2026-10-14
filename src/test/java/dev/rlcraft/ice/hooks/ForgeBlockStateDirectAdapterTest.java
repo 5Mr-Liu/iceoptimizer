@@ -56,11 +56,23 @@ public final class ForgeBlockStateDirectAdapterTest {
             "tryBlockLightValue"));
         assertEquals(1, countCalls(transformed, ForgeBlockStateDirectAdapter.BRIDGE,
             "tryDoesSideBlockRendering"));
+        assertEquals(1, countCalls(transformed, ForgeBlockStateDirectAdapter.BRIDGE, "tryBlockLightOpacity"));
         assertTrue(hasMethod(transformed, ForgeBlockStateDirectAdapter.ORIGINAL_STATE_LIGHT));
         assertTrue(hasMethod(transformed, ForgeBlockStateDirectAdapter.ORIGINAL_SIDE_RENDER));
         new ClassReader(transformed);
         assertEquals(className,
             new ByteLoader(getClass().getClassLoader()).define(className, transformed).getName());
+    }
+
+    @Test public void actualG5StateIncludesDirectOpacity() throws Exception {
+        OptifinePatchedClassSupport support = OptifinePatchedClassSupport.openOrSkip();
+        try {
+            byte[] original = support.patchAndRemap("awu$a", ForgeBlockStateDirectAdapter.STATE.replace('/', '.'));
+            TargetSpec spec = target(ForgeBlockStateDirectAdapter.STATE.replace('/', '.'), "optifine-blockstate-direct-calls");
+            byte[] changed = new ForgeBlockStateDirectAdapter(ForgeBlockStateDirectAdapter.Part.STATE_IMPLEMENTATION)
+                .transform(spec.className, original, spec);
+            assertEquals(1, countCalls(changed, ForgeBlockStateDirectAdapter.BRIDGE, "tryBlockLightOpacity"));
+        } finally { support.close(); }
     }
 
     @Test(expected = OptimizerAdapterSkippedException.class)
@@ -94,7 +106,8 @@ public final class ForgeBlockStateDirectAdapterTest {
         constructor.visitMaxs(1, 1);
         constructor.visitEnd();
 
-        MethodVisitor light = writer.visitMethod(Opcodes.ACC_PUBLIC, "getLightValue",
+        for (String lightName : new String[]{"getLightValue", "getLightOpacity"}) {
+        MethodVisitor light = writer.visitMethod(Opcodes.ACC_PUBLIC, lightName,
             "(Ljava/lang/Object;Ljava/lang/Object;)I", null, null);
         light.visitCode();
         if (reflectorCalls) {
@@ -110,6 +123,7 @@ public final class ForgeBlockStateDirectAdapterTest {
         light.visitInsn(Opcodes.IRETURN);
         light.visitMaxs(3, 3);
         light.visitEnd();
+        }
 
         MethodVisitor side = writer.visitMethod(Opcodes.ACC_PUBLIC,
             "doesSideBlockRendering",

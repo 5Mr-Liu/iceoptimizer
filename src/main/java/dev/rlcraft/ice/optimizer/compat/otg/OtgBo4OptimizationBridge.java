@@ -15,9 +15,13 @@ public final class OtgBo4OptimizationBridge {
     }
 
     public static int columnBlockIndex(Object owner, short[][] columnSizes, int columnX, int columnZ) {
+        if (!enabled()) {
+            COLUMN_OFFSETS.remove();
+            return originalColumnBlockIndex(columnSizes, columnX, columnZ);
+        }
         ColumnOffsets cached = COLUMN_OFFSETS.get();
         if (cached.source != columnSizes) cached.reset(columnSizes);
-        if (!cached.accelerated && enabled()) {
+        if (!cached.accelerated) {
             try {
                 cached.build(columnSizes);
                 OptimizerRegistry.breaker(OptimizationModule.OTG_BO4_LAYOUT).recordSuccess();

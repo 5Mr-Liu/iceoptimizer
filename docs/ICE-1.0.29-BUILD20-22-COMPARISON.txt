@@ -1,0 +1,95 @@
+ICE 1.0.29 — Build20 capacity test / Build22 occlusion candidate
+2026-10-12 14:31 +08:00
+
+Acceptance: same quality/gameplay, at least +50% native FPS versus NO ICE,
+representative survival/combat geometric mean, no per-scene P95/P99 regression.
+STATUS: NOT ACHIEVED. No release deployment or original-game changes.
+
+FULL-GAME SURVIVAL (fixture v9, warm120/sample60, 1920x1080, distance15)
+No ICE v9-2: 194.2070409762706 FPS; P95 10.9649ms; P99 13.3211ms.
+Build20, GPU cache768MiB: 176.53286081370922 FPS; P95 12.1377; P99 14.1460.
+Ratio -9.100690%; P95 +10.70%; P99 +6.19%. REJECT default budget increase.
+Both walked153.285505625m, same final position/camera/gear, zero player hits,
+display active throughout. Ticks1200/1201; natural entities231-260/216-237;
+final terrain1029/994. Independent worlds, no confidence interval inferred.
+Renderer actually used804,738,112 of805,306,368 GPU budget bytes,7532 owned
+meshes. Increased ownership does not establish increased FPS. The global
+gpuCacheBudgetMiB sets arena capacity; the separate renderer512MiB setting
+does not impose that assumed cap here. Production default remains256MiB.
+Evidence: build/fps-target/129-survival-build20-capacity768-v9-comparison.txt
+
+FULL-GAME COMBAT (fixture v10, deterministic construction/health inputs)
+No ICE: 202.3196461606558 FPS; P95 11.4404; P99 14.1896.
+Build20,768MiB:196.70960926441256 FPS; P95 11.7494; P99 14.3654.
+Observed ratio -2.772858%; DO NOT accept as a clean causal comparison.
+Both1200ticks/12spawns/active throughout, but deaths12/11, attacks26/29,
+player hits2/15. Candidate additionally had6Geist hits and7wither hits;
+baseline had no external hits. Position, camera and terrain370/972 diverged.
+All recorded numerical opponent attributes matched; opponent7's dsurround
+capability flags differed. Full-profile comparator correctly retains warning.
+No survival/combat acceptance mean is reported from this confounded pair.
+Evidence: build/fps-target/129-combat-build20-capacity768-v10-comparison.txt
+
+NEW ALGORITHM: stop sorting queries after the last permitted occluder write.
+The original path kept extracting a near-first heap after its128-face render
+budget was exhausted. Build22 scans the remaining heap entries linearly.
+It uses the unchanged conservative depth proof, keeps partially evaluated and
+untouched entries visible when the cell budget runs out, and preserves final
+draw order. It does not reuse visibility across frames or change raster math.
+Tail work drops from O(n log n) extraction to O(n) queries; storage is unchanged.
+At tight budgets the chosen hidden subset may differ, but every hidden entry
+must also be hidden by an unlimited-budget reference raster.
+
+Build21 tried a worst-case query-area admission bound. In the real render mode
+all501 calls declined the shortcut; measured extra cost made it unsuitable.
+Archived as129-build21-rejected; its SHA256 is
+9905021D9DAF0A5E0AE6D9F02EA4DB35F9D6B9B38512317CD6B253E8F33F0219.
+It is not the current source or an accepted optimization.
+
+Build22 validation:
+- Full test/build/verifyArtifactStartup succeeded in1m6s;1254 regular test
+  cases,71skipped,0fail/errors; artifact startup verification passed.
+-100 randomized depth/coverage workloads: ample budgets match original heap;
+  constrained-budget hidden entries are a subset of the full-raster oracle.
+  Explicit partial-query exhaustion and untouched-entry tests passed.
+- Real captured terrain:1132 sections,422known occluder sections.24 rotated
+  views x2 modes =48 exact survivor-list comparisons, all equal, including
+  views hiding3 sections. This is list equality, not a full-game pixel oracle.
+- Exclusive CPU ABBA replay,4000warmups/1001samples per mode/process:
+  Actual priority mode baseline p50 .0647/.0662ms, candidate .0601/.0605ms.
+  Mean reduction .00515ms (7.87% of this local pass), NOT a full-frame gain.
+  Larger2048-face mode baseline .2000/.1982ms, candidate .1750/.1748ms.
+  Priority sample view hid0 sections, so runtime empty-probe backoff further
+  limits how often this local saving applies. No large FPS claim is supported.
+Evidence:129-occlusion-tail-v2-*-*.txt and129-occlusion-tail-views/summary.txt.
+Frozen Build22 SHA256:
+E13F1C5F09FD51D3524A2F6CF5E1604045B1B9D49D1176556FD02A6498C1C8E9
+Build22 completed an uninstrumented survival v9 comparison:
+174.105496 FPS versus no-ICE 194.207041 FPS, an observed -10.35%.
+P95 11.0755 versus 10.9649 ms; P99 13.2388 versus 13.3211 ms.
+Both completed 1200 ticks and the same 153.2855 m route/camera/gear, with
+zero player hits. Natural entity counts differ; one pair is not a causal
+estimate or a confidence interval. The +50% target failed.
+Evidence: build/fps-target/129-survival-build22-v9-comparison.txt.
+
+COMBAT FIXTURE V11 — tools only, not shipped in ICE
+Actual Lycanites KillSpawnTrigger.onKill uses the PLAYER RNG for its chance
+test. v10 controlled zombie construction and ScalingHealth RNG, so it did not
+control this input. v11 supplies a deterministic stream only for deaths of
+tagged fixture opponents; ordinary entities retain the original RNG. Spawn
+probabilities, callbacks, AI and damage code are unchanged. No death event is
+cancelled and no spawned creature is deleted by this hook. Further spawn
+selection/position randomness and normal-world variability remain unresolved.
+Three real bytecode hook sites passed structural verification. Completed v11
+runs differed in Champions attributes, so repeatability remains UNVALIDATED.
+The user explicitly stopped combat investigation. This section records past
+work only; no further combat fixture development or runs are planned.
+Frozen fixture SHA256:
+69A9285FFA2975D757378B0908AB854D1FF4740ADBE5BC1C8A6136D333D284EA
+Frozen agent SHA256:
+60C2CA8524D5FDC8BFF6556F371C6A01AB7CE5EDC3B6F58B4CCF9C812724D2DB
+
+Retain prior validated paths and Build22 as a measured local candidate;
+retain neither indexed-cutout Build19 nor rejected Build21. Keep the GPU
+budget default unchanged. Current work targets terrain submission and ordinary
+gameplay, retaining no ICE as the acceptance baseline.

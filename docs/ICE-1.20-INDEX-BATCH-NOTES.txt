@@ -1,0 +1,76 @@
+ICE 1.20 修订 4：转向和集中加载时的索引准备开销
+日期：2026-10-13
+
+用户反馈：开启优化后平均帧率提升，但转向偶发卡顿；大型建筑/地形加载时
+明显卡顿，加载完成后恢复。沿用用户明确要求，本次只检查源码、编译打包，
+不运行自动测试、启动检查、游戏或性能采样，由用户实机验证。
+
+证据范围
+--------
+实际安装 JAR 为修订 3，SHA256：
+7A8A7D5CEAB8E02F2957EDF3C1BFC392395AAF565D8B129F11FD146BAF6C3267。
+已有 recovery-jfr-summary.txt 中客户端 725 个样本，38 个落在
+NativeTerrainFaceIndex.writeShortIndices -> Buffer.nextPutIndex，约 5.24%。
+这是先前小场景的采样占比，不是当前大型建筑的逐帧归因或精确耗时。
+前次记录也有 GC 暂停，不能把全部卡顿归因于索引或驱动。
+
+源码确定存在的集中开销：
+1. NativeTerrainRenderer.prepare 对首次可见/面掩码改变的每个 Mesh 调用
+   updateIndices；索引生成发生在绘制准备阶段，而非原区块上传预算之内。
+2. 原先每个 Mesh 单独调用 NativeTerrainStorage.upload：两次绑定查询、
+   暂存缓冲 glBufferData、GPU copy、绑定恢复。大量新网格同时出现时，
+   这些固定调用开销集中在一个地形准备阶段。
+3. writeShortIndices 对每个四边形逐次执行四个 putShort；透明层同样逐顶点写。
+4. NativeTerrainStorage.ensure 扩容复制旧 capacity，包括从未写入的尾部。
+
+已阅读本地参考源码：
+nothirium-source-reference/Nothirium-main/src/main/java/meldexun/nothirium/
+  opengl/DynamicVBO.java
+  mc/renderer/chunk/ChunkRendererDynamicVbo.java
+Nothirium 使用按层 DynamicVBO，bufferSubData 直接上传；其路径并没有 ICE
+这套相机相关有序索引生成。ICE 保留独立实现，不复制/打包第三方代码，
+也没有未经测量就改用可能改变驱动同步特征的顶点直接上传方式。
+
+本次修改
+--------
+NativeTerrainRenderer：一次 prepare 内清空并复用索引暂存区，各 Mesh 追加
+索引，记录源字节偏移、目标索引偏移、字节数。全部生成后调用一次
+uploadBatch，在任何新帧命令消费索引之前上传，再发布绘制命令。
+暂存不足按至少两倍扩容并保留已追加数据，避免按每个网格的精确大小重建。
+跨 65532 顶点分段仍独立从 0 开始编号；partStarts 必须减去本 Mesh 的
+uploadOffset，不能把全批次偏移误当成本 Mesh 内偏移。
+
+NativeTerrainStorage：每批只做一次暂存 glBufferData 和一次绑定保存/恢复，
+仍按各 Mesh 的原目标区间执行 GPU copy。顶点上传路径不变。
+维护已经写入的最高元素边界，扩容仅复制这个前缀；空的预留容量不复制。
+该前缀仍可能包含已释放的洞，没有宣称只复制活跃网格或消除所有大缓冲迁移。
+
+NativeTerrainFaceIndex：把连续的四个 unsigned short 索引打包成一个 long。
+根据 ByteBuffer 字节序选择初始四索引模式，加 first 的四份 16 位副本。
+每段最多 65532 顶点，最后一个四边形的编号不越过 unsigned short 范围；
+原四边形顺序、透明层顺序、末顶点、剔除条件、未知面保留条件均不改动。
+每个四边形只推进一次目标缓冲位置，无额外逐面对象或缓存表。
+
+限制与交付条件
+--------------
+这减少的是确定存在的重复操作，不是新的实测性能结论。
+合并索引暂存区会占用与本次准备中更新索引量相关的直接内存，并随高水位复用；
+不承诺一定降低内存占用。单次 prepare 无改变索引时不上传索引数据。
+原区块编译/同步近邻重建仍保留，仍可能有编译、GC、显存分配等卡顿来源。
+没有新增工作延迟、丢区块、改变画质/视距/实体、运行时性能门禁或旧渲染回退。
+修订 2/3 的崩溃及 F6 修复保留；Build12/13 实验没有恢复。
+不把旧测试/旧 FPS 对照当成此修订验证结果，不更新正式性能达标结论。
+编译命令：tools/build-native-terrain-candidate.ps1 -PackageOnly
+构建日志：build/fps-target/120-hotfix4-index-batch-build.log。
+最终包使用 hotfix4 区分，JAR 模组版本仍为精确 1.20，Minecraft 仍为 1.12.2。
+未部署到原游戏，原游戏安装文件及配置不改动。
+
+交付记录
+--------
+PackageOnly 构建成功，1 分 10 秒，无测试任务。
+JAR SHA256：504755DF5799A1032A3539E5D88F350D350F653EA58FCED70BD20968D4B333B7
+体验包：build/playtest/ice-rlcraft-optimizer-1.20-hotfix4-playtest.zip
+ZIP SHA256：75A61AAB1C3B3F376DFAA00827E167B60CA6D484FF8DEB9E851320FAC53EAF83
+归档 CRC、版本元数据、嵌入 JAR 与安装说明一致，不代表实机功能验证。
+与修订 3 相比只改变上述三个生产源码家族及 Renderer 内部类。
+冻结源码/构建输入：build/fps-target/120-hotfix4-release/。

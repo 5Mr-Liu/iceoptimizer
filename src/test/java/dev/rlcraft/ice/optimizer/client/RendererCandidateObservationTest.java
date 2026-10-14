@@ -307,10 +307,61 @@ public final class RendererCandidateObservationTest {
     private static final class Pixels implements SpriteVisibilityTracker.CatchUpSink {
         int pixel;
         int uploads;
+        boolean bound = true;
         @Override public boolean upload(SpriteVisibilityTracker.DeferredUpload upload) {
             pixel = upload.copyPixels()[0][0];
             uploads++;
-            return true;
+            return bound;
+        }
+    }
+
+    @Test public void repeatedTerrainSetsCatchUpOncePerDrawAndRetryAtTheNextBoundary() throws Exception {
+        ModernRendererRuntime runtime = runtime();
+        Pixels sink = new Pixels();
+        sink.bound = false;
+        SpriteVisibilityTracker tracker = tracker(sink);
+        runtime.components.spriteVisibility = tracker;
+        runtime.components.backends.put(OptimizationModule.MODERN_TEXTURE_VISIBILITY,
+            backend(OptimizationModule.MODERN_TEXTURE_VISIBILITY));
+        completeFrame(tracker, 1L, 1L, 1L);
+        Object first = new Object(), second = new Object();
+        assertTrue(tracker.register(first, 2, 1L, 1L));
+        assertTrue(tracker.register(second, 4, 1L, 1L));
+        assertTrue(tracker.deferIfInvisible(first, 2, 7, new int[][] {{17}},
+            1, 1, 0, 0, false, false, 1L, 1L, 1L));
+        assertTrue(tracker.deferIfInvisible(second, 4, 7, new int[][] {{29}},
+            1, 1, 1, 0, false, false, 1L, 1L, 1L));
+        CountingChunk chunk = new CountingChunk();
+        chunk.compiled.sprites = new BitSet();
+        chunk.compiled.sprites.set(2); chunk.compiled.sprites.set(4);
+        CountingContainer container = new CountingContainer(chunk, 1000);
+        Field instance = field(Minecraft.class, "instance");
+        Object previousMinecraft = instance.get(null);
+        Field renderer = field(ClientOptimizerRuntime.class, "modernRenderer");
+        Object previousRenderer = renderer.get(ClientOptimizerRuntime.INSTANCE);
+        Minecraft minecraft = (Minecraft) unsafe().allocateInstance(Minecraft.class);
+        field(Minecraft.class, "thread").set(minecraft, Thread.currentThread());
+        try {
+            instance.set(null, minecraft);
+            renderer.set(ClientOptimizerRuntime.INSTANCE, runtime);
+            ClientEpochs epochs = (ClientEpochs) field(ModernRendererRuntime.class, "epochs").get(runtime);
+            epochs.nextFrame(); epochs.nextFrame();
+            runtime.refreshTextureVisibilityObservation(2L);
+            AnimatedTextureVisibilityBridge.terrainDraw(container, BlockRenderLayer.SOLID);
+            assertEquals(2, sink.uploads);
+            assertEquals(8L, tracker.getPendingBytes());
+            // No stale union from the previous layer is allowed to trigger an upload.
+            sink.bound = true;
+            chunk.compiled.sprites.clear();
+            AnimatedTextureVisibilityBridge.terrainDraw(container, BlockRenderLayer.CUTOUT);
+            assertEquals(2, sink.uploads);
+            chunk.compiled.sprites.set(2); chunk.compiled.sprites.set(4);
+            AnimatedTextureVisibilityBridge.terrainDraw(container, BlockRenderLayer.SOLID);
+            assertEquals(4, sink.uploads);
+            assertEquals(0L, tracker.getPendingBytes());
+        } finally {
+            renderer.set(ClientOptimizerRuntime.INSTANCE, previousRenderer);
+            instance.set(null, previousMinecraft);
         }
     }
 
@@ -329,7 +380,9 @@ public final class RendererCandidateObservationTest {
     private static final class CountingContainer implements TerrainRenderListAccessor {
         final List<RenderChunk> chunks;
         @SuppressWarnings({"unchecked", "rawtypes"})
-        CountingContainer(CountingChunk chunk) { chunks = (List) Collections.singletonList(chunk); }
+        CountingContainer(CountingChunk chunk) { this(chunk, 1); }
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        CountingContainer(CountingChunk chunk, int count) { chunks = (List) Collections.nCopies(count, chunk); }
         @Override public List<RenderChunk> ice$renderChunks() { return chunks; }
         @Override public boolean ice$initialized() { return true; }
         @Override public double ice$viewEntityX() { return 0; }

@@ -31,7 +31,7 @@ public final class PrefixStackExportTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
     @Test
-    public void signedPrefixIdsResolveToTruncatedRecordsInV4AndFoldedExport()
+    public void signedPrefixIdsResolveToTruncatedRecordsInV5AndFoldedExport()
         throws Exception {
         StackTraceRepository stacks = new StackTraceRepository(1, 16);
         int exact = stacks.intern(trace("old.WorldSelection", "loadWorld"));
@@ -69,7 +69,7 @@ public final class PrefixStackExportTest {
                 new File(report, "prefix-session.icecap")))));
         try {
             assertEquals("ICECAP", input.readUTF());
-            assertEquals(4, input.readInt());
+            assertEquals(5, input.readInt());
             assertEquals("prefix-session", input.readUTF());
             input.readLong();
             input.readLong();

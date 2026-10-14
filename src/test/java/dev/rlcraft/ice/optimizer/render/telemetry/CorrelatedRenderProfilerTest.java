@@ -365,18 +365,18 @@ public final class CorrelatedRenderProfilerTest {
     }
 
     @Test
-    public void gpuQueryBudgetIsPreReservedAndOnlyConfirmedDeletesReleaseIt() {
+    public void queryLifecycleErrorsRemainVisibleWithoutChargingPayloadBudget() {
         CacheBudget budget = new CacheBudget(1L, 1L, 128L * 1024L);
         CorrelatedRenderProfiler profiler = new CorrelatedRenderProfiler(8);
         FaultGpuDriver driver = new FaultGpuDriver();
         profiler.attachGpuQueries(driver, 4, budget);
-        assertEquals(8L * 4096L, budget.snapshot().getGpuUsed());
+        assertEquals(0L, budget.snapshot().getGpuUsed());
         driver.failDeleteCall = 1;
         try {
             profiler.resetGpu(true);
             throw new AssertionError("expected injected query deletion failure");
         } catch (IllegalStateException expected) {
-            assertEquals("one outcome-uncertain query stays charged", 4096L,
+            assertEquals("query names do not consume cached payload bytes", 0L,
                 budget.snapshot().getGpuUsed());
         }
 
@@ -386,8 +386,8 @@ public final class CorrelatedRenderProfilerTest {
             partial.attachGpuQueries(allocationFailure, 4, budget);
             throw new AssertionError("expected query allocation failure");
         } catch (IllegalStateException expected) {
-            assertEquals("throwing allocator keeps its unnamed-object token",
-                8192L, budget.snapshot().getGpuUsed());
+            assertEquals("query allocation failure does not poison payload space",
+                0L, budget.snapshot().getGpuUsed());
         }
     }
 

@@ -5,6 +5,7 @@ import dev.rlcraft.ice.optimizer.FatalErrors;
 import dev.rlcraft.ice.optimizer.ModuleCircuitBreaker;
 import dev.rlcraft.ice.optimizer.OptimizationModule;
 import dev.rlcraft.ice.optimizer.OptimizerRegistry;
+import dev.rlcraft.ice.optimizer.OptimizerConfig;
 import dev.rlcraft.ice.optimizer.render.backend.AdaptiveBackendController;
 import dev.rlcraft.ice.optimizer.render.backend.CandidateDataSource;
 import dev.rlcraft.ice.optimizer.render.backend.CapabilityReport;
@@ -61,6 +62,7 @@ final class RendererComponentFactory {
         long gpuLimit = runtime.budget.snapshot().getGpuLimit();
         candidate.modelMeshes = new LwjglModelMeshCache(candidate.threadGuard,
             candidate.resources, runtime.budget);
+        candidate.modelMeshes.configurePoseBatching(OptimizerConfig.settings.modelPoseBatching);
         candidate.particles = new ParticleInstanceStream(131072, runtime.budget);
         candidate.particleRenderer = new LwjglParticleRenderer(
             candidate.threadGuard, candidate.resources, runtime.budget, 131072);
@@ -105,6 +107,7 @@ final class RendererComponentFactory {
             candidate.stateMirror, () -> runtime.flushBatches(),
             new LwjglLegacyStateRestorer());
         candidate.capabilities = new LwjglCapabilitySelfTest(runtime.budget).execute();
+        initializeParticleResources(candidate, runtime);
         candidate.animatedTextures = new LwjglAnimatedTextureUploadStream(
             candidate.threadGuard, candidate.resources, runtime.budget,
             candidate.capabilities);
@@ -115,12 +118,27 @@ final class RendererComponentFactory {
         }
         candidate.terrainArena = new LwjglTerrainArena(candidate.threadGuard,
             candidate.resources, runtime.budget, candidate.capabilities,
-            Math.max(16L * 1024L * 1024L, gpuLimit / 2L), runtime.arenaGeneration);
-        candidate.depthHistory = new LwjglDepthHistory(candidate.threadGuard,
-            candidate.resources, candidate.capabilities,
-            candidate.hzbHistory, runtime.budget);
+            Math.max(16L * 1024L * 1024L, gpuLimit), runtime.arenaGeneration);
+        candidate.resources.setGpuReclaimer(new ResourceLedger.GpuReclaimer() {
+            @Override public void reclaim() {
+                candidate.terrainArena.reclaimUnusedPages(runtime.glContextGeneration());
+            }
+        });
+        if (!OptimizerConfig.settings.terrainSoftwareOcclusion) {
+            candidate.depthHistory = new LwjglDepthHistory(candidate.threadGuard,
+                candidate.resources, candidate.capabilities,
+                candidate.hzbHistory, runtime.budget);
+        }
         candidate.backends.putAll(createBackends(candidate.capabilities,
             generation));
+    }
+
+    static void initializeParticleResources(RendererComponents graph, ModernRendererRuntime runtime) {
+        if (OptimizerConfig.settings.modernParticleBackend && graph.particleRenderer != null
+            && graph.capabilities.passed(ModernCapability.PARTICLE_INSTANCING)) {
+            graph.particleRenderer.initializeGpuResources(
+                runtime.resourceGeneration(), runtime.glContextGeneration());
+        }
     }
 
     static EnumMap<OptimizationModule, AdaptiveBackendController> createBackends(
@@ -149,15 +167,17 @@ final class RendererComponentFactory {
         addBackend(configured, report, generation,
             OptimizationModule.MODERN_VISIBILITY_HZB,
             EnumSet.of(ModernCapability.OFFSCREEN_FRAMEBUFFER,
-                ModernCapability.TIMER_QUERY, ModernCapability.CONSERVATIVE_HZB));
+                ModernCapability.CONSERVATIVE_HZB));
+        EnumSet<ModernCapability> modelCapabilities = EnumSet.of(
+            ModernCapability.BUFFER_OBJECT, ModernCapability.SYNC_FENCE,
+            ModernCapability.TIMER_QUERY);
+        if (!OptimizerConfig.settings.modelPoseBatching) {
+            modelCapabilities.add(ModernCapability.MODEL_MESH_VBO);
+        }
         addBackend(configured, report, generation,
-            OptimizationModule.MODERN_ENTITY_BACKEND,
-            EnumSet.of(ModernCapability.BUFFER_OBJECT, ModernCapability.SYNC_FENCE,
-                ModernCapability.TIMER_QUERY, ModernCapability.MODEL_MESH_VBO));
+            OptimizationModule.MODERN_ENTITY_BACKEND, modelCapabilities);
         addBackend(configured, report, generation,
-            OptimizationModule.MODERN_TESR_BACKEND,
-            EnumSet.of(ModernCapability.BUFFER_OBJECT, ModernCapability.SYNC_FENCE,
-                ModernCapability.TIMER_QUERY, ModernCapability.MODEL_MESH_VBO));
+            OptimizationModule.MODERN_TESR_BACKEND, modelCapabilities);
         addBackend(configured, report, generation,
             OptimizationModule.MODERN_PARTICLE_BACKEND,
             EnumSet.of(ModernCapability.BUFFER_OBJECT,
@@ -190,14 +210,13 @@ final class RendererComponentFactory {
         addBackend(configured, report, generation,
             OptimizationModule.OPTIFINE_SHADER_BRIDGE,
             EnumSet.of(ModernCapability.OFFSCREEN_FRAMEBUFFER,
-                ModernCapability.TIMER_QUERY, ModernCapability.SHADER_PROGRAM));
+                ModernCapability.SHADER_PROGRAM));
         addBackend(configured, report, generation,
             OptimizationModule.LEGACY_GL_ISLAND,
             EnumSet.noneOf(ModernCapability.class));
         addBackend(configured, report, generation,
             OptimizationModule.RENDER_VALIDATION,
-            EnumSet.of(ModernCapability.OFFSCREEN_FRAMEBUFFER,
-                ModernCapability.TIMER_QUERY));
+            EnumSet.of(ModernCapability.OFFSCREEN_FRAMEBUFFER));
         return configured;
     }
 
@@ -216,12 +235,21 @@ final class RendererComponentFactory {
                             EnumSet<ModernCapability> required) {
         ModuleCircuitBreaker breaker = OptimizerRegistry.breaker(module);
         if (breaker == null || !OptimizerRegistry.isOperational(module)) return;
+        // Current-view software depth replaces history capture/readback while enabled.
+        if (module == OptimizationModule.MODERN_VISIBILITY_HZB
+            && OptimizerConfig.settings.terrainSoftwareOcclusion) return;
         CandidateDataSource source = module == OptimizationModule.MODERN_TERRAIN_BACKEND
             ? CandidateDataSource.TERRAIN_UPLOAD
             : module == OptimizationModule.MODERN_ENTITY_BACKEND
                 || module == OptimizationModule.MODERN_TESR_BACKEND
                     ? CandidateDataSource.MODEL_PUBLICATION : CandidateDataSource.NONE;
         AdaptiveBackendController controller = new AdaptiveBackendController(breaker, required, source);
+        // Compiled model lists can beat palettes even for dozens of parts.
+        // Select entity/TESR submission from paired CPU/GPU measurements for
+        // the current workload, instead of treating fewer draws as a benefit.
+        // Other backends retain their existing activation policy.
+        controller.configureDirectActivation(module != OptimizationModule.MODERN_ENTITY_BACKEND
+            && module != OptimizationModule.MODERN_TESR_BACKEND);
         controller.begin(generation);
         controller.capabilityResult(report);
         target.put(module, controller);

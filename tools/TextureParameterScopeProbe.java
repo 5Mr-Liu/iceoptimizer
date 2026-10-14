@@ -57,6 +57,8 @@ public final class TextureParameterScopeProbe {
                 }
                 equivalent(run(old,false,false,false,false,true),run(next,true,false,false,false,true));
                 verifyGameTwoLevelCase(old,next);
+                verifyContinuousSprites(old,next,false);
+                verifyContinuousSprites(old,next,true);
                 verifyInterruptedScopes(next);
                 require(GL11.glGetError() == GL11.GL_NO_ERROR, "GL error");
                 System.out.println("actual_foamfix_original_class=true actual_optifine_g5_upload_closure=true"
@@ -64,6 +66,8 @@ public final class TextureParameterScopeProbe {
                     + " two_helper_parameter_writes=24->8 pixel_uploads=6->6 mutable_same_array_uploaded=true"
                     + " sprite_and_texture_boundaries=true module_disable=true dormant_token_zero=true"
                     + " changed_helper_filter_flags=true game_two_level_parameter_writes=8->4"
+                    + " eight_contiguous_sprite_parameter_writes=32->4"
+                    + " standalone_texture_binding_boundary_writes=32->8"
                     + " nested_atlas_abort_barrier_first_level=true");
                 System.out.println("renderer=" + GL11.glGetString(GL11.GL_RENDERER));
             } finally { old.close(); next.close(); }
@@ -91,7 +95,12 @@ public final class TextureParameterScopeProbe {
         byte[][] first = readMips();
         // Mutable interpolation arrays retain object/frame identity while pixels change.
         for (int mip=0;mip<3;mip++) Arrays.fill(pixels[mip], 0xffb23065 + mip * 0x021800);
-        if (newSprite) { AnimatedTextureBootstrap.afterSprite(); AnimatedTextureBootstrap.beforeSprite(fixture.sprite); }
+        if (newSprite) {
+            AnimatedTextureBootstrap.afterSprite();
+            // TextureMap's standalone-sprite bind now has this exact barrier.
+            AnimatedTextureBootstrap.textureBarrier();
+            AnimatedTextureBootstrap.beforeSprite(fixture.sprite);
+        }
         // The real helper starts at mip zero after binding another resource.
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, second);
         fixture.helper.invoke(null, 2, pixels, 8, 8, 0, 0, blur, clamp, true);
@@ -152,6 +161,40 @@ public final class TextureParameterScopeProbe {
         GL11.glDeleteTextures(id);
     }
 
+    private static void verifyContinuousSprites(Fixture old,Fixture next,boolean switchTexture) throws Exception {
+        List<byte[]> expected=new ArrayList<byte[]>();
+        List<int[]> expectedParameters=new ArrayList<int[]>();
+        for(Fixture fixture:new Fixture[]{old,next}) {
+            enabled=fixture==next;
+            int first=texture(),second=texture();
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D,first);
+            AnimatedTextureBootstrap.begin(new Object());
+            writes=uploads=0;
+            for(int index=0;index<8;index++) {
+                if(index==4 && switchTexture) {
+                    AnimatedTextureBootstrap.textureBarrier();
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D,second);
+                }
+                Object sprite=fixture.sprite.getClass().getConstructor(String.class)
+                    .newInstance("contiguous-"+index);
+                AnimatedTextureBootstrap.beforeSprite(sprite);
+                int[][] data={new int[64]};Arrays.fill(data[0],0xff1384d1+index*0x110700);
+                fixture.helper.invoke(null,0,data,8,8,0,0,false,false,false);
+                byte[] pixels=readMips()[0];int[] parameters=parameters();
+                if(fixture==old){expected.add(pixels);expectedParameters.add(parameters);}
+                else {
+                    require(Arrays.equals(expected.get(index),pixels),"contiguous sprite pixels");
+                    require(Arrays.equals(expectedParameters.get(index),parameters),"contiguous sprite filter/wrap");
+                }
+                AnimatedTextureBootstrap.afterSprite();
+            }
+            require(writes==(enabled?(switchTexture?8:4):32),"contiguous sprite parameter work: "+writes);
+            require(uploads==8,"contiguous sprite pixel uploads");
+            AnimatedTextureBootstrap.end(0);
+            GL11.glDeleteTextures(first);GL11.glDeleteTextures(second);
+        }
+    }
+
     private static int texture() {
         int id=GL11.glGenTextures(); GL11.glBindTexture(GL11.GL_TEXTURE_2D,id);
         for(int mip=0;mip<3;mip++) GL11.glTexImage2D(GL11.GL_TEXTURE_2D,mip,GL11.GL_RGBA8,
@@ -183,7 +226,7 @@ public final class TextureParameterScopeProbe {
         require(Arrays.equals(a.parameters,b.parameters),"filter/wrap mismatch");
     }
 
-    private static final class Fixture extends URLClassLoader {
+    static final class Fixture extends URLClassLoader {
         final Object sprite; final Method helper,level;final Class<?> config;
         Fixture(String foamfix,String optifine,byte[] texture,final Map<String,String> names) throws Exception {
             super(new URL[]{new File(foamfix).toURI().toURL()},TextureParameterScopeProbe.class.getClassLoader());
@@ -265,7 +308,7 @@ public final class TextureParameterScopeProbe {
         try {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];for(int n;(n=in.read(b))!=-1;)out.write(b,0,n);return out.toByteArray();}
         finally {in.close();}
     }
-    private static Map<String,String> names(String zip)throws Exception {
+    static Map<String,String> names(String zip)throws Exception {
         Map<String,String> map=new HashMap<String,String>();ZipFile z=new ZipFile(zip);
         try {for(String file:new String[]{"methods.csv","fields.csv"}) {
             BufferedReader r=new BufferedReader(new InputStreamReader(z.getInputStream(z.getEntry(file)),"UTF-8"));

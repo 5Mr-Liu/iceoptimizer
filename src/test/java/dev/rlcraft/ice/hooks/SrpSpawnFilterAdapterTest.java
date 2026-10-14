@@ -42,6 +42,12 @@ public final class SrpSpawnFilterAdapterTest {
                 "tryFilter", SrpSpawnFilterAdapter.BRIDGE_DESCRIPTOR));
             assertEquals(1, countCalls(transformed, SrpSpawnFilterAdapter.BRIDGE,
                 "invalidate", "()V"));
+            assertEquals(1, countCalls(transformed, SrpSpawnFilterAdapter.BRIDGE,
+                "own", "(Ljava/util/List;)Ljava/util/List;"));
+            assertEquals(2, countCalls(transformed, SrpSpawnFilterAdapter.BRIDGE + "$SpawnList",
+                "<init>", "()V"));
+            assertEquals(1, countCalls(transformed, SrpSpawnFilterAdapter.BRIDGE + "$SpawnMap",
+                "<init>", "()V"));
             new ClassReader(transformed);
         } finally {
             jar.close();

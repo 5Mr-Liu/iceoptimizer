@@ -1,0 +1,97 @@
+ICE 旧记录剩余卡顿审查与优化方案
+2026-10-10
+
+后续实施：这些旧记录对应的修复及真实代码核对后的方案调整见 ICE-1.0.24-STUTTER-FIXES.txt。以下保持审查当时的版本与数据范围。
+
+结论
+仍有独立于实体/NBT比较的卡顿来源。最明确的客户端尖峰是掉落头颅渲染同步联网；最重的服务端尖峰包含同步世界生成、结构首次加载和光照传播。另有 Lycanites 刷怪搜索、SRP 感染判断、全世界 TileEntity 扫描、动画纹理上传及 F6 整体重建等重复工作。
+下文区分“旧记录已证实的调用链”“当前源码仍存在的缺口”和“需要实现后量化的算法方案”，不将采样命中数写成 CPU 百分比或预期 FPS 增幅。
+
+数据范围与解释
+来源：D:\Program Files\Mcserver\rlcraftDregora\.minecraft\versions\RLCraft Dregora\ice-profiler\sessions
+20 个会话：20261010-090500-903 至 20261010-091840-855，属于 1.0.20；当前最新交付源码为 1.0.23，目录内没有其游戏实测。近期改动只能标记为源码已覆盖，不能据旧数据判定修复效果。
+393821 个原始线程样本按 timestampNs/threadId 去重后为 294871 个；810 个唯一时间线区间覆盖约 831.92 秒。自动会话重叠不重复相加。
+服务端 tick 加权平均 41.476ms，291 个区间的平均 tick 超过 50ms，460 个区间的 P95 超过 50ms；最大单 tick 为 3946.535ms。
+1063 个长服务端 tick 的时间窗中有 11951 个服务端样本，其中 OTG/世界生成链 6286、实体更新 910、AI/寻路 319、NBT 103、区块保存 282。分类可以重叠，而且采样优先覆盖触发区间，因此不是精确耗时分摊。
+后半段有顶部三帧截断和 dictionaryOverflow；未识别的长 tick 不强行归因。初次进入世界和最后退出世界分别处理，不用来代表持续游玩。
+
+1. 掉落头颅渲染仍同步联网：高优先级、直接修复入口
+证据：09:10:04.596 结束的 CLIENT_FRAME 为 1581.103ms，128 个样本中 125 个在 HTTPS socketRead0。调用链为 ItemPhysic 掉落物渲染 → TileEntityItemStackRenderer → TileEntitySkull.updateGameProfile → Authlib 补全资料 → HTTPS 读取。这是游玩中的网络等待，不是 GPU 或 NBT 计算；Java 将该 socket 调用显示为 RUNNABLE 也不代表它正在消耗 CPU 计算。
+当前缺口：PlayerSkullLayerAdapter 覆盖佩戴头颅入口，TileEntitySkullRenderer 的皮肤获取也已有桥接，但物品 renderer 在进入共享 renderer 之前的 updateGameProfile 没有接入。现有说明对物品入口的覆盖描述过宽。
+方案：在 TileEntityItemStackRenderer 的真实资料补全调用点接入已有 SkullProfileBridge；默认缺资料直接使用默认外观，启用异步查询时复用现有任务和资料缓存。完整 textures 资料直接使用。保留物品 SkullOwner 写回规则，默认 existing-only 与异步模式不在绘制线程等待网络，不增加另一套检测或重试控制。现有 allowIncomplete=true、skullProfileAsync=false 明确选择同步模式；仅补入口不会改变这个选项语义。
+
+2. 世界生成和结构加载：对秒级服务端停顿优先处理
+明确例子：09:06:09.927 的 3946.535ms tick 包含 Roguelike 地牢位置探测触发同步相邻区块生成，以及 OTG 配置文件打开/解析；09:07:38.729 的 2981.158ms tick 包含 BO4Config.readResources、文本参数解析和文件读取；09:12:26.168 的 646.989ms tick 有 BO3Loader.loadTileEntityFromNBT 同步打开元数据文件。
+已有 OTG 文件/文本缓存不能消除首次遇到结构时的文件读取、结构资源构造和同步生成。样本里 loadSettingsEntry 462 次命中，而文件 reobserve 仅 4 次；不能把大多数开销解释为额外文件检查。
+当前 BO4 的列分桶和单次 spawn 方块数组复用已经实现，不能把旧 BO4 readResources/getBlocks 样本全部算作未处理；这里的新增重点是 BO3、首次依赖加载和动态生成回调。
+具体方案：
+- 在预设对象注册/明确重载边界建立对象与分支依赖表，预读文本和元数据为不可变解析结果，减少游玩线程首次打开许多小文件。纯读取/解析可提前完成，涉及世界、注册表、随机数和模组回调的实例化保留原线程及顺序。不会消除首次生成总成本，只减少游玩时的同步 IO 和重复解析。
+- BO3Config.getBlocks 有 495 个服务端样本，其中 380 个在 ICE 开启区间；它在生成树/结构时重复物化方块对象。将坐标、材料和随机方块定义编译为配置拥有的紧凑数据，生成时直接遍历，逐次变化的数据放在本次工作区。不能简单共享可变 BO3RandomBlockFunction 对象。
+- BO3 LightCheck.preventsSpawn 的读光照链有 1183 个样本，深入 Phosphor 的传播队列；StateImplementation.getLightOpacity 有 497 个样本，其中 255 个叶帧为反射 invoke。现有 ForgeBlockStateDirectAdapter 只覆盖 lightValue 和侧面判定；应补同签名 Block.getLightOpacity 的直接虚调用，保留动态覆盖，消除参数数组/反射。Phosphor 已有六邻居缓存，进一步改为同 section 局部索引加固定偏移、跨 section 才解析邻居，避免重复搭建同类缓存。读光照前仍完成原更新。09:08:07.746 的 429.628ms tick 就有发射器回调触发邻区块递归生成、BO3 读光照结清传播的明确链。
+- RecurrentComplex 的结构初始化和装饰事件两条反射链各有 74 个样本，反复 ReflectionHelper.findMethod/getDeclaredMethod；固定方法一次解析，装饰事件用 ClassValue 持有该类的方法组合及“没有此 API”的结果，保留每次 invoke、事件和返回值。现有 RC 插值场缓存没有覆盖这些反射入口。
+- OTG 未加载列查询/ChunkPrimer 转换和 biome layer 还有独立成本；优先让未加载地形高度/材料探测读取生成阶段已有的数据，减少仅为读列而构造完整 Chunk 的工作。需要保持原生成事件、随机序列和缓存条目生命周期，不直接取消邻区生成。
+NoiseThreader 已在并行噪声/洞穴计算；主线程 Future/ForkJoin 等待表示依赖未完成，不足以认定“未用多核”或建议盲目增加线程数。可进一步合并细粒度任务与复用工作数组，但先处理上面已定位的重复工作。
+
+3. 持续游玩中的实体与世界事件：不同于已经做过的寻路/NBT
+Lycanites：09:10:34.671 的 151.049ms tick 中，13 个样本有 10 个在刷怪位置搜索，全部开启；对应区间 GC、区块加载/卸载、保存均为零。09:13:22.610 的 220.712ms tick 也有 12/18 个样本在该类路径，但该例处于暂停状态。重点是 BlockSpawnLocation.getSpawnPositions/isValidBlock、配置列表 contains 和搜索上下文访问。
+方案：把搜索 scope 和固定规则作为 getSpawnPositions 的局部变量传入内循环，减少每格两次 ThreadLocal 查找；配置加载/变更时编译 Block 身份成员表，避免每格 registryName→ResourceLocation 列表匹配。进一步用静态状态候选索引减少扫描体积时，保留原坐标枚举顺序和动态 fluid/天空判断，不能跳过有副作用回调。小列表线性查找未被证明一定更慢，不以单删 size<8 分支当作优化。当前寻路工作区与刷怪搜索不是同一入口。
+SRP：ParasiteEventWorld.canInfestBlock 精确命中 1050 个服务端样本，其中开启 948 个；主要剩余项是感染判断反复查询 EntityPStationaryArchitect，当前优化只覆盖名字黑名单。方案是在真实实体/section 加入移除边界维护 Architect 稀疏占用索引，跳过无目标的 section，并复用候选工作区；保留 World/Chunk 查询扩展、原候选次序及先完成筛选再执行药水/光照循环的顺序。原方法使用每个 Architect 的 stage、PIVOT 药水和光照，不能改成 exists/找到第一个即返回，也不能跨 tick 缓存感染结果。
+LibrarianLib / LevelUp2：FurnaceEfficiencyBonus.doFurnaceTicks 有 298 个样本，遍历所有 TileEntity 的 has/getCapability 后收集 IProcessor，再统一 processTick。FieldCache.hasCapability 142 个样本，其中 139 个落在 String.intern；真实 LibrarianLib 每次创建临时列表并重新 intern 接口类名。先用 ClassValue 保存每个类的规范化名字、直接遍历接口数组并查询当前 providers，去掉临时列表和重复 intern；再用可重入工作区替代 LevelUp 的 stream/collect。能力提供者与返回值仍实时读取，保持全部能力查询完成后才 processTick。不能只按 TileEntityFurnace 类型建索引，会漏掉其它模组的 IProcessor。
+NuclearCraft：RadiationHandler 有 160 个样本，其中 100 个在全区块集合 toArray。每 tick 先复制所有区块再选择其中一部分处理。先复用带逻辑长度的快照数组并清引用；进一步按区块集合变更发布快照时，必须保持真实原迭代次序和随机调用，不能换成任意 dense-list 次序。实体/tile 回调可能修改集合，不能盲删这些快照。
+
+4. 动画纹理像素上传：仍有明确的覆盖缺口
+客户端 TexSubImage2D 共 2136 个样本，其中 2121 个来自 FoamFix 动画上传链。FastTextureAtlasSprite 共 2887 个样本。数据说明这条路径值得处理，不代表这些样本占用相同长度的 CPU 时间，也不能由 ON/OFF 原始数比较净收益。
+当前 AnimatedTextureUploadBridge.beforeSprite 仅接收标准 TextureAtlasSprite 精确类；FoamFix 覆写更新/插值方法，调用 private uploadTextureMaxMips → TextureUtil 的单 mip 入口。已有 TextureUtil 参数去重仍可生效，但没有接通完整像素流和 sprite 可见性追帧。
+FoamFixUploadBridge.tryUploadLevel 当前固定返回 false，是之前避免每个小 mip 单独 PBO/Fence 开销的处理；当前 VanillaTextureUploadAdapter 也已只接参数去重，没有像素上传 hook。删除这个 false 既不能接通流，也不能解决旧的小批次开销。
+方案：在可转换的 TextureUtil 边界将已审计 FoamFix sprite 的多个 mip 命令接到同一 atlas 上传流，连续命令共用持久映射区与批次 fence。保留 maxMips、mipFilter、blur/clamp、颜色转换和实际 mip 内容；插值数组在被复用前复制到流。复用既有可见性及补帧机制，保持可见动画正常推进，不加收益试跑。
+
+5. 保存、声音和 ICE 自身还有小范围重复工作
+保存 pending tick 查询：82 个原路径样本中有 18 个处于 ICE 开启区间，全部来自卸载 tick 已包裹的 scope，落在 SaveTickIndexBridge.deferFirstQuery 的首查路径。不是漏加 scope。直接删除首查分支会让单区块卸载先构造整张表，可能更贵。
+方案：在计划方块 tick 的真实插入/删除边界维护按区块索引，使卸载和整批保存直接访问对应集合，保留原 TreeSet/List 次序和 remove 语义。这是替换数据结构，不能只删条件。
+普通保存另有明确尖峰：09:13:52.788 的 510.935ms tick 有 44 个服务端样本，全部开启；其中 5 个保留 saveChunks 调用链，另有截断的压缩和 StringPool 栈。对应区间保存事件 2167 次，GC collection time 26ms。1.0.23 压缩修复不能消除主线程构造实体/Capability 快照。若采用普通自动保存跨 tick 游标和完成期限，可以分散快照/Forge 保存事件的峰值；显式保存、卸载和退出仍完整完成。这会改变事件时序，应作为调度方案明确列出，不能声称总工作量减少。09:18:01 的 1120.451ms 保存尖峰全部暂停，不用来证明开启失败。
+NormalStringPool 共 190 个样本，其中 73 个与区块保存同栈；可在原字符串池生命周期内复用已规范化常量键，保留动态键和池重置，不再替换整个 NBT Map。
+FishingMadeBetter 共 77 个样本，其中区块加载链 51、writeNBT 11。优先共享类型名表、编译鱼种生境规则，并在一次 regenerateInitialFishes 内惰性复用同坐标生物群系查询，保留随机顺序；未发现保存端重复完整序列化往返，不优先缓存可变 NBT 树。
+SoundFilters 房间随机 flood-fill 有 133 个 LinkedList.contains/indexOf 调用链样本。为 frontier 建整数坐标 membership 索引，保留原顺序和随机下标删除，减少六邻居线性 contains；ComparablePosition 没有对应 hashCode，不能直接换 HashSet，也不能 swap-remove 改变随机搜索结果。SoundSystem.CommandQueue 另有 52 个全部 BLOCKED 的客户端样本，需按锁竞争单列。记录缺少 monitor owner，不能把整帧都归给声音锁；先做确定的 flood-fill 算法和真实参数变化时的 OpenAL 更新，再核对消费临界区。
+ICE PrimitiveTerrainVisibilityBridge 遍历有 1498 个客户端样本，其中开启且离开关至少 10 秒的有 1447 个，包含正常 frustum 工作。当前遍历仍反复线性查方向、核对已建立的 chunk 索引和可见性 mask。后续可把固定类型/索引信息放到 ViewFrustum 建立和编译数据更新边界，方向直接存字节、固定关系直接查表。不得声称全部 1447 个样本都是这些检查的成本；更深的 frustum 算法改动要单独验证视角移动和 OptiFine 调用语义。
+
+6. F6 切换尖峰应与持续卡顿分开
+09:13:16.775 的 462.427ms 长帧有 37/41 个样本在 glDeleteBuffers；另有 281.599ms、263.503ms、219.860ms 长帧走同一链：F6 → ClientOptimizerController → RenderGlobal.loadRenderers → ViewFrustum 删除全部网格。
+当前 controller 仍在切换时调用 loadRenderers，因此属于明确的待处理切换成本。它不能解释保持开关状态后的持续负收益。
+方案：以当前网格所有权逐项交接 ICE arena 与普通 VBO，保留现有 ViewFrustum 和未接管的 VBO，利用原资源退休流程处理旧对象；避免整场删除再重建。必须先提供暂停后的真实顶点来源和恢复时的接管路径，不能直接删 loadRenderers 后让地形缺失。
+
+GC 与区块周转的结论
+堆实际使用约 2726–5506 MiB，中位约 4453 MiB。已提交堆和当前已使用堆不是同一个量；heapUsed 还包括尚未回收的垃圾，不能直接当作存活对象大小。
+GC 字段合计 12843ms，去掉首个初始化区间为 9413ms，后续单区间最高 77ms。记录器来源是 GarbageCollectorMXBean.getCollectionTime 的差值；这是近似累计收集时间，不是每次 stop-the-world 的准确时长和起止时间。不能由它证明多数秒级停顿来自 GC，更不应仅因占用高就增加堆上限。
+去重区间共加载 24239、卸载 23173、保存事件 28447。30 秒内重载 2800 次；加载后 30 秒内卸载 15336 次。确有周转，但“无 ChunkDataEvent.Load”不等于已证明生成全新区块，保存事件也不等于磁盘写入次数。
+不建议先用长期保留大量区块来掩盖周转：这会扩大常驻堆。先减少结构探测的级联工作和保存/加载重复数据构造，再决定是否需要改生命周期。
+
+另外发现的代码正确性问题
+实际 OTG v9.7 getBlockColumnInUnloadedChunk 构造两份 256 元素数组，只填充并返回第二份，却把第一份全 null 元素的数组放入列缓存。进一步核对发现 BlockPos2D 只有 equals、没有 hashCode，新建逻辑等价键通常不能命中。此前“再次命中可能取得空内容”的描述不充分：需要同时修复键与值，不能将空数组读取当作已由记录证明的故障。
+最小修复是缓存真实填充数组、去掉额外空数组；若让真实列跨调用复用，还需让列条目随对应生成 Chunk 的正式加载/移除释放，避免混淆生成地形和已加载的可变世界。现有代码缺陷的目的为结果正确及少分配，不能作为本记录已证实的明显提速或崩溃原因。字节码和缓存生命周期详见 server-worldgen/FINDINGS.txt。
+
+已有改动，不重复当作新方案
+1.0.21 已处理 HUD 反复 push/pop、事件后的重复 GL 状态读取、混合地形状态切换和主线程遮挡网格构造。
+1.0.22 已实现跨 VBO GPU 批量提交和当前帧 GPU 遮挡；它不接管 Java 世界生成与模组事件。
+1.0.23 已处理碰撞分配、寻路工作区、SRP 刷怪编译缓存/生物分类、寻光索引、装备 NBT/PotionCore/QualityTools、保存发布与压缩缓冲。
+这些都需要新版本实测确认实际效果；不能把旧记录中的命中称为新版本仍然失败。
+
+建议的实现顺序和验收
+优先同时处理可直接减少工作的项目：头颅漏接入口、BO3 紧凑数据、光照 opacity 直调、RC 方法绑定复用、Lycanites 局部搜索上下文、LibrarianLib 能力查询去重、FoamFix 连续上传和 SoundFilters 坐标索引。
+世界生成读取/实例化拆分、光照队列、计划 tick 索引和 F6 网格交接属于更大算法改造，按各自数据生命周期完成后再一起测试；不是加入按收益自动开关的机制。
+验证关注实际秒级帧/tick、P95/P99、分配率及对应动作是否保持；离线检查 RNG 调用、结构/方块/光照结果、属性/装备、声音及上传像素一致。不降低 AI、感染、刷怪、保存或动画更新频率。
+如希望提前移走探索时的一次性生成工作，OTG 官方自带预生成可在游玩前运行；官方说明 v7+ 通过 O 菜单设半径，并建议不要边游玩边高速预生成。本轮没有运行预生成或更改世界。
+
+证据与复现
+.refactor-backups/remaining-stutters-20261010/overview.py、overview.json：总体、GC、区块周转及客户端长帧。
+.refactor-backups/remaining-stutters-20261010/f6-events.json：切换尖峰的调用链。
+.refactor-backups/remaining-stutters-20261010/client-render.json：遍历/纹理样本。
+.refactor-backups/remaining-stutters-20261010/server-worldgen/：世界生成/实际 OTG、Phosphor、RC 字节码与事件。
+.refactor-backups/remaining-stutters-20261010/server-other/：剩余服务端事件、调用栈与真实模组字节码。
+.refactor-backups/remaining-stutters-20261010/client-other/：头颅网络、声音、纹理等调用链。
+本轮为只读代码与录制审查，未修改生产源码、游戏实例或启动游戏。
+
+核对的原始资料
+Java 8 GarbageCollectorMXBean（collection time 的准确含义）：
+https://docs.oracle.com/javase/8/docs/api/java/lang/management/GarbageCollectorMXBean.html
+OTG 官方预生成说明：
+https://github.com/PG85/OpenTerrainGenerator/wiki/GUI-and-Commands
