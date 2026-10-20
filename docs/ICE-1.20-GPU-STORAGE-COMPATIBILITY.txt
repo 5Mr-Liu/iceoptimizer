@@ -1,0 +1,134 @@
+ICE 1.20 修订 10：GPU 缓冲区分配判定与核显验证
+日期：2026-10-16
+
+报告与范围
+-----------
+用户报告刚进入游戏就退出，堆栈为 Rendering chunk -> NativeTerrainStorage.ensure:30：
+ICE terrain GPU allocation failed: 1282 at 5505024。
+设备为 Intel Iris Xe / OpenGL 4.6 / 30.0.101.1692，Java 8，ICE 1.20。
+报告不含制品哈希，不能仅凭版本号区分修订。此路径在修订 9 仍保留旧判定。
+1282 是 GL_INVALID_OPERATION，而不是 GL_OUT_OF_MEMORY；5505024 是申请字节数。
+用户已明确这次发生在进入游戏时，不能继续假设需要按 F6 才触发。
+
+代码证据与修复
+---------------
+旧实现 glBufferData 后读取 glGetError，只要非零就删除新缓冲区并抛异常。
+glGetError 读取的是整个上下文的未处理错误，不证明错误来自紧邻的分配调用。
+因此之前的渲染操作留下 1282 时，即使分配成功，ICE 仍会误报并退出。
+报告本身不能确定最早产生 1282 的 OpenGL 调用，也不能证明所有 Intel 驱动问题同源。
+
+新实现通过 OpenGL 3.2 的 glGetBufferParameteri64(GL_BUFFER_SIZE) 检查新对象
+实际字节数，不消费或清除其他调用留下的错误。只在创建/扩容时查询，不增加每帧
+或每次上传的大小检查。ICE 自有地形要求 OpenGL 4.3，因此此 API 不提高要求。
+真正没有分配到所需大小时仍会失败，并记录 requested、allocated、stride。
+失败清理未提交的新对象，保留旧对象和容量；成功后将保存的旧对象绑定替换为
+新对象，避免重新绑定已经删除的编号。通用路径不按 Intel/NVIDIA 品牌分支。
+保留优化默认开启、F6 开关和此前光影切换修复，没有新增 HUD、性能门禁或回退。
+
+进一步定位：间接绘制缓冲区
+---------------------------
+第一轮仅修分配判定的候选包（SHA256 1017B391B1E9C08375E47B462485D311C0BB89C2CFE56DB1183E01672A506B58）
+在 Intel UHD 上完成 75 步且正常退出，但无光影截图只有实体、没有地形。
+因此未把“不再崩溃”当作完成，也没有把此候选交付为最终修复版。
+独立真实驱动回调进一步定位到 glMultiDrawElementsIndirect：原来每帧对
+同一个同时承载实例属性和间接命令的对象调用 glBufferData，替换数据存储，
+Intel 上第二轮绘制出现 GL_INVALID_OPERATION 1282。此时几何绘制失败，
+遗留错误随后可能被旧 ensure 错误归因到分配。报告电脑是否完全同源仍需复核。
+
+诊断结果：移动位置属性从 8 到 0、改成单条 indirect、改为 arrays indirect、
+改在 GL_DRAW_INDIRECT_BUFFER 目标上传都不能消除 1282，未用于生产实现。
+保留存储的 glBufferSubData 与直接绘制能避免该错误，但未将这些诊断分支
+直接加入正式模组；没有把四边形改为三角形，也没有按品牌改成逐区块绘制。
+
+最终命令缓冲区复用 NativeTerrainStorage：保持常驻对象和存储，每帧仅通过
+现有 copy-only 暂存缓冲区上传，再 glCopyBufferSubData 更新命令内容。
+只有暂存对象调用 glBufferData；容量增长时建立新常驻对象，刷新 VAO 的
+实例属性指针。独立维护 vaoCommands，避免只有几何缓冲变化时才刷新。
+无命令帧不提交空复制；光影路径只读 CPU 记录，不再上传未使用的间接命令。
+核显与独显使用同一实现，仍为原四边形、16 位索引和 MultiDrawIndirect，
+没有硬编码设备 ID、显存大小、CPU 数量或某台电脑的参数。
+
+外部真实驱动验证
+-----------------
+工具：tools/NativeTerrainStorageProbe.java、tools/run-native-storage-probe.ps1。
+测试夹具不进入正式 JAR，不使用 Minecraft 世界，也不是 FPS 测试。
+先故意在绑定 0 的缓冲目标上调用 glBufferData，产生待处理的 1282，然后调用
+原封不动的修订 9 JAR 中的 NativeTerrainStorage.ensure(180000)。
+独显与核显都复现完全一致的异常文本：1282 at 5505024。
+这证明错误归因缺陷能造成该异常，不声称完全重现用户的所有模组状态。
+
+修复版在以下两个实际 OpenGL 上下文通过同一组验证：
+- NVIDIA GeForce RTX 4060 Laptop / 4.6.0 NVIDIA 592.82。
+- Intel UHD Graphics / 4.6.0 - Build 32.0.101.6790。
+覆盖 2 字节索引、28 字节普通顶点、56 字节光影顶点；首次分配、带残留错误的
+扩容、单次上传、分段批量上传、GPU 回读字节一致、外部绑定恢复、自有旧绑定
+替换、旧对象删除和无需扩容时不更换对象。原错误保留给其原调用方检查。
+核显旧版与修复版记录位于 build/fps-target/120-hotfix10-storage-probe/intel。
+独显记录位于其父目录 old.log / fixed.log。
+
+核显选择只针对 C 盘新复制的测试 JRE：临时设置该 java.exe 的 Windows
+UserGpuPreferences=GpuPreference=1，并在 finally 中恢复原值/删除临时值。
+实际 GL_RENDERER 输出确认使用 Intel，而非仅凭系统枚举推测。
+没有改变用户原游戏或原 Java 的显卡偏好、驱动、全局显示模式。
+
+绘制正确性探针（tools/NativeTerrainShaderProbe.java）
+----------------------------------------------------
+加入实际 16 位有序索引、真实 NativeTerrainStorage 命令上传与驱动错误回调。
+使用相同 ICE shader 的有序直接绘制作为参考，对比修复后的批量间接绘制；
+确认参考确实产生可见像素，避免两个空画面“相等”的假通过。
+Intel UHD 96 组、NVIDIA RTX 4060 192 组全部像素一致，max_channel_delta=0，
+channels_gt1=0，无 GL 错误。覆盖雾模式、视角、区块偏移、缩放、透明/裁切；
+Intel 不支持 NV 径向雾扩展，因此不伪造该扩展的参考行为。
+日志：build/fps-target/120-hotfix10-draw-probe/*-copy-ushort-final.log。
+更早的固定功能管线参考在 Intel 指数雾旋转案例存在最高 4 色阶差异，已保留
+失败日志，没有放宽阈值。当前修复不改 ICE shader，像素完全一致结论仅限
+同 shader 的两种命令提交，不等同于全游戏相对原版所有画面严格相等。
+
+自动回归和制品
+---------------
+5 项新故障注入回归：残留错误、首次真实分配失败、扩容失败保留旧对象、
+Java 调用异常清理、glGenBuffers 返回 0。测试通过隔离类加载替换 GL 调用，
+不会给生产路径加入驱动接口或诊断开关。
+完整 build / optimizerBundleZip / verifyArtifactStartup 成功。
+常规测试 1307 项：1177 通过，130 个可选测试跳过，0 失败，0 错误。
+制品启动检查 10 项全部通过。
+首次构建的唯一失败是 C 盘缺失已有 Nothirium 本地测试 JAR；从 D 盘原测试
+目录复制后完整重跑通过，没有禁用测试，也不把 Nothirium 放入运行安装包。
+git diff --check 通过。版本保持 1.20，体验包标记修订 10。
+最终 JAR SHA256：87366EF37895A924350C572FA4E6F381AC30DD0D4AEAD6D4ADC04058E5B3F1A2。
+
+整合包核显测试
+---------------
+第一轮副本：live-120-hotfix10-intel-switch-audit-20261016，PID 21756。
+23:30:54 正常退出；该轮因无光影地形空白判定未完成修复，保留日志和截图。
+旧冻结夹具已不在原路径，由源码重建的第一轮夹具 SHA256 为
+30FD3CB7C98ED91464F26C96902638EC2E45A8A267304C1644CEC29C88297243。
+
+最终重新创建副本 live-120-hotfix10-intel-final-20261016，PID 32224。
+所有副本位于 C:/Users/32884/.codex/scratch/ice-fps-target。
+使用 8 个逻辑处理器、8 GB 最大堆、交互正确性模式，不采样 FPS。
+最终夹具保持原 75 步动作，每次截图前额外等 200 tick 让地形加载；SHA256：
+BFA692394B7F9666B16FD5178B9B6D3B0EE88358B91D34279D1E2CBD933DD35E。
+夹具仅用于隔离副本，不包含在安装包中。
+最终制品在 Intel UHD / 32.0.101.6790 完成进入世界和全部 75 步：
+28 次 F6、14 次光影选择、28 次区块重建；23:46:41 完成，23:46:43 正常退出。
+没有生成 crash-reports，日志无 GPU allocation failed / storage size mismatch、
+Not building、不完整四边形或区块工作线程未捕获异常。
+人工检查普通模式、光影模式及最终截图：地形、植被、实体和建筑可见；
+普通模式不再只有实体和空白背景，光影中的地形与阴影可见。
+截图等待区块加载，检查的是渲染正确性；不以截图期间 FPS 或加载速度作性能结论。
+最终测试结束后临时 GPU 偏好值已清理，隔离游戏进程已退出。
+
+限制与保留
+-----------
+本机 Intel UHD 与用户 Iris Xe 的型号和驱动不同，不能将本机结果表述为
+用户电脑已实测通过，也不承诺所有核显、所有驱动、所有光影包都兼容。
+未进行正式配对 FPS 测试；无性能增幅或 20% 目标达成结论。
+D 盘仅剩约 12 MiB，当前工作源码和制品保存在 C 盘副本；未同步 D 盘旧源码。
+没有改动原游戏 mods/config/options/saves，没有推送或替换远程 v1.20 release。
+
+规范依据（Khronos 原始参考页）
+-------------------------------
+https://raw.githubusercontent.com/KhronosGroup/OpenGL-Refpages/main/gl4/glBufferData.xml
+https://raw.githubusercontent.com/KhronosGroup/OpenGL-Refpages/main/gl4/glGetBufferParameter.xml
+https://raw.githubusercontent.com/KhronosGroup/OpenGL-Refpages/main/gl4/glCopyBufferSubData.xml

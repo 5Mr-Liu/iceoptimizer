@@ -10,7 +10,10 @@ import net.minecraft.client.renderer.chunk.CompiledChunk;
 import net.minecraft.client.renderer.chunk.RenderChunk;
 import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.client.renderer.vertex.VertexBuffer;
+import net.minecraft.client.renderer.vertex.VertexFormat;
+import net.minecraft.client.renderer.vertex.VertexFormatElement;
 import net.minecraft.util.BlockRenderLayer;
+import net.minecraft.util.math.BlockPos;
 import org.junit.After;
 import org.junit.Test;
 import sun.misc.Unsafe;
@@ -45,6 +48,37 @@ public class NativeTerrainUploadTest {
         upload(new CompiledChunk(), allocate(TestChunk.class), builder, vbo);
         assertEquals(0, vbo.count);
         assertNull(field("instance").get(null));
+    }
+
+    @Test public void shaderVerticesKeepTheirExtendedAttributesAndSkipStaticFaceRejection() throws Exception {
+        VertexFormat extended = new VertexFormat(DefaultVertexFormats.BLOCK);
+        extended.addElement(new VertexFormatElement(0, VertexFormatElement.EnumType.FLOAT,
+            VertexFormatElement.EnumUsage.GENERIC, 7));
+        assertEquals(56, extended.getSize());
+        BufferBuilder builder = new BufferBuilder(256);
+        builder.begin(7, extended);
+        int[] data = new int[56];
+        for (int i = 0; i < data.length; i++) data[i] = Float.floatToRawIntBits(i);
+        builder.addVertexData(data);
+        builder.finishDrawing();
+        NativeTerrainUploadTask.Prepared prepared = NativeTerrainUploadTask.prepare(
+            BlockRenderLayer.SOLID, builder, allocate(TestChunk.class), new Compiled());
+        assertEquals(4, prepared.count);
+        assertEquals(56, prepared.stride);
+        assertNull(prepared.faces);
+        assertEquals(224, builder.getByteBuffer().remaining());
+        for (int i = 0; i < data.length; i++) assertEquals(data[i], builder.getByteBuffer().getInt(i * 4));
+    }
+
+    @Test public void shaderPassInvalidatesCameraQueueEvenWithoutTheOrdinaryBfs() throws Exception {
+        NativeTerrainRenderer owner = allocate(NativeTerrainRenderer.class);
+        field("shaderPack").setBoolean(owner, true);
+        field("framePrepared").setBoolean(owner, true);
+        field("drawQueueDirty").setBoolean(owner, false);
+        field("instance").set(null, owner);
+        NativeTerrainRenderer.beginFrame();
+        assertFalse(field("framePrepared").getBoolean(owner));
+        assertTrue(field("drawQueueDirty").getBoolean(owner));
     }
 
     @Test public void zeroVerticesClearGeometryEvenIfTheBlockRendererReportedUsed() throws Exception {
@@ -113,13 +147,14 @@ public class NativeTerrainUploadTest {
     }
 
     private static class Compiled extends CompiledChunk {
-        Compiled() { setLayerUsed(BlockRenderLayer.TRANSLUCENT); }
+        Compiled() { setLayerUsed(BlockRenderLayer.TRANSLUCENT); setLayerUsed(BlockRenderLayer.SOLID); }
     }
     private static class TestChunk extends RenderChunk implements NativeTerrainChunkAccessor {
         Object section;
         private TestChunk() { super(null, null, 0); }
         public Object ice$nativeSection() { return section; }
         public void ice$nativeSection(Object value) { section = value; }
+        @Override public BlockPos getPosition() { return BlockPos.ORIGIN; }
     }
     private static class TestBuffer extends VertexBuffer implements ChunkVertexBufferAccessor {
         int count;

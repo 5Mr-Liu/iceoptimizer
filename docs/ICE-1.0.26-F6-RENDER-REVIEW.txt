@@ -1,0 +1,43 @@
+ICE 1.0.26 — F6 负优化核查与 HUD 局部修复
+
+这不是“大幅提升已验证”的版本。新记录证明存在开启后更慢的区间，本版只修复已定位、可保持绘制结果的 HUD 额外工作。完整地形批处理的负收益仍需继续解决，不能把局部调用次数减少等同于整体 FPS 提升。
+
+本版修改
+- HUD 原来在 GlStateManager 方法入口无条件提交。现在把提交边界放在方法内部真正修改 OpenGL 状态的指令前，沿用游戏已有分支；重复 enable/disable 不再切批。
+- 实际纹理单元切换经过 OpenGlHelper，光影 blend 修改先写 ShaderUniform；两条委托都保留提交顺序。GlStateManager$BooleanState 单独接入，并保留原 StackMap frames。
+- 删除 HUD 首个 primitive 类型限制，四边形与文字条带按原顺序混排；真实绘制状态变化仍先提交。
+- 小批顶点追加到已有上传页，页满才重新分配存储；保留 VBO/VAO 原绑定。预算较小时仍按可用容量容纳小批，不因16KiB期望页大小额外拒绝。
+- HUD flush 直接读取已维护的必要状态，移除每次构建完整 Snapshot 的分配。
+- 没有新增收益检测、静止条件、自动停用、冷却或额外逐帧采样。
+
+新记录结论
+记录：2026-10-10 20:42–20:46，用户确认按 F6 暂停/恢复；安装版本1.0.25。
+283条时间线去重为260条；去除切换混合区间、至少等待5秒，以总帧数/总时间计算。
+两次相邻 OFF→ON 9秒窗口：128.43→74.35、119.10→69.77 FPS。
+这些窗口区块加载量分别460→472、358→347，但位置视角未锁定，不能推成固定损失比例或所有场景结论。
+
+本机原生 OpenGL 核查
+HUD：4096个小批像素一致；BufferData调用4096→48；混合primitive场景提交1536→512。
+单独分页后的CPU提交约5.06→4.97微秒/批，反序复跑5.16→5.10微秒；改善有限，不能解释全部掉帧。
+地形：640mesh、六方向方块共3932160顶点、1280×720、透视运动、三图层，启用方向剔除和GPU可见性。纯arena OFF约0.702ms / ON约1.218ms；混合普通VBO OFF约0.662ms / ON约1.118ms。
+GPU可见性确认执行（384候选、2048源面），纯arena剔除1179648顶点。此合成场景仍出现负收益，说明只减少draw调用或顶点数量不等于净收益。
+两种路径仅11/3686400颜色通道差值大于1，集中于边缘；不称逐像素完全相同，也不拿这项合成测试外推游戏FPS。
+单独遮挡剔除约0.135–0.238ms；轮换resident-offset区域没有可重复显著收益，故没有凭猜测改GPU算法或新增回退策略。
+
+服务端
+同1295区块、无加载卸载的相邻窗口：开启约20.841ms/tick、暂停20.619ms/tick，不支持其解释明显FPS差距。
+另有Roguelike重复读取/解析地牢配置、Recurrent Complex结构生成和OTG世界生成长tick，属于另外的卡顿来源，详见原始核查报告。本版不改变这些逻辑。
+
+安装与限制
+用 build/libs/ice-rlcraft-optimizer-1.0.26.jar 替换旧optimizer；不要同时保留多个optimizer版本。
+profiler有同版本配套包；当前记录格式与1.0.25相同。
+未改用户游戏实例、配置或存档，也未启动世界。本版游戏FPS仍须实际测试。
+
+详细证据
+.refactor-backups/profiler-20261010-v25/FINDINGS.txt
+.refactor-backups/profiler-20261010-v25/client/hud-junit.txt
+.refactor-backups/profiler-20261010-v25/client/hud-native-new.txt
+.refactor-backups/profiler-20261010-v25/renderer/FINDINGS.txt
+.refactor-backups/profiler-20261010-v25/terrain-realistic/FINDINGS.txt
+.refactor-backups/profiler-20261010-v25/server/FINDINGS.txt
+.refactor-backups/1.0.26-final/verification.json

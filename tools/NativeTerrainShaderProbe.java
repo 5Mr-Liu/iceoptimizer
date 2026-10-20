@@ -1,6 +1,7 @@
 package dev.rlcraft.ice.benchmark;
 
 import dev.rlcraft.ice.optimizer.render.terrain.NativeTerrainShader;
+import dev.rlcraft.ice.optimizer.render.terrain.NativeTerrainStorageProbe;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import org.lwjgl.BufferUtils;
@@ -11,14 +12,32 @@ public final class NativeTerrainShaderProbe {
     static final int W=256,H=192,N=48;
     static int program, geometry, commands, vao, indices;
     static final boolean TRIANGLES=Boolean.getBoolean("ice.probe.triangles");
+    static final boolean INDEXED_QUADS=Boolean.getBoolean("ice.probe.indexedQuads");
+    static final int POSITION_ATTRIBUTE=Integer.getInteger("ice.probe.positionAttribute",8);
+    static final String SUBMISSION=System.getProperty("ice.probe.submission","multi");
+    static final String UPLOAD=System.getProperty("ice.probe.upload","orphan");
+    static boolean commandsAllocated;
+    static final boolean SHADER_REFERENCE=Boolean.getBoolean("ice.probe.shaderReference");
     static final boolean IRREGULAR=Boolean.getBoolean("ice.probe.irregular");
     static float shiftX, shiftY, shiftZ, scale;
+    static KHRDebugCallback debug;
     static final FloatBuffer fog=BufferUtils.createFloatBuffer(4);
 
     public static void main(String[] args) throws Exception {
         Pbuffer context=new Pbuffer(W,H,new PixelFormat().withDepthBits(24),null,null);
         try {
             context.makeCurrent();
+            System.out.println("renderer="+GL11.glGetString(GL11.GL_RENDERER)+" version="+GL11.glGetString(GL11.GL_VERSION));
+            debug=new KHRDebugCallback(new KHRDebugCallback.Handler() {
+                public void handleMessage(int source,int type,int id,int severity,String message) {
+                    if(type==GL43.GL_DEBUG_TYPE_ERROR) {
+                        System.out.println("GL_DEBUG error: "+message);
+                        new Exception("driver error call site").printStackTrace(System.out);
+                    }
+                }
+            });
+            GL43.glDebugMessageCallback(debug);GL11.glEnable(GL43.GL_DEBUG_OUTPUT_SYNCHRONOUS);
+            GL11.glEnable(GL43.GL_DEBUG_OUTPUT);
             program=program();
             geometry=GL15.glGenBuffers(); commands=GL15.glGenBuffers(); vao=GL30.glGenVertexArrays();
             ByteBuffer vertices=BufferUtils.createByteBuffer(N*4*28);
@@ -33,11 +52,12 @@ public final class NativeTerrainShaderProbe {
             vertices.flip();
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER,geometry);
             GL15.glBufferData(GL15.GL_ARRAY_BUFFER,vertices,GL15.GL_STATIC_DRAW);
-            if(TRIANGLES) {
+            if(TRIANGLES || INDEXED_QUADS) {
                 indices=GL15.glGenBuffers();
                 ByteBuffer indexData=BufferUtils.createByteBuffer(N*6*4);
                 for(int first=0;first<N*4;first+=4)
-                    indexData.putInt(first).putInt(first+1).putInt(first+2).putInt(first).putInt(first+2).putInt(first+3);
+                    if(TRIANGLES) indexData.putInt(first).putInt(first+1).putInt(first+2).putInt(first).putInt(first+2).putInt(first+3);
+                    else indexData.putShort((short)first).putShort((short)(first+1)).putShort((short)(first+2)).putShort((short)(first+3));
                 indexData.flip();
                 GL15.glBindBuffer(GL31.GL_COPY_WRITE_BUFFER,indices);
                 GL15.glBufferData(GL31.GL_COPY_WRITE_BUFFER,indexData,GL15.GL_STATIC_DRAW);
@@ -74,6 +94,7 @@ public final class NativeTerrainShaderProbe {
             for(int radial=0;radial<2;radial++) for(int yaw:new int[]{0,25})
             for(int offset=0;offset<2;offset++) for(int alpha=0;alpha<3;alpha++)
             for(float meshScale:new float[]{1F,1.000001F}) {
+                if(radial!=0 && !GLContext.getCapabilities().GL_NV_fog_distance) continue;
                 shiftX=offset==0?0:3.25F;shiftY=offset==0?0:1.6F;shiftZ=offset==0?0:-8.5F;
                 scale=meshScale;
                 GL11.glLoadIdentity(); GL11.glRotatef(yaw,0,1,0);
@@ -90,6 +111,9 @@ public final class NativeTerrainShaderProbe {
                 if(alpha==2) {GL11.glEnable(GL11.GL_BLEND);GL11.glBlendFunc(GL11.GL_SRC_ALPHA,GL11.GL_ONE_MINUS_SRC_ALPHA);}
                 else GL11.glDisable(GL11.GL_BLEND);
                 byte[] reference=render(false,mode,radial), candidate=render(true,mode,radial);
+                boolean visible=false;
+                for(int i=0;i<reference.length;i+=4) if(reference[i]!=0 || reference[i+1]!=0 || reference[i+2]!=0) {visible=true;break;}
+                if(!visible) throw new AssertionError("Reference produced no geometry");
                 int max=0,bad=0;
                 for(int i=0;i<reference.length;i++) {
                     int d=Math.abs((reference[i]&255)-(candidate[i]&255)); max=Math.max(max,d);
@@ -106,7 +130,7 @@ public final class NativeTerrainShaderProbe {
 
     static byte[] render(boolean nativeDraw,int mode,int radial) {
         GL11.glClear(GL11.GL_COLOR_BUFFER_BIT|GL11.GL_DEPTH_BUFFER_BIT);
-        if(!nativeDraw) {
+        if(!nativeDraw && !SHADER_REFERENCE) {
             GL30.glBindVertexArray(0);GL20.glUseProgram(0);
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER,geometry);
             GL11.glEnableClientState(GL11.GL_VERTEX_ARRAY);GL11.glVertexPointer(3,GL11.GL_FLOAT,28,0L);
@@ -123,29 +147,46 @@ public final class NativeTerrainShaderProbe {
         } else {
             GL30.glBindVertexArray(vao);GL20.glUseProgram(program);
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER,geometry);
-            attribute(8,3,GL11.GL_FLOAT,false,28,0);
+            attribute(POSITION_ATTRIBUTE,3,GL11.GL_FLOAT,false,28,0);
             attribute(9,4,GL11.GL_UNSIGNED_BYTE,true,28,12);
             attribute(10,2,GL11.GL_FLOAT,false,28,16);
             attribute(11,2,GL11.GL_SHORT,false,28,24);
-            ByteBuffer data=BufferUtils.createByteBuffer(N*(TRIANGLES?36:32));
+            ByteBuffer data=BufferUtils.createByteBuffer(N*((TRIANGLES || INDEXED_QUADS)?36:32));
             for(int n=0;n<N;n++)data.putFloat(shiftX).putFloat(shiftY).putFloat(shiftZ).putFloat(scale);
             for(int n=0;n<N;n++) {
                 if(TRIANGLES) data.putInt(6).putInt(1).putInt(0).putInt(n*4).putInt(n);
+                else if(INDEXED_QUADS) data.putInt(4).putInt(1).putInt(0).putInt(n*4).putInt(n);
                 else data.putInt(4).putInt(1).putInt(n*4).putInt(n);
             }
             data.flip();GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER,commands);
-            GL15.glBufferData(GL15.GL_ARRAY_BUFFER,data,GL15.GL_STREAM_DRAW);
+            if(UPLOAD.equals("copy")) {
+                commands=NativeTerrainStorageProbe.uploadCommands(data);
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER,commands);
+            } else if(UPLOAD.equals("subData")) {
+                if(!commandsAllocated) { GL15.glBufferData(GL15.GL_ARRAY_BUFFER,data.remaining(),GL15.GL_STREAM_DRAW);commandsAllocated=true; }
+                GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER,0L,data);
+            } else if(UPLOAD.equals("indirect")) {
+                GL15.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER,commands);
+                GL15.glBufferData(GL40.GL_DRAW_INDIRECT_BUFFER,data,GL15.GL_STREAM_DRAW);
+            } else GL15.glBufferData(GL15.GL_ARRAY_BUFFER,data,GL15.GL_STREAM_DRAW);
             attribute(12,4,GL11.GL_FLOAT,false,16,0);GL33.glVertexAttribDivisor(12,1);
             GL20.glUniform1i(GL20.glGetUniformLocation(program,"iceAtlas"),0);
             GL20.glUniform1i(GL20.glGetUniformLocation(program,"iceLightmap"),1);
             GL20.glUniform1i(GL20.glGetUniformLocation(program,"iceFogMode"),mode);
             GL20.glUniform1i(GL20.glGetUniformLocation(program,"iceFogDistance"),radial);
             GL15.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER,commands);
-            if(TRIANGLES) {
+            if(TRIANGLES || INDEXED_QUADS) {
                 GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER,indices);
-                GL43.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES,GL11.GL_UNSIGNED_INT,N*16L,N,20);
+                if(SUBMISSION.equals("direct") || (SHADER_REFERENCE && !nativeDraw)) {
+                    for(int n=0;n<N;n++) GL42.glDrawElementsInstancedBaseVertexBaseInstance(
+                        GL11.GL_QUADS,4,INDEXED_QUADS?GL11.GL_UNSIGNED_SHORT:GL11.GL_UNSIGNED_INT,0L,1,n*4,n);
+                } else if(SUBMISSION.equals("single")) {
+                    for(int n=0;n<N;n++) GL40.glDrawElementsIndirect(GL11.GL_QUADS,INDEXED_QUADS?GL11.GL_UNSIGNED_SHORT:GL11.GL_UNSIGNED_INT,N*16L+n*20L);
+                } else GL43.glMultiDrawElementsIndirect(TRIANGLES?GL11.GL_TRIANGLES:GL11.GL_QUADS,INDEXED_QUADS?GL11.GL_UNSIGNED_SHORT:GL11.GL_UNSIGNED_INT,N*16L,N,20);
             } else GL43.glMultiDrawArraysIndirect(GL11.GL_QUADS,N*16L,N,16);
         }
+        int error=GL11.glGetError();
+        if(error!=0)throw new AssertionError("draw GL error="+error+" native="+nativeDraw+" indexedQuads="+INDEXED_QUADS+" position="+POSITION_ATTRIBUTE);
         ByteBuffer pixels=BufferUtils.createByteBuffer(W*H*4);
         GL11.glReadPixels(0,0,W,H,GL11.GL_RGBA,GL11.GL_UNSIGNED_BYTE,pixels);
         byte[] result=new byte[pixels.remaining()];pixels.get(result);return result;
@@ -163,7 +204,7 @@ public final class NativeTerrainShaderProbe {
             GL20.glAttachShader(result,s);GL20.glDeleteShader(s);
         }
         String[] names={"icePosition","iceColor","iceUv","iceLight","iceOffset"};
-        for(int i=0;i<names.length;i++)GL20.glBindAttribLocation(result,8+i,names[i]);
+        for(int i=0;i<names.length;i++)GL20.glBindAttribLocation(result,i==0?POSITION_ATTRIBUTE:8+i,names[i]);
         GL20.glLinkProgram(result);
         if(GL20.glGetProgrami(result,GL20.GL_LINK_STATUS)==0)throw new AssertionError(GL20.glGetProgramInfoLog(result,4096));
         return result;

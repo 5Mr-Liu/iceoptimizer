@@ -10,6 +10,7 @@ final class NativeTerrainFrameAdapter {
 
     static void install(ClassNode owner, MethodNode setup) {
         NativeTerrainChunkScheduleAdapter.install(owner, setup);
+        installShaderReloadBarrier(owner);
         owner.interfaces.add("dev/rlcraft/ice/optimizer/compat/chunk/NativeTerrainWorldAccessor");
         MethodNode cameraSection = new MethodNode(Opcodes.ASM5, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
             "ice$cameraSection", "(Ljava/lang/Object;)Ljava/lang/Object;", null, null);
@@ -77,6 +78,27 @@ final class NativeTerrainFrameAdapter {
         }
         if (layer.localVariables != null) layer.localVariables.clear();
         NativeTerrainPauseAdapter.install(owner, layer, incomingLayer);
+    }
+
+    static void installShaderReloadBarrier(ClassNode owner) {
+        MethodNode pause = null;
+        for (MethodNode method : owner.methods)
+            if (method.name.equals("pauseChunkUpdates") && method.desc.equals("()V")) pause = method;
+        // This entry point exists only in OptiFine's RenderGlobal.
+        if (pause == null) return;
+        int calls = 0;
+        for (AbstractInsnNode node : pause.instructions.toArray()) {
+            if (!(node instanceof MethodInsnNode)) continue;
+            MethodInsnNode call = (MethodInsnNode) node;
+            if (call.owner.equals("net/minecraft/client/renderer/chunk/ChunkRenderDispatcher")
+                && call.name.equals("pauseChunkUpdates") && call.desc.equals("()V")) calls++;
+        }
+        if (calls != 1) throw new IllegalStateException("OptiFine chunk pause boundary changed");
+        String runtime = "dev/rlcraft/ice/optimizer/client/ClientOptimizerRuntime";
+        InsnList barrier = new InsnList();
+        barrier.add(new FieldInsnNode(Opcodes.GETSTATIC, runtime, "INSTANCE", "L" + runtime + ";"));
+        barrier.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, runtime, "beforeShaderPackChange", "()V", false));
+        pause.instructions.insert(barrier);
     }
 
     private static AbstractInsnNode codeAfter(AbstractInsnNode n) {

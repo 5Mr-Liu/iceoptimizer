@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import net.minecraft.client.renderer.BufferBuilder;
+import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.chunk.RenderChunk;
 import net.minecraft.client.renderer.chunk.CompiledChunk;
 import net.minecraft.client.renderer.vertex.VertexBuffer;
@@ -33,13 +34,15 @@ import org.lwjgl.opengl.GLContext;
  * No shadow VBO copy, runtime oracle, adaptive admission or legacy replay.
  */
 public final class NativeTerrainRenderer {
-    private static final int STRIDE = 28;
     private static final int PART_VERTICES = 65532;
     private static NativeTerrainRenderer instance;
+    private final int stride;
+    private final boolean shaderPack;
     private final NativeTerrainAllocator ranges = new NativeTerrainAllocator();
     private final NativeTerrainAllocator indexRanges = new NativeTerrainAllocator();
-    private final NativeTerrainStorage vertices = new NativeTerrainStorage(STRIDE);
+    private final NativeTerrainStorage vertices;
     private final NativeTerrainStorage indices = new NativeTerrainStorage(2);
+    private final NativeTerrainStorage commands = new NativeTerrainStorage(1);
     private final IdentityHashMap<VertexBuffer, Mesh> meshes = new IdentityHashMap<VertexBuffer, Mesh>();
     private final float[] animation = new float[3];
     private static final BlockRenderLayer[] LAYERS = BlockRenderLayer.values();
@@ -59,18 +62,23 @@ public final class NativeTerrainRenderer {
     private ByteBuffer submissions = BufferUtils.createByteBuffer(32768);
     private IntBuffer submissionInts = submissions.asIntBuffer();
     private int[] submissionWords = new int[8192];
-    private int stream, uploadStream, vao, program, vaoGeometry;
+    private int uploadStream, vao, program, vaoGeometry, vaoCommands;
     private int fogModeLocation, fogDistanceLocation;
     private boolean announced;
 
-    private NativeTerrainRenderer() {
+    private NativeTerrainRenderer(int stride) {
         if (!GLContext.getCapabilities().OpenGL43)
             throw new IllegalStateException("ICE native terrain requires OpenGL 4.3");
+        this.stride = stride;
+        shaderPack = stride == 56;
+        vertices = new NativeTerrainStorage(stride);
         radialFogSupported = GLContext.getCapabilities().GL_NV_fog_distance;
-        program = link();
-        stream = GL15.glGenBuffers();
         uploadStream = GL15.glGenBuffers();
         vao = GL30.glGenVertexArrays();
+        // OptiFine owns the pack program, uniforms, textures and draw buffers.
+        // The native arena must not replace it with ICE's unlit/fog program.
+        if (shaderPack) return;
+        program = link();
         int previous = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         GL20.glUseProgram(program);
         GL20.glUniform1i(GL20.glGetUniformLocation(program, "iceAtlas"), 0);
@@ -99,7 +107,9 @@ public final class NativeTerrainRenderer {
             builder.reset();
             return;
         }
-        if (instance == null) instance = new NativeTerrainRenderer();
+        if (instance == null) instance = new NativeTerrainRenderer(prepared.stride);
+        if (instance.stride != prepared.stride)
+            throw new IllegalStateException("ICE terrain vertex format changed without retiring old meshes");
         instance.store(context, builder, buffer, prepared);
     }
 
@@ -154,7 +164,13 @@ public final class NativeTerrainRenderer {
     }
 
     public static void beginFrame() {
-        if (instance != null) instance.framePrepared = false;
+        if (instance != null) {
+            instance.framePrepared = false;
+            // OptiFine swaps its active visible list for the shadow pass, whose
+            // traversal bypasses the ordinary camera BFS. Never reuse that
+            // pass's queue for the main camera (or vice versa).
+            if (instance.shaderPack) instance.drawQueueDirty = true;
+        }
     }
 
     /** Published with the compiled mesh, including DUMMY on cancellation. */
@@ -253,10 +269,14 @@ public final class NativeTerrainRenderer {
         frameData.pack(submissionWords);
         submissionInts.clear();
         submissionInts.put(submissionWords, 0, bytes / 4);
-        int previousArray = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, stream);
-        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, submissions, GL15.GL_STREAM_DRAW);
-        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousArray);
+        // Keep the draw/instance buffer's data store stable. Intel drivers can
+        // reject indirect draws after glBufferData replaces that same object's
+        // storage. Only the copy-only staging buffer is orphaned; growth gives
+        // the resident commands a new object, just like terrain geometry.
+        if (!shaderPack && bytes != 0) {
+            commands.ensure(bytes);
+            commands.upload(submissions, 0, uploadStream);
+        }
         frameCommands = count * 16;
         framePrepared = true;
     }
@@ -295,6 +315,10 @@ public final class NativeTerrainRenderer {
     }
 
     private void submit(BlockRenderLayer layer) {
+        if (shaderPack) {
+            submitShaderPack(layer);
+            return;
+        }
         int layerIndex = layer.ordinal();
         int previousVao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
         int previousArray = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
@@ -309,16 +333,19 @@ public final class NativeTerrainRenderer {
             GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, indices.buffer);
             if (vaoGeometry != vertices.buffer) {
                 GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vertices.buffer);
-                attribute(8, 3, GL11.GL_FLOAT, false, STRIDE, 0L);
-                attribute(9, 4, GL11.GL_UNSIGNED_BYTE, true, STRIDE, 12L);
-                attribute(10, 2, GL11.GL_FLOAT, false, STRIDE, 16L);
-                attribute(11, 2, GL11.GL_SHORT, false, STRIDE, 24L);
-                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, stream);
-                attribute(12, 4, GL11.GL_FLOAT, false, 16, 0L);
-                GL33.glVertexAttribDivisor(12, 1);
+                attribute(8, 3, GL11.GL_FLOAT, false, stride, 0L);
+                attribute(9, 4, GL11.GL_UNSIGNED_BYTE, true, stride, 12L);
+                attribute(10, 2, GL11.GL_FLOAT, false, stride, 16L);
+                attribute(11, 2, GL11.GL_SHORT, false, stride, 24L);
                 vaoGeometry = vertices.buffer;
             }
-            GL15.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, stream);
+            if (vaoCommands != commands.buffer) {
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, commands.buffer);
+                attribute(12, 4, GL11.GL_FLOAT, false, 16, 0L);
+                GL33.glVertexAttribDivisor(12, 1);
+                vaoCommands = commands.buffer;
+            }
+            GL15.glBindBuffer(GL40.GL_DRAW_INDIRECT_BUFFER, commands.buffer);
             GL20.glUseProgram(program);
             GL20.glUniform1i(fogModeLocation,
                 GL11.glIsEnabled(GL11.GL_FOG) ? GL11.glGetInteger(GL11.GL_FOG_MODE) : 0);
@@ -337,6 +364,36 @@ public final class NativeTerrainRenderer {
         if (!announced) {
             announced = true;
             System.out.println("ICE_NATIVE_TERRAIN active: resident geometry, ordered MDI, ICE shaders; no external renderer");
+        }
+    }
+
+    private void submitShaderPack(BlockRenderLayer layer) {
+        int previousVao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+        int previousArray = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+        boolean restart = GL11.glIsEnabled(GL31.GL_PRIMITIVE_RESTART);
+        boolean fixedRestart = GL11.glIsEnabled(GL43.GL_PRIMITIVE_RESTART_FIXED_INDEX);
+        try {
+            if (restart) GL11.glDisable(GL31.GL_PRIMITIVE_RESTART);
+            if (fixedRestart) GL11.glDisable(GL43.GL_PRIMITIVE_RESTART_FIXED_INDEX);
+            GL30.glBindVertexArray(vao);
+            GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, indices.buffer);
+            if (vaoGeometry != vertices.buffer) {
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vertices.buffer);
+                NativeTerrainShaderPack.setupArrays();
+                vaoGeometry = vertices.buffer;
+            }
+            NativeTerrainShaderPack.draw(submissionWords, frameCommands / 4,
+                frameData.starts[layer.ordinal()], frameData.counts[layer.ordinal()]);
+        } finally {
+            GL30.glBindVertexArray(previousVao);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousArray);
+            if (restart) GL11.glEnable(GL31.GL_PRIMITIVE_RESTART);
+            if (fixedRestart) GL11.glEnable(GL43.GL_PRIMITIVE_RESTART_FIXED_INDEX);
+            GlStateManager.resetColor();
+        }
+        if (!announced) {
+            announced = true;
+            System.out.println("ICE_NATIVE_TERRAIN active: resident geometry, ordered indexed draws, OptiFine shader pack");
         }
     }
 
@@ -382,7 +439,7 @@ public final class NativeTerrainRenderer {
     }
 
     public static int residentMeshes() { return instance == null ? 0 : instance.meshes.size(); }
-    public static long geometryCapacityBytes() { return instance == null ? 0 : instance.vertices.capacity * (long) STRIDE; }
+    public static long geometryCapacityBytes() { return instance == null ? 0 : instance.vertices.capacity * (long) instance.stride; }
 
     public static void reset(boolean contextValid) {
         NativeTerrainVisibility.reset();
@@ -391,11 +448,11 @@ public final class NativeTerrainRenderer {
         if (old == null) return;
         if (contextValid) {
             GL30.glDeleteVertexArrays(old.vao);
-            GL15.glDeleteBuffers(old.stream);
+            old.commands.delete();
             GL15.glDeleteBuffers(old.uploadStream);
             old.vertices.delete();
             old.indices.delete();
-            GL20.glDeleteProgram(old.program);
+            if (old.program != 0) GL20.glDeleteProgram(old.program);
         }
         for (Mesh mesh : old.meshes.values())
             ((NativeTerrainChunkAccessor) mesh.section.chunk).ice$nativeSection(null);

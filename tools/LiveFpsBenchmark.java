@@ -51,6 +51,8 @@ public final class LiveFpsBenchmark {
     private final boolean anyAblation = ablation || runtimeAblation || terrainAblation || modelAblation || entityAblation;
     private final boolean profileSections = Boolean.getBoolean("ice.bench.profileSections");
     private final boolean stableCreative = Boolean.getBoolean("ice.bench.stableCreative");
+    // External compatibility checks may open menus; this mode never measures FPS.
+    private final boolean interactive = Boolean.getBoolean("ice.bench.interactive");
     private final boolean fixedCameraPath = Boolean.getBoolean("ice.bench.fixedCameraPath");
     private final FixedRenderCamera renderCamera = new FixedRenderCamera();
     private final float requestedYaw = Float.parseFloat(System.getProperty("ice.bench.cameraYaw", "NaN"));
@@ -165,7 +167,7 @@ public final class LiveFpsBenchmark {
                         ? (((System.nanoTime() - sceneStart) / 1000000000L & 3L) < 2L ? .15F : -.15F) : 0;
                 }
             };
-            gpuSupported = GLContext.getCapabilities().OpenGL33;
+            gpuSupported = !interactive && GLContext.getCapabilities().OpenGL33;
             if (gpuSupported) for (int slot = 0; slot < queryStart.length; slot++) {
                 queryStart[slot] = GL15.glGenQueries(); queryEnd[slot] = GL15.glGenQueries();
             }
@@ -186,6 +188,7 @@ public final class LiveFpsBenchmark {
             mc.player.rotationPitch = originalPitch;
         }
         if (gameplay.enabled) gameplay.client(mc);
+        if (interactive && connected != 0) ChunkSwitchAudit.tick(mc);
         if (Mouse.isGrabbed()) Mouse.setGrabbed(false);
     }
 
@@ -210,6 +213,7 @@ public final class LiveFpsBenchmark {
             if(fixedCameraPath) renderCamera.update(Minecraft.getMinecraft(),yaw,originalPitch,originalYaw,
                 sceneStart==0?0:(System.nanoTime()-sceneStart)/1e9,walk && scene==2 && sceneStart!=0);
         }
+        if (interactive) return;
         if (finished) {
             if (pendingFixedCapture != null) {
                 Minecraft mc = Minecraft.getMinecraft();

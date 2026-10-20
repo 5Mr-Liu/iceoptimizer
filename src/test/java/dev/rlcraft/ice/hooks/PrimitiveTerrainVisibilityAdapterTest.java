@@ -61,6 +61,8 @@ public final class PrimitiveTerrainVisibilityAdapterTest {
             byte[] transformed = transform(PrimitiveTerrainVisibilityAdapter.Part.RENDER_GLOBAL,
                 PrimitiveTerrainVisibilityAdapter.RENDER_GLOBAL, java.nio.file.Files.readAllBytes(captured.toPath()));
             verify(transformed, PrimitiveTerrainVisibilityAdapter.RENDER_GLOBAL);
+            assertEquals(1, countCallsInMethod(transformed, "pauseChunkUpdates",
+                "dev/rlcraft/ice/optimizer/client/ClientOptimizerRuntime", "beforeShaderPackChange", "()V"));
             assertTrue(hasMethod(transformed, NativeTerrainPauseAdapter.PREFIX + "func_174970_a",
                 PrimitiveTerrainVisibilityAdapter.SETUP_TERRAIN_DESC));
             assertEquals(1,countCallsInMethod(transformed,NativeTerrainPauseAdapter.PREFIX + "func_174977_a",

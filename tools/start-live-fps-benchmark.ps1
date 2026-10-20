@@ -23,6 +23,10 @@ param(
     [switch]$ProfileSections,
     [switch]$CoarseSections,
     [switch]$StableCreative,
+    [switch]$Interactive,
+    [switch]$SwitchAudit,
+    [ValidateRange(0,256)][int]$ActiveProcessorCount = 0,
+    [ValidateRange(2,32)][int]$MaxHeapGb = 6,
     [switch]$FixedCameraPath,
     [switch]$MatchVanillaEntityDistance,
     [switch]$FlightSample,
@@ -35,6 +39,7 @@ param(
     [string]$Java = 'C:/Program Files/Eclipse Adoptium/jdk-8.0.492.9-hotspot/bin/java.exe'
 )
 $ErrorActionPreference = 'Stop'
+if ($SwitchAudit -and -not $Interactive) { throw 'SwitchAudit requires Interactive and does not measure FPS' }
 if ($KeyToggle -and -not $RuntimeAblation) { throw 'KeyToggle requires RuntimeAblation' }
 if ($KeyToggleStress -and -not $KeyToggle) { throw 'KeyToggleStress requires KeyToggle' }
 if ($KeyToggleRotation -and -not $KeyToggle) { throw 'KeyToggleRotation requires KeyToggle' }
@@ -84,7 +89,7 @@ foreach ($iceLibrary in $iceVersion.libraries) {
 $iceClassPath.Add((Join-Path $OriginalGame 'RLCraft Dregora.jar'))
 $iceFixture = if ([IO.Path]::IsPathRooted($FixtureJar)) { $FixtureJar } else { Join-Path $iceRoot $FixtureJar }
 Copy-Item -LiteralPath $iceFixture -Destination (Join-Path $iceGame 'mods/ice-live-benchmark.jar') -Force
-$iceArgs = @('-Xms2G','-Xmx6G','-XX:+UseG1GC','-Dfile.encoding=UTF-8',
+$iceArgs = @('-Xms2G',"-Xmx${MaxHeapGb}G",'-XX:+UseG1GC','-Dfile.encoding=UTF-8',
     ('-Djava.library.path=' + (Join-Path $OriginalGame 'natives-windows-x86_64')),
     ('-Dorg.lwjgl.librarypath=' + (Join-Path $OriginalGame 'natives-windows-x86_64')),
     "-Dice.bench.arm=$Arm", "-Dice.bench.warmSeconds=$WarmSeconds", "-Dice.bench.sampleSeconds=$SampleSeconds",
@@ -106,6 +111,8 @@ $iceArgs = @('-Xms2G','-Xmx6G','-XX:+UseG1GC','-Dfile.encoding=UTF-8',
     ('-Dice.bench.profileSections=' + $ProfileSections.IsPresent.ToString().ToLowerInvariant()),
     ('-Dice.bench.coarseSections=' + $CoarseSections.IsPresent.ToString().ToLowerInvariant()),
     ('-Dice.bench.stableCreative=' + $StableCreative.IsPresent.ToString().ToLowerInvariant()),
+    ('-Dice.bench.interactive=' + $Interactive.IsPresent.ToString().ToLowerInvariant()),
+    ('-Dice.bench.switchAudit=' + $SwitchAudit.IsPresent.ToString().ToLowerInvariant()),
     ('-Dice.bench.fixedCameraPath=' + $FixedCameraPath.IsPresent.ToString().ToLowerInvariant()),
     ('-Dice.bench.matchVanillaEntityDistance=' + $MatchVanillaEntityDistance.IsPresent.ToString().ToLowerInvariant()),
     ('-Dice.bench.fixedFinalCapture=' + $FixedFinalCapture.IsPresent.ToString().ToLowerInvariant()),
@@ -117,6 +124,9 @@ $iceArgs = @('-Xms2G','-Xmx6G','-XX:+UseG1GC','-Dfile.encoding=UTF-8',
     '--uuid','00000000000000000000000000000001','--accessToken','0','--userType','legacy',
     '--userProperties','{}','--versionType','Forge','--width','1920','--height','1080')
 # All credentials are dummy values for a local single-player snapshot.
+if ($ActiveProcessorCount -gt 0) {
+    $iceArgs = @("-XX:ActiveProcessorCount=$ActiveProcessorCount") + $iceArgs
+}
 if ($FlightSample) {
     $iceFlight = Join-Path $iceGame 'ice-benchmark/jfr'
     New-Item -ItemType Directory -Force -Path $iceFlight | Out-Null
@@ -172,6 +182,9 @@ $iceOptimizerFiles = @(Get-ChildItem -LiteralPath (Join-Path $iceGame 'mods') -F
 $iceOptimizerHashes = @($iceOptimizerFiles | ForEach-Object { @{name=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash} })
 @{pid=$iceProcess.Id;arm=$Arm;startUtc=[DateTime]::UtcNow.ToString('o');warmSeconds=$WarmSeconds;sampleSeconds=$SampleSeconds;
     survival=$Survival.IsPresent;scenario=$Scenario;walk=$Walk.IsPresent;ablation=$Ablation.IsPresent;runtimeAblation=$RuntimeAblation.IsPresent;keyToggle=$KeyToggle.IsPresent;keyToggleStress=$KeyToggleStress.IsPresent;terrainAblation=$TerrainAblation.IsPresent;groundStart=$GroundStart.IsPresent;optimizer=$iceOptimizerHashes;
+    interactive=$Interactive.IsPresent;
+    switchAudit=$SwitchAudit.IsPresent;
+    activeProcessorCount=$ActiveProcessorCount;maxHeapGb=$MaxHeapGb;
     fixtureSha256=(Get-FileHash -LiteralPath (Join-Path $iceGame 'mods/ice-live-benchmark.jar') -Algorithm SHA256).Hash;
     classDumpAgentSha256=$(if ($DumpRenderClasses -or $ProfileSections -or $DeterministicCombat) { (Get-FileHash -LiteralPath $iceAgent -Algorithm SHA256).Hash } else { $null });
     deterministicCombat=$DeterministicCombat.IsPresent;

@@ -22,6 +22,7 @@ public final class ChunkPrimitiveSortBridge {
     private ChunkPrimitiveSortBridge() {
     }
 
+    /** Camera coordinates have already been translated into the buffer's vertex space. */
     public static boolean trySort(ChunkBufferAccessor accessor, float x, float y, float z) {
         if (!OptimizerBridge.isEnabled(MODULE) || accessor == null) return false;
         try {

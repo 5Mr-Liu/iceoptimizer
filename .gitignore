@@ -60,3 +60,9 @@ local.properties
 /rollback/
 /codex-session-bridge.toml
 /installer.log
+
+# Durable local release copies and archived development history
+/releases/
+/local-archives/
+__pycache__/
+*.py[cod]

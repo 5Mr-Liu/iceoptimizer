@@ -11,7 +11,7 @@ import net.minecraft.util.BlockRenderLayer;
 /** CPU preparation travels with the dispatcher's existing cancellable upload. */
 public final class NativeTerrainUploadTask {
     private static final ThreadLocal<Prepared> CURRENT = new ThreadLocal<Prepared>();
-    private static final Prepared EMPTY = new Prepared(0, null, null);
+    private static final Prepared EMPTY = new Prepared(0, 0, null, null);
 
     private NativeTerrainUploadTask() { }
 
@@ -45,26 +45,31 @@ public final class NativeTerrainUploadTask {
         int count = compiled.isLayerEmpty(layer) ? 0 : builder.getVertexCount();
         if (count == 0) return EMPTY;
         ByteBuffer source = builder.getByteBuffer();
-        if (builder.getVertexFormat().getSize() != 28 || source.remaining() != count * 28L
-            || count < 0 || (count & 3) != 0)
-            throw new IllegalStateException("ICE native terrain needs the 28-byte quad layout: stride="
-                + builder.getVertexFormat().getSize() + ", count=" + count + ", mode=" + builder.getDrawMode()
+        int stride = builder.getVertexFormat().getSize();
+        if ((stride != 28 && stride != 56) || source.remaining() != count * (long) stride
+            || count < 0 || (count & 3) != 0 || builder.getDrawMode() != 7)
+            throw new IllegalStateException("ICE native terrain needs a block quad layout (28 or 56 bytes): stride="
+                + stride + ", count=" + count + ", mode=" + builder.getDrawMode()
                 + ", position=" + source.position() + ", limit=" + source.limit()
                 + ", layer=" + layer + ", chunk=" + chunk.getPosition());
         TerrainVertexSpace space = TerrainVertexSpace.capture(builder, chunk);
         if (space == null) throw new IllegalStateException("ICE terrain coordinate layout unavailable");
-        NativeTerrainFaceIndex faces = layer == BlockRenderLayer.TRANSLUCENT ? null
+        // Shader packs may move vertices (foliage/water) and render back faces.
+        // Static CPU face planes cannot reject geometry in those programs.
+        NativeTerrainFaceIndex faces = stride == 56 || layer == BlockRenderLayer.TRANSLUCENT ? null
             : new NativeTerrainFaceIndex(source, space.scale, space.translation);
-        return new Prepared(count, space, faces);
+        return new Prepared(count, stride, space, faces);
     }
 
     /** No world, chunk or pooled vertex-buffer references survive in this value. */
     static final class Prepared {
         final int count;
+        final int stride;
         final TerrainVertexSpace space;
         final NativeTerrainFaceIndex faces;
-        Prepared(int count, TerrainVertexSpace space, NativeTerrainFaceIndex faces) {
+        Prepared(int count, int stride, TerrainVertexSpace space, NativeTerrainFaceIndex faces) {
             this.count = count;
+            this.stride = stride;
             this.space = space;
             this.faces = faces;
         }

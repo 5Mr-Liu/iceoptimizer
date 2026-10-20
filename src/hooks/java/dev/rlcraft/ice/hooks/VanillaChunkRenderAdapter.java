@@ -64,6 +64,7 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     private static final String RAW_FLOATS = "field_179000_c";
     private static final String VERTEX_COUNT = "field_178997_d";
     private static final String VERTEX_FORMAT = "field_179011_q";
+    private static final String[] SORT_OFFSETS = {"field_179004_l", "field_179005_m", "field_179002_n"};
     private static final String GL_BUFFER_ID = "field_177365_a";
     private static final String VBO_FORMAT = "field_177363_b";
     private static final String VBO_COUNT = "field_177364_c";
@@ -228,6 +229,7 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
         requireField(node, RAW_FLOATS, "Ljava/nio/FloatBuffer;");
         requireField(node, VERTEX_COUNT, "I");
         requireField(node, VERTEX_FORMAT, "L" + VERTEX_FORMAT_OWNER + ";");
+        for (String offset : SORT_OFFSETS) requireField(node, offset, "D");
         rejectMethod(node, ORIGINAL_SORT, SORT_DESCRIPTOR);
         MethodNode sort = requireMethod(node, SORT_METHOD, SORT_DESCRIPTOR);
         if (countCalls(sort, "java/util/Arrays", "sort",
@@ -246,9 +248,18 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
             SORT_DESCRIPTOR, signature, exceptions);
         LabelNode fallback = new LabelNode();
         wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        wrapper.instructions.add(new VarInsnNode(Opcodes.FLOAD, 1));
-        wrapper.instructions.add(new VarInsnNode(Opcodes.FLOAD, 2));
-        wrapper.instructions.add(new VarInsnNode(Opcodes.FLOAD, 3));
+        // BufferBuilder stores translated vertices, while callers supply world
+        // camera coordinates. Match vanilla's (float)((double)camera + offset)
+        // before comparing distances. Keep the original locals for the paused
+        // or rejected path, whose incoming method applies its own translation.
+        for (int axis = 0; axis < 3; axis++) {
+            wrapper.instructions.add(new VarInsnNode(Opcodes.FLOAD, axis + 1));
+            wrapper.instructions.add(new InsnNode(Opcodes.F2D));
+            wrapper.instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            wrapper.instructions.add(new FieldInsnNode(Opcodes.GETFIELD, BUFFER_BUILDER, SORT_OFFSETS[axis], "D"));
+            wrapper.instructions.add(new InsnNode(Opcodes.DADD));
+            wrapper.instructions.add(new InsnNode(Opcodes.D2F));
+        }
         wrapper.instructions.add(new MethodInsnNode(Opcodes.INVOKESTATIC, SORT_BRIDGE,
             "trySort", "(L" + BUFFER_ACCESS + ";FFF)Z", false));
         wrapper.instructions.add(new JumpInsnNode(Opcodes.IFEQ, fallback));

@@ -7,7 +7,7 @@ try {
     $iceRuntime = (Get-Content 'build/performance-audit/entity-runtime-classpath.txt' -Raw).Trim()
     $iceOutput = $OutputDirectory
     New-Item -ItemType Directory -Force -Path "$iceOutput/classes" | Out-Null
-    & "$JavaBin/javac.exe" -proc:none -encoding UTF-8 -source 8 -target 8 -cp $iceRuntime -d "$iceOutput/classes" tools/LiveFpsBenchmark.java tools/EmptyTerrainUploadProbe.java tools/FixedRenderCamera.java tools/LiveGameplayScenario.java tools/LiveCombatRandom.java tools/TerrainSceneCapture.java
+    & "$JavaBin/javac.exe" -proc:none -encoding UTF-8 -source 8 -target 8 -cp $iceRuntime -d "$iceOutput/classes" tools/LiveFpsBenchmark.java tools/ChunkSwitchAudit.java tools/EmptyTerrainUploadProbe.java tools/FixedRenderCamera.java tools/LiveGameplayScenario.java tools/LiveCombatRandom.java tools/TerrainSceneCapture.java
     if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed' }
     & "$JavaBin/jar.exe" cf "$iceOutput/mapped-fixture.jar" -C "$iceOutput/classes" .
     if ($LASTEXITCODE -ne 0) { throw 'Fixture packaging failed' }

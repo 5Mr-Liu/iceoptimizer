@@ -1,0 +1,58 @@
+ICE 1.20.1 透明面排序修复体验版
+日期：2026-10-20
+
+基础版本恢复
+------------
+修订 10 原 C 盘目录已被移入回收站。本次从回收站找回其冻结源码/构建包，
+核验 ZIP SHA256 后直接提取 source/ 中全部 1183 个文件建立新工作副本。
+冻结源码与回收站工作树逐文件一致，避免从较旧 D 盘源码重新拼装修订 10。
+基础源码 ZIP SHA256：
+9525E8BB5911C56EBFCED22D2DEB25C1DB7CFEA88968DC3408C7A58D98AF8216
+基础最终 JAR SHA256：
+87366EF37895A924350C572FA4E6F381AC30DD0D4AEAD6D4ADC04058E5B3F1A2
+它也与修订 10 Intel 最终实机副本中的 JAR 一致。
+新工作副本：C:/Users/32884/.codex/scratch/ice-release-1.20.1-20261020。
+
+合并范围
+--------
+透明面排序修复前的 VanillaChunkRenderAdapter 与冻结源码逐字节一致。
+合入该适配器修复、ChunkPrimitiveSortBridge 坐标契约注释，以及
+ChunkSortCoordinatesTest；版本改为 1.20.1，保持 Minecraft 1.12.2。
+ICE Mod 注解、VERSION、联机版本范围、Gradle 版本和制品元数据一致。
+Profiler 版本随统一构建版本更新，但体验包仅分发 Optimizer。
+核显稳定命令存储、GPU 实际大小检查、光影切换屏障代码保持修订 10 原样。
+
+修复内容
+--------
+排序前使用 (float)((double)worldCamera + builderOffset) 转为顶点坐标系。
+三个轴均保留原版 double 加法与 float 转换的顺序。
+优化暂停或拒绝接管时，原方法仍收到未经转换的世界坐标。
+不改变纹理、几何或透明面内部顶点，不移除现有稳定排序优化。
+详细发现过程见 ICE-1.20-TRANSPARENT-SORT-FIX.txt。
+
+验证与交付
+----------
+本次进行编译、自动回归、制品完整性与隔离启动检查，结果写入随包
+BUILD-INFO.txt 和 test-summary.json；用户负责游戏内冰面场景实测。
+构建阶段没有启动整合包、采集 FPS 或修改原游戏目录。
+修订 10 的历史核显/光影测试不作为 1.20.1 新制品已经实机通过的声明。
+
+最终自动验证：完整 build / optimizerBundleZip / verifyArtifactStartup 在 1 分 29 秒内成功。
+常规测试 1310 项：1207 通过，103 可选跳过，0 失败、0 错误；制品启动检查 10 项通过。
+核显存储、地形命令提交、光影任务屏障和客户端切换类与修订 10 最终 JAR 逐字节一致。
+1.20.1 JAR SHA256：81EE4E824735E129BE35538416E5D0F7BF5009D8A91A989880F7F8C4A329026C
+
+完整源码已同步回 D:/Program Files/pycharmProject/minecraftMode/ice。
+覆盖前文件保存在 build/fps-target/1.20.1-source-backup-20261020。
+体验包和完整源码/构建证据 ZIP 保存在 D 盘项目 build/playtest，避免仅依赖 C 盘临时目录。
+
+发布整理（2026-10-20）
+---------------------
+Git 仓库恢复到 D 盘项目目录，后续以该目录维护 main 分支。
+发布标签 v1.20.1，作为体验用预发布；包含完整修订 8–10 和透明排序修复。
+发布整理只更新文档、归档规则和制品说明，没有再次修改已验证的运行时代码。
+安装 JAR 与上述自动验证使用的制品哈希保持一致。
+本地最终发布附件保存在 releases/1.20.1，避免 Gradle clean 删除。
+旧构建记录和旧目录中的未提交 2.0 开发代码分别压缩归档，未混入本次源码。
+详见 PROJECT-LAYOUT.txt。GitHub 自动生成源码包对应发布提交；额外源码/构建包
+同时保存该提交源码与已有自动验证证据，历史构建日志中的本机路径仅作追溯。

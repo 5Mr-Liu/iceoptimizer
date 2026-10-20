@@ -1,0 +1,82 @@
+ICE 1.20 修订 8 光影兼容修复工作记录（2026-10-14）
+
+用户本轮明确允许启动整合包测试，覆盖之前仅编译打包的安排。
+本轮开始时 D 盘剩余空间为 0，构建缓存、安装包和隔离游戏全部位于 C 盘。
+未修改原游戏 mods、config、options 或存档；未改动已发布 v1.20 标签/附件。
+当前工作副本：C:/Users/32884/.codex/scratch/ice-release-1.20-20261014
+
+实际复现：
+- 原发布修订 7 + Complementary v4.6 - RLCraft Edit v1.0，进入世界时崩溃。
+  13:33:56 报告：Batching chunks / IndexOutOfBoundsException，
+  BufferBuilder.pos -> Better Foliage ModelRenderer.render / RenderLeaves.render。
+  不把崩溃界面的 Better Foliage 提示直接当作根因。
+- 无 ICE 对照：同一原世界的新副本、同一光影和资源包，正常进入世界。
+  13:43:28 连接；13:43:54 保存了可见地形、树叶和阴影的截图，之后正常退出。
+- 以上为正确性复现，不是 FPS 对比，期间没有性能增幅结论。
+
+源码/实际字节码证据：
+- 修订 7 NativeTerrainUploadTask 限定 28 字节布局。
+- OptiFine G5 ShadersRender.setupArrayPointersVbo 使用 56 字节布局，
+  包含法线、mid-UV、切线和材质 ID；不能丢弃这些数据。
+- RenderGlobal 保留 ShadersRender.pre/postRenderChunkLayer 调用；
+  阴影 pass 会切换 renderInfos，且不经过普通相机 BFS。
+- NativeTerrainRenderer 原来无条件绑定 ICE 程序，会覆盖光影包程序。
+- 本地 Nothirium 参考实现同样为光影使用逐区块矩阵的专门路径，
+  不能原样套用无光影的 GL43 批量提交。未复制其实现或打包第三方代码。
+
+修复实现：
+- 保留 28 字节无光影路径；原生 arena 接受完整 56 字节光影网格。
+- 光影仍由 ICE 持有顶点/索引存储，并按顺序索引绘制；不复制原 VBO。
+- 使用 OptiFine 原程序和顶点属性设置，保留原 uniform、纹理、FBO、draw buffers。
+- 逐段应用区块模型矩阵，透明块及分段顺序不变。
+- 不对可能被光影变形的几何使用静态 CPU 面剔除。
+- 每次光影地形 setup 使绘制队列失效，分别读取阴影/主相机的当前可见列表。
+- 无运行时 oracle、性能门禁、自动关光影或失败后旧渲染重放。
+
+初轮验证：
+- optimizerBundleZip 编译/重混淆/打包通过。
+- --tests '*NativeTerrain*'：28 项，0 失败、0 错误、0 跳过。
+- 候选 1 JAR SHA256：
+  ECDBB6A9CF18245329379D9EBCE5FFBBD0B074229C508014FDA264CC3F0363D7
+- 候选 1：13:48:14 进入世界；13:50:12 F6 关闭、13:50:32 恢复；
+  13:51:04 正常退出。初轮视角偏向天空，仅用作运行和切换检查。
+
+最终安装包验证：
+- JAR SHA256：
+  D6D54D4975091964BA99C33ACDB70BF043F264C8F0391AC74F3E2D099FF56854
+- optimizerBundleZip 编译、重混淆、打包成功，日志 120-hotfix8-shader-build.log。
+- 最终交互测试采用新的隔离存档副本，Java 8u492、Forge 14.23.5.2860、
+  OptiFine G5、RTX 4060 Laptop / OpenGL 4.6；保留同一整合包资源和画质。
+- 使用独立 interactive 测试夹具自动进入副本、创造模式、固定天气和地面
+  俯仰并持续转向；允许打开菜单，不采集 FPS/GPU 查询，不生成性能结论。
+- 14:01:51 日志确认 ICE OptiFine shader pack 路径；14:01:54 进入世界。
+  观察到完整地形、建筑、树叶和阴影；未见黑屏或大片地形消失。
+- 14:03:17 F6 关闭，14:03:32 F6 恢复，均在同秒记录切换完成；
+  恢复后再次确认 ICE 光影路径，未出现永久卡死或崩溃。
+- 在真实游戏菜单中关闭光影：14:05:04 No shaderpack loaded；
+  14:05:07 ICE 恢复 ordered MDI 路径，回到游戏检查地形和建筑正常。
+- 在菜单重新选择 Complementary：14:09:04 加载光影；14:09:09 ICE
+  恢复 shader pack 路径。回到游戏，地形、树叶和阴影正常，持续转向。
+- 14:12:28 请求正常退出，游戏执行保存玩家、世界及区块流程。
+- 最终副本未生成 crash-reports；未复现旧版 Batching chunks 异常。
+  整合包原有缺失贴图/模型等启动信息不属于本轮“零错误”承诺。
+- F2 截图分别为 14.03.06（光影开）、14.06.52（光影关）、
+  14.12.08（光影恢复），保存在最终副本 screenshots 目录。
+
+结论与范围：
+- 旧版在本轮同一光影组合中的崩溃未在修复版复现，两个顶点布局与光影
+  原程序/阴影队列兼容问题已修复。不能据崩溃界面将责任直接归给 Better Foliage，
+  也未证明其堆栈中每一步与旧版限制的精确因果链。
+- 未降低画质、移除树叶、自动关闭光影或重新引入旧渲染自动回退。
+- 这次为正确性与切换检查，不是 FPS 对比；没有新的性能增幅结论。
+  尚未覆盖其他光影包、不同显卡或长时间探索；光影模式采用逐段有序绘制，
+  不能直接套用无光影 MDI 的历史性能结果。
+- 优化器版本仍为 1.20，体验包标记 hotfix8。没有改写已发布 v1.20 修订 7。
+
+证据目录（本地）：
+- build/fps-target/shader-research/
+- build/fps-target/shader-native-candidate-tests.log
+- C:/Users/32884/.codex/scratch/ice-fps-target/live-120-shader-hotfix7-repro
+- C:/Users/32884/.codex/scratch/ice-fps-target/live-120-shader-no-ice-control
+- C:/Users/32884/.codex/scratch/ice-fps-target/live-120-shader-native-candidate1
+- C:/Users/32884/.codex/scratch/ice-fps-target/live-120-shader-hotfix8-interactive

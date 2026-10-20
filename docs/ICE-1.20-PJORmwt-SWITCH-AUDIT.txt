@@ -1,0 +1,99 @@
+ICE 1.20 修订 8 / PjoRmwt 光影与 F6 交叉检查（2026-10-16）
+
+任务：用户在另一台电脑测试，无法确认具体触发顺序，要求同时检查光影和 F6。
+报告：https://mclo.gs/PjoRmwt
+原始报告已保存到 C:/Users/32884/.codex/scratch/ice-log-review-PjoRmwt-20261015/PjoRmwt.log。
+
+已确认与不能确认的内容：
+- 报告明确记录 BufferBuilder.finishDrawing 的 IllegalStateException: Not building!，
+  由 RenderChunk.postRenderBlocks / rebuildChunk / ChunkRenderWorker 调用。
+- 报告来自 Java 8u503、Forge 2860、OptiFine G5、FermiumASM 5.28、ICE 1.20，
+  CPU 有 8 个逻辑处理器，最大堆 8 GB；用户确认实际为修订 8。
+- No OpenGL context 出现在工作线程收集崩溃元数据时，不能当作显卡不支持的证据。
+- 单独的崩溃报告没有实际显卡/驱动、光影包名称、F6 时间线或更早的异常，
+  因此不能把 F6、光影、ICE、FermiumASM 或 RLFoliage 中的任一方直接定为根因。
+
+实际加载后的字节码检查：
+- 使用只读 Java Instrumentation agent 保存实际加载的 BufferBuilder、RenderChunk、
+  ChunkRenderWorker、ChunkRenderDispatcher、ChunkCompileTaskGenerator 和 OptiFine 类。
+- ICE 上传调用的 BufferBuilder.reset 不改变 isDrawing；不能把它当作提前 finish。
+- F6 先取消每个 RenderChunk 的任务，再排空 dispatcher，之后重建两种所有者的几何。
+- Worker 在 rebuildChunk 返回后才归还取消任务的 builder；上传取消回调在编译完成后安装。
+  本次未找到在编译过程中重复归还 builder 的证据。
+- 实际 OptiFine pauseChunkUpdates 循环处理上传并以 100 ms poll 收齐 builder；
+  resumeChunkUpdates 归还后清空暂停列表。未把 Forge 原版方法误当成 OptiFine 的实际实现。
+- FermiumASM resetGameState 在卸载世界之前调用 IStateful.resetAll；BufferBuilder 的
+  resetState 会 finish 当前构建。这可以产生崩溃恢复期的并发干扰，但尚无证据证明
+  PjoRmwt 正是这种情况，也没有吞掉 Not building 或擅自修改 FermiumASM 的恢复流程。
+
+第一轮隔离实机检查（已完成）：
+- 使用修订 8 冻结 JAR，SHA256：
+  D6D54D4975091964BA99C33ACDB70BF043F264C8F0391AC74F3E2D099FF56854。
+- 新建原世界副本：
+  C:/Users/32884/.codex/scratch/ice-fps-target/live-120-hotfix8-switch-audit-20261016。
+- Java 8u492，RTX 4060 Laptop，Complementary v4.6 - RLCraft Edit v1.0。
+- 测试夹具 tools/ChunkSwitchAudit.java 仅在隔离副本和显式 SwitchAudit 参数下工作，
+  不进入优化器 JAR。F6 通过实际 KeyBinding 队列触发并核对暂停状态；光影使用实际
+  GuiSlotShaders.selectIndex 的 setShaderPack、uninit 顺序，并核对 shaderPackLoaded。
+- 75 步包括无光影 F6、带光影 F6、光影与所有权交叉切换，以及区块重建过程中切光影。
+  共 28 次 F6、14 次光影选择（含最初 OFF）、28 次主动区块重建、4 次截图和完成步骤。
+- 00:06:55 开始，00:08:43 COMPLETE steps=75，随后正常保存退出。
+- 没有 Not building、Batching chunks 或新 crash-reports。
+  最终截图有可见地形、植被、建筑、实体和阴影；该短时检查不证明远景已全部加载。
+- 此为正确性测试，不采集 FPS，不作为性能增幅证据。
+
+第二轮隔离检查（修订 8，发现失败）：
+- 新副本 live-120-hotfix8-switch-audit-8cpu-20261016，PID 3484。
+- -XX:ActiveProcessorCount=8 / -Xmx8G，jcmd VM.flags 确认实际参数生效。
+  未加载类转储 agent；其余仍为同一冻结修订 8 JAR 和相同 75 步夹具。
+- 28 次 F6 和交叉切换完成；00:16:22 第 63 步在 ICE 开启且有大量构建任务时
+  关闭光影，停在 setShaderPack 内部，未返回，不能记为通过。
+- 00:18:34 jstack 显示客户端在 ArrayBlockingQueue.take -> dispatcher.stopChunkUpdates
+  -> RenderGlobal.loadRenderers -> RLTweaker ShadersHook.reloadResources -> loadShaderPack。
+  两条 Chunk Batcher 已不在活跃线程表中。后续 Silent Lib 队列溢出是客户端停止消费后的现象。
+- 保存 8cpu-step63-jstack.txt 和 8cpu-step63.hprof（只来自此隔离副本）。
+  堆中的完整异常文本为：ICE native terrain needs a block quad layout (28 or 56 bytes):
+  stride=28, count=4569, mode=7, position=0, limit=127932, layer=Mipped Cutout,
+  chunk=MutableBlockPos{x=-1504, y=64, z=2320}。
+- 实际加载的 Shaders 字节码确认 resumeChunkUpdates 在 RLTweaker.reloadResources 之前；
+  后者并行重新烘焙模型，最后 loadRenderers 才取消旧区块任务。旧任务可在两者之间恢复，
+  将重载期间的数据送进 ICE 上传准备。非完整四边形检查抛错后，worker 退出而未归还 builder，
+  客户端在重载末尾等待该 builder，导致卡死。
+- 保留堆和线程证据后，仅结束了身份校验匹配该隔离副本的 PID 3484；原游戏未操作。
+- 这次抓到的是切换卡死和不完整网格异常，仍未直接复现用户报告中的 Not building!。
+
+修订 9 修复：
+- 在 native RenderGlobal 的 OptiFine pauseChunkUpdates 入口增加一次冷路径调用。
+- 复用 F6 的 beforeChange/afterChange：先取消并排空旧任务，再清理旧网格、标记重建。
+  之后才进入 OptiFine 的格式切换，恢复时没有旧任务可以与模型重新烘焙交叉。
+- 此调用不改变 F6 开关状态，在 F6 关闭时同样保护资源切换；非 native 后端不安装。
+- 没有吞掉异常、自动关闭光影、丢弃不完整四边形或增加逐帧诊断。
+- 已添加编译中任务取消/归还回归，以及实际 OptiFine RenderGlobal 注入验证。
+
+最终构建与复测：
+- 完整 build / optimizerBundleZip / verifyArtifactStartup 成功。
+- 常规测试总数 1302，1172 通过、130 个可选测试跳过、0 失败、0 错误。
+  制品启动检查 10 项，全部通过。实际捕获的 OptiFine RenderGlobal 注入测试已执行。
+- 首次完整构建暴露旧测试夹具缺少任务创建调用，以及 C 盘副本缺失 Nothirium 测试依赖；
+  补全夹具结构、从原工作目录复制已有依赖后完整重跑通过，没有跳过失败测试。
+- 最终 JAR SHA256：A682ABF12C480619FEF1C8A159B4B648C73937FF8246763A20DE5195600DD6B4。
+- 新副本 live-120-hotfix9-switch-audit-8cpu-20261016，PID 19516。
+  使用相同夹具、8 个逻辑处理器、8 GB 堆，未带类转储 agent。
+- 00:33:15 开始；之前卡死的第 63 步在 00:34:31 开始，2225 ms 后返回。
+  00:35:02 完成全部 75 步，00:35:04 保存并退出。28 次 F6、14 次光影选择，
+  28 次区块重建全部完成，最终 ICE 开启。没有生成 crash-reports。
+- 完整日志未出现 Not building、Batching chunks、不完整网格异常或 ClientTicks 队列溢出。
+  光影 F6 和最终截图可见地形、植被、实体和阴影；最终截图还可见建筑。
+- 仅验证本机 RTX 4060 / OptiFine G5 / Complementary 组合；不是跨显卡保证，
+  未进行正式 FPS 对比，不宣称达到性能目标。原报告的精确同源关系仍未确认。
+
+本轮变更范围：
+- 外部切换测试夹具与启动参数（ActiveProcessorCount、MaxHeapGb），只读运行时类导出。
+- tools/collect-ice-crash.ps1 和 .cmd：复制另一台电脑的完整日志、最近历史日志、
+  配置、模组身份和显卡驱动信息到本地 ZIP，不上传、不修改原游戏。
+  已使用 Windows PowerShell 在第一轮副本上实际执行成功。
+- 针对抓到的资源切换竞态完成修订 9 本地体验包；没有修改远程仓库或替换已发布标签。
+- D 盘无空闲空间，工作副本、构建和所有隔离测试证据均保存在 C 盘；原游戏未修改。
+
+若出错电脑仍然崩溃，需要同一次运行的完整 latest.log 或对应历史日志。
+即使本机同一压力流程通过，也不能据此确认另一台电脑的 Not building! 已完全解决。

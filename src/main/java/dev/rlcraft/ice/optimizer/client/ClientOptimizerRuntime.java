@@ -146,6 +146,16 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
 
     public boolean isRuntimePaused() { return OptimizerRegistry.isRuntimePaused(); }
 
+    /** Cold boundary before OptiFine changes vertex formats or rebakes models. */
+    public void beforeShaderPackChange() {
+        if (nativeTerrainPause == null) return;
+        // OptiFine resumes its builders before RLTweaker rebakes the models.
+        // Queued tasks must not wake into that mixed-format interval. Reuse
+        // the F6 cancellation/drain protocol without changing the pause flag.
+        nativeTerrainPause.beforeChange();
+        nativeTerrainPause.afterChange();
+    }
+
     public boolean isCoreModPresent() { return coreModPresent; }
 
     public void worldChanged() {

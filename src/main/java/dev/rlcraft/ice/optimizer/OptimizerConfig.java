@@ -314,7 +314,7 @@ public final class OptimizerConfig {
             "Use ICE's own resident terrain renderer without an external rendering mod.",
             "Enabled by default, including the first launch and older configs without this setting.",
             "Owns terrain storage and submission directly, without legacy VBO copies or runtime sampling.",
-            "Requires OpenGL 4.3 and a restart; shader packs are not yet supported by this candidate."
+            "Requires OpenGL 4.3 and a restart. OptiFine G5 shader packs use their original programs with ICE-owned indexed geometry."
         })
         @Config.RequiresMcRestart
         public boolean nativeTerrainRenderer = true;

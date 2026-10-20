@@ -1,0 +1,60 @@
+ICE 1.20 冰面/水面透明排序检查（2026-10-20）
+
+报告：冰覆盖水面时，部分区域显示水色，伴随大块方格和条纹。
+用户尚未做同位置 F6 或光影对比。本次首先检查源码与本地安装包。
+
+版本核实：
+- 原游戏 mods 中 ice-rlcraft-optimizer-1.20.jar 的 SHA256 为
+  B7E06766E5FD932ABB5398B4DC9F64F5BF1F77884E75D09DBE14F04748D319AC，
+  与已存档的修订 7 一致，并不是修订 10。
+- 2026-10-19 本机日志为 RTX 4060 Laptop、无光影、ICE ordered MDI。
+  这只是本地实例状态，不能据此认定用户截图一定来自该实例。
+- 原修订 10 的 C 盘工作副本和交付目录已经不存在。
+  D 盘可用源码包含修订 8 的光影改动，未包含修订 9/10 的全部修复。
+  本次未将该旧基线重新打包冒充修订 10 或其后续版本。
+
+明确发现的问题：
+- VanillaChunkRenderAdapter 的 BufferBuilder.sortVertexData 包装器直接把
+  世界摄像机坐标传给 ChunkPrimitiveSortBridge。
+- BufferBuilder 顶点已经包含 xOffset/yOffset/zOffset，通常是区块或
+  Render Regions 原点的负值。原版排序实际使用：
+      localCamera = (float)((double)worldCamera + builderOffset)
+- 旧优化漏了这一步，导致非零区块坐标下按错误观察点排序。
+  本地安装包字节码也包含 trySort，却没有读取三个偏移字段。
+- 透明面混合依赖绘制顺序，该错误足以使叠放的冰、水等出现错误遮盖。
+  尚未获得用户截图地点的实机开关对照，不把代码复现等同于完整画面复现。
+- 透明层在 NativeTerrainUploadTask 中不建立 CPU 面裁剪索引；此次修复
+  不改材质 UV、不调整深度偏移，也不改几何、四边形顺序或显卡判断。
+
+修复：
+- 包装器读取三个 double 偏移，按原版 F2D/DADD/D2F 顺序转换后再调用
+  优化排序。每次排序只转换一次摄像机坐标，保留现有稳定排序算法。
+- 不覆盖原始方法参数。优化暂停或拒绝接管时，原版仍接收世界坐标，
+  由原版自行转换，避免 F6 关闭后发生双重偏移。
+- 安装前检查三个字段存在且类型为 double。
+- 为 ChunkPrimitiveSortBridge 补充入参坐标空间说明。
+
+回归验证：
+- 新增 ChunkSortCoordinatesTest，执行真正经适配器改写的包装器。
+- 旧代码：3 项测试中 2 项断言失败，分别为坐标转换与原版排序不一致；
+  原始参数分支通过。before-tests.log 保存的是已修正测试初始化后的结果。
+- 修复后：新测试通过。覆盖普通区块、Render Regions、大坐标和小数偏移；
+  包含“先 double 相加、再 float 转换”的精度约束与暂停分支原始参数。
+- 排序结果以 Minecraft 真实 BufferBuilder.sortVertexData 为参照，
+  不是重新复制一份 ICE 距离公式。28/56 字节布局、8/511/512/513/2048
+  四边形、三个非零原点共 30 组，全部顶点负载逐字节相同。
+- 定向 javac/JUnit 验证覆盖新测试、原排序测试、适配器测试。
+- 标准 Gradle 定向 test 构建在 1 分 25 秒内成功，16 项通过，0 失败、
+  0 错误、0 跳过。提供真实 Forge SRG JAR，适配器集成检查实际执行。
+  XML 已保存在证据目录 test-results，汇总为 test-summary.json。
+
+证据目录：
+D:/Program Files/pycharmProject/minecraftMode/ice/build/fps-target/120-ice-water-sort-20261020
+
+交付边界：
+本次修改源码和测试，没有改动原游戏 mods/config/options/saves，
+没有启动游戏、替换用户 JAR、发布新安装包或更新远程仓库。
+后续打包须先恢复修订 10 完整基线，合并本修复，保留光影切换与核显修复。
+
+后续（同日）：用户要求合并修订 10 并升级为 1.20.1。已从回收站找回
+完整冻结源码与原安装包，并核验哈希。后续记录见 ICE-1.20.1-RELEASE-NOTES.txt。

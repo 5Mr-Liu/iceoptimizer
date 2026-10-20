@@ -8,6 +8,7 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 import net.minecraft.client.renderer.chunk.ChunkCompileTaskGenerator;
 import net.minecraft.client.renderer.chunk.CompiledChunk;
 import net.minecraft.client.renderer.chunk.RenderChunk;
@@ -18,6 +19,36 @@ import sun.misc.Unsafe;
 import static org.junit.Assert.*;
 
 public class NativeTerrainPauseLifecycleTest {
+    @Test public void shaderBoundaryDrainsCompilingTaskBeforeModelsCanChange() throws Exception {
+        Field field = Unsafe.class.getDeclaredField("theUnsafe");
+        field.setAccessible(true);
+        WaitingChunk chunk = (WaitingChunk) ((Unsafe) field.get(null)).allocateInstance(WaitingChunk.class);
+        chunk.task = new ChunkCompileTaskGenerator(chunk, ChunkCompileTaskGenerator.Type.REBUILD_CHUNK, 0.0);
+        chunk.task.setStatus(ChunkCompileTaskGenerator.Status.COMPILING);
+        CountDownLatch finishCompilation = new CountDownLatch(1);
+        ArrayBlockingQueue<Boolean> returned = new ArrayBlockingQueue<>(1);
+        Thread worker = new Thread(() -> {
+            try {
+                finishCompilation.await();
+                // The real worker must not enqueue an upload after cancellation.
+                returned.add(chunk.task.getStatus() == ChunkCompileTaskGenerator.Status.DONE);
+            } catch (InterruptedException failure) { Thread.currentThread().interrupt(); }
+        });
+        worker.start();
+        try {
+            NativeTerrainPauseLifecycle.cancelAndDrain(new Object[] {chunk}, () -> {
+                finishCompilation.countDown();
+                try { assertEquals(Boolean.TRUE, returned.poll(2, TimeUnit.SECONDS)); }
+                catch (InterruptedException failure) { throw new AssertionError(failure); }
+            });
+            assertTrue(chunk.task.isFinished());
+        } finally {
+            finishCompilation.countDown();
+            worker.join(2000);
+        }
+        assertFalse(worker.isAlive());
+    }
+
     @Test public void rebuildRetiresBothOwnersWithoutReplacingChunksOrBufferIds() throws Exception {
         Field field = Unsafe.class.getDeclaredField("theUnsafe");
         field.setAccessible(true);

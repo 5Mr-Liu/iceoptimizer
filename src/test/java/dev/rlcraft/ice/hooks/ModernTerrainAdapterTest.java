@@ -225,6 +225,13 @@ public final class ModernTerrainAdapterTest {
             ModernTerrainAdapter.UPLOAD_CHUNK, ModernTerrainAdapter.UPLOAD_CHUNK_DESC,
             null, null);
         upload.visitCode();
+        // Keep the worker-future branch present, as in the real dispatcher.
+        upload.visitInsn(Opcodes.ACONST_NULL);
+        upload.visitInsn(Opcodes.ACONST_NULL);
+        upload.visitMethodInsn(Opcodes.INVOKESTATIC,
+            "com/google/common/util/concurrent/ListenableFutureTask", "create",
+            "(Ljava/lang/Runnable;Ljava/lang/Object;)Lcom/google/common/util/concurrent/ListenableFutureTask;", false);
+        upload.visitInsn(Opcodes.POP);
         upload.visitVarInsn(Opcodes.ALOAD, 0);
         upload.visitVarInsn(Opcodes.ALOAD, 2);
         upload.visitInsn(Opcodes.ACONST_NULL);
