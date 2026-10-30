@@ -1,0 +1,44 @@
+ICE 1.20.2 双截棍动画与世界切换修复
+日期：2026-10-30；体验用预发布。
+适用：Minecraft 1.12.2 / Forge 14.23.5.2860 / RLCraft Dregora / Java 8。
+
+双截棍动画
+----------
+Better Survival 双截棍攻击时切换到 spinning 模型，并通过动态贴图播放旋转。
+OptiFine G5 原实现把普通物品贴图也交给“地形动画”开关，因此关闭时旋转冻结。
+现在保留 items/、item/ 路径下的物品贴图动画，普通地形继续遵循原设置。
+不改变水、岩浆、火、传送门独立开关，也不修改武器伤害、冷却或连击。
+补丁独立于地形后端，不随 F6 暂停；没有 OptiFine 时跳过，不识别的结构保留原实现。
+非标准路径如 custom/blade 不自动放行。其他物品动画也会恢复，仍有必要的更新成本。
+定位与原始开发验证见 ICE-1.20.1-OPTIFINE-ITEM-ANIMATIONS.txt。
+
+世界生命周期
+------------
+合并原本地 1.20.1 hotfix：在客户端 Tick 和渲染帧开始前观察世界对象变更。
+切换时先取消并排空旧区块任务，再释放网格并标记重建，避免已经失效的区块仍被
+视为编译完成。同一世界只处理一次。保留此前透明排序、光影与 GPU 存储修复。
+此项修复针对已确认的代码缺陷，不代表所有联机透明现象均已实机确认解决。
+详细证据见 ICE-1.20.1-MULTIPLAYER-WORLD-LIFECYCLE.txt。
+
+版本与安装
+----------
+Gradle、Optimizer/Profiler 版本常量、JAR 元数据统一为 1.20.2，
+Optimizer 联机版本范围为 [1.20.2]，启动标识为 optifine-item-animations-20261030。
+仅分发 Optimizer，Profiler 随统一工程构建以验证隔离，但不作为本次附件。
+退出客户端和服务端，移出旧 optimizer，再分别安装本次唯一的 JAR。
+联机双方均需升级，不混装 1.20.1；保留配置和存档。
+
+验证与附件
+----------
+构建检查包括完整 build / optimizerBundleZip / verifyArtifactStartup，
+另以真实 OptiFine G5 和 Better Survival 1.5.4 运行 6 项定向回归，覆盖
+32 种动画选项组合、23 种双截棍旋转资源、纹理流补丁安装顺序及异常结构回退。
+常规 1320 项：1184 通过、136 项因缺少可选输入跳过、0 失败；
+最终制品启动检查 10 项全部通过。另行传入真实外部 JAR 的定向回归 6 项全部通过、无跳过。
+制品哈希和完整计数记录在附件 BUILD-INFO.txt、test-summary.json 和 SHA256SUMS.txt。
+未启动游戏、进行 GPU 画面检查或测量 FPS，不承诺具体帧率提升。
+
+JAR：可直接安装的优化器。
+playtest.zip：同一 JAR、安装说明、发布说明和构建摘要。
+source-and-build.zip：发布提交源码、构建日志和测试证据，不含第三方模组或本机存档。
+SHA256SUMS.txt：上述三个附件的 SHA-256 校验值。

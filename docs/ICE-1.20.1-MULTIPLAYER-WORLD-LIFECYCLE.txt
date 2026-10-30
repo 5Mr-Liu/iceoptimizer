@@ -1,0 +1,75 @@
+ICE 1.20.1 联机世界生命周期修复（本地体验包 hotfix 1）
+日期：2026-10-24
+启动日志构建标识：multiplayer-lifecycle-20261024
+基线提交：70ca9c0c73d4de8bf98eec6af0f44fa35ba0ad58
+
+问题与证据范围
+用户反馈服务端、客户端均安装 ICE 1.20.1 后，进入服务器看到整个世界区块透明。
+尚未按 F6 对照。本次没有拿到该联机故障对应的两端日志；本地最新日志为单人世界，
+不能用来确认远端现象。以下修复针对源码中确认的缺陷，不声称已实机复现或彻底解决
+所有透明地形问题。本次按用户偏好不启动游戏，实机体验由用户完成。
+
+服务端检查
+IceMod 已通过 SidedProxy 分离 OptimizerClientProxy / OptimizerServerProxy。
+专用服务端有 ServerOptimizerRuntime 和独立配置过滤，不会启动客户端地形渲染。
+ServerRuntimeIsolationTest 覆盖服务端入口的客户端类依赖隔离。
+ICE 未替换原版区块网络数据包；ChunkSectionNbtAdapter 是保存 NBT 的接入。
+因此不能将该现象简单解释为“没有实现服务端入口”。
+
+已确认的客户端缺陷
+Minecraft 1.12.2 的 runGameLoop 先执行 scheduledTasks，再运行本帧客户端 Tick，
+然后进入 onRenderTickStart / 渲染。本帧 elapsedTicks 可以为 0，联网消息仍可先
+改变 minecraft.world。核对来源为本地 Forge 1.12.2-14.23.5.2860、stable_39 源码。
+
+旧 ClientOptimizerController 只在 ClientTickEvent.START 检查世界对象。新世界
+可能先经历渲染和网格上传，下一次 Tick 才调用 worldChanged()。
+旧 worldChanged() 直接 NativeTerrainRenderer.reset(true)，释放 GPU 网格，却
+没有同步取消在途构建任务或将当前 CompiledChunk 标记为需要重建。
+这会产生“区块仍显示编译完成、网格已经被清空”的不一致状态；该路径能解释缺失
+地形，但与本次具体远端反馈的对应关系仍需用户实测或日志确认。
+
+实现
+1. 将世界对象检查抽为 observeWorld()，在 ClientTick START 和 RenderTick START
+   均调用；发生变化时先执行失效流程，完成后记录 lastWorld。同一对象不重复重建。
+2. 自有地形的 worldChanged() 复用已有 NativeTerrainPauseLifecycle：先对所有当前
+   渲染区块 stopCompileTask，再排空 dispatcher；随后重置原生网格，将区块编译状态
+   置为 DUMMY，清理旧顶点计数并按普通后台队列重新构建。
+   沿用已有 F6/光影切换的取消顺序，避免先等待构建器而留下未完成上传任务的死锁。
+3. 不改变优化开关状态；原有默认开启、F6 暂停/恢复保持。世界切换的清理只在对象
+   改变时执行，不向正常帧加入区块扫描。
+4. IceMod 启动日志输出构建标识；内部版本与远端版本范围保持 1.20.1。
+   文件名单独标为 multiplayer-hotfix1，避免与已发布的 1.20.1 混淆。
+
+未改动范围
+未改服务端区块发送协议、世界生成、存档格式、透明排序算法、核显缓冲实现或光影
+顶点格式。未替换原游戏目录里的 JAR，未上传或覆盖已发布的 v1.20.1 Release。
+
+回归证据
+新增 ClientWorldLifecycleTest 的 4 项测试使用实际控制器/运行时事件入口和模拟地形
+切换生命周期，不创建 Minecraft 世界、OpenGL 上下文或服务器：
+- 联网创建世界后先渲染零 Tick 帧，后续 Tick 不得再次清空这一帧的网格。
+- 连续世界切换与退出在下一帧开始前被观察，同一个世界不重复失效。
+- 先 Tick 后渲染时同样只切换一次。
+- worldChanged 必须同时调用取消/排空与网格重建步骤。
+未修改生产代码时以上 4 项全部断言失败，修复后全部通过。
+与 NativeTerrainPauseLifecycleTest、ClientOptimizerPauseTest、
+ServerRuntimeIsolationTest 合计 10 项定向测试通过。
+已有 NativeTerrainPauseLifecycleTest 验证取消等待上传的任务、回收构建器及网格
+重建标记，不将仅有事件顺序的测试称为 GPU 实测。
+
+完整 build / optimizerBundleZip / verifyArtifactStartup 成功，用时 58 秒。
+常规测试 1314 项：1216 通过，98 项因缺少可选输入跳过，0 失败、0 错误。
+制品启动检查 10 项全部通过。传入真实 Forge SRG、OptiFine G5、OTG 9.7、
+RenderLib 与 IvToolkit JAR；没有因可选测试跳过而声称覆盖全部模组组合。
+最终 JAR 与原发布包相比，仅 IceMod、ClientOptimizerController、
+ClientOptimizerRuntime 三个类的内容变化；另有一个空目录条目的差异。
+服务端、渲染后端、字节码补丁等其余文件的内容与原发布包一致。
+制品哈希和详细结果另见体验包 BUILD-INFO.txt 与 test-summary.json。
+构建证据保存在 build/fps-target/1.20.1-multiplayer-fix-20261024。
+
+用户联机复验
+退出客户端和服务端，分别替换旧 ICE Optimizer，仅保留一个 ICE Optimizer JAR。
+两端均可使用该包，保留配置和存档；启动日志应含 multiplayer-lifecycle-20261024。
+先在默认开启状态重新连接同一服务器，观察区块是否持续正常显示；再检查退出重连、
+维度切换与 F6 关闭/恢复。若仍透明，保留客户端与服务端 latest.log，并记录 F6 后
+是否恢复。原版 v1.20.1 与本包使用相同版本握手，排查时需通过启动日志区分构建。

@@ -3,6 +3,7 @@ sourceSets.test.runtimeClasspath += sourceSets.early.output + sourceSets.hooks.o
 
 def optionalTestInputs = [
     foamfixJar: 'ice.foamfix.jar', optifineJar: 'ice.optifine.jar',
+    betterSurvivalJar: 'ice.bettersurvival.jar',
     konkreteJar: 'ice.konkrete.jar', rusticJar: 'ice.rustic.jar',
     xaeroWorldMapJar: 'ice.xaero.worldmap.jar', renderLibJar: 'ice.renderlib.jar',
     srpJar: 'ice.srp.jar', srpMixinsJar: 'ice.srp.mixins.jar',

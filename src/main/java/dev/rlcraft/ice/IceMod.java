@@ -19,8 +19,9 @@ import org.apache.logging.log4j.Logger;
 public final class IceMod {
     public static final String MOD_ID = "iceoptimizer";
     public static final String NAME = "ICE RLCraft Optimizer";
-    public static final String VERSION = "1.20.1";
-    public static final String REMOTE_VERSION_RANGE = "[1.20.1]";
+    public static final String VERSION = "1.20.2";
+    public static final String BUILD_REVISION = "optifine-item-animations-20261030";
+    public static final String REMOTE_VERSION_RANGE = "[1.20.2]";
     public static final Logger LOGGER = LogManager.getLogger(NAME);
 
     @SidedProxy(
@@ -32,7 +33,7 @@ public final class IceMod {
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
         proxy.preInit(event.getModConfigurationDirectory().getParentFile());
-        LOGGER.info("ICE Optimizer {} 启动；客户端与服务端必须安装同一版本", VERSION);
+        LOGGER.info("ICE Optimizer {}（{}）启动；客户端与服务端必须安装同一版本", VERSION, BUILD_REVISION);
     }
 
     @Mod.EventHandler

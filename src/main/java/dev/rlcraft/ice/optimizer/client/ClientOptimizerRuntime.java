@@ -160,7 +160,15 @@ public final class ClientOptimizerRuntime implements ClientRuntimeAccess {
 
     public void worldChanged() {
         if (epochs == null) return;
-        NativeTerrainRenderer.reset(true);
+        if (nativeTerrainPause != null) {
+            // Clearing GPU storage alone leaves clean CompiledChunks claiming
+            // to own geometry. Cancel/drain uploads before eviction, then mark
+            // the current view's chunks for rebuilding as with an F6 handoff.
+            nativeTerrainPause.beforeChange();
+            nativeTerrainPause.afterChange();
+        } else {
+            NativeTerrainRenderer.reset(true);
+        }
         epochs.invalidateWorld();
         epochs.invalidateViewFrustum();
         ModernRendererRuntime renderer = modernRenderer;

@@ -1,0 +1,54 @@
+ICE 1.20.1 — OptiFine 关闭地形动画时保留物品贴图动画
+日期：2026-10-30；本地开发测试包，Minecraft 仍为 1.12.2。
+
+定位依据
+检查本地 OptiFine_1.12.2_HD_U_G5.jar 对原版类应用补丁后的字节码：
+TextureMap.isTerrainAnimationActive 先检查水、岩浆、火、传送门，
+再放行时钟和指南针，剩余所有图集精灵都返回 Config.isAnimatedTerrain()。
+因此“地形动画：关”实际也冻结了大部分动态物品贴图。
+用户进一步确认目标为双截棍。检查本地 better_survival-1.5.4.jar：
+ItemNunchaku 的 spinning 属性读取 NunchakuCombo.isSpinning()，
+攻击时模型切换为 item*nunchakuspinning，其旋转效果通过动态贴图实现。
+包内 23 种双截棍旋转模型全部引用 mujmajnkraftsbettersurvival:items/ 下的贴图，
+对应 .mcmeta 全部设置 animation.frametime=1。
+例如钻石双截棍使用 items/itemdiamondnunchakuspinning，火龙骨双截棍使用
+items/firedragonbonenunchakuspinning。OptiFine 的通用判断正好会冻结这些攻击贴图。
+无需修改 RLCombat 的手臂动作、双截棍攻击判定或连击逻辑。
+
+修复范围
+只扩展上述方法最后的通用判断：当原判断为 false 时，
+允许资源路径以 items/ 或 item/ 开头的精灵继续更新。
+资源域名不参与匹配；blocks/items/ 等包含同名片段的地形路径不会被放行。
+保留原本的所有特殊分支，也不会改写 OptiFine 的用户设置。
+基础图集、独立纹理、法线和高光遍历共用这个判断，继续沿用原更新顺序。
+不改动画速度、帧索引、插值、武器伤害或攻击冷却。
+
+这是独立启动兼容补丁，适用于 ICE 自有地形、旧渲染层及 Nothirium 组合，
+不随 F6 暂停。没有 OptiFine 时跳过；目标结构改变时保留原字节码。
+使用非标准路径（例如 custom/blade）的资源不自动放行，以免恢复地形更新。
+其他物品的动态贴图也会恢复，因此仍有其必要的纹理更新成本。
+
+验证
+6 项定向回归全部通过、无跳过。
+使用本地真实 G5 补丁，
+在 JVM 内执行实际的 isTerrainAnimationActive 方法，覆盖 32 种动画选项组合，
+比较水/岩浆/火/传送门/时钟/指南针/普通地形在修改前后的结果。
+同时检查实时切换地形开关、与现有纹理流补丁的两种安装顺序、
+重复安装及未知结构拒绝、无 OptiFine 跳过、渲染层关闭时的独立注册。
+另从 Better Survival JAR 中逐一读取 23 种双截棍的真实旋转模型和动画元数据，
+以真实资源名执行 G5 判断：关闭地形动画时原实现全部拒绝，补丁全部放行。
+验证日志：build/attack-animation-audit/nunchaku-tests.log。
+完整构建 build optimizerBundleZip verifyArtifactStartup 通过：常规测试 1319 项，
+1184 通过、135 项可选测试跳过、零失败；最终制品启动检查 10 项全部通过。
+随后补充的双截棍资源测试与前述定向回归单独运行，使用真实外部 JAR，不跳过。
+完整构建日志：build/attack-animation-audit/full-build.log。
+未运行游戏内武器画面验证，也没有测量 FPS；不承诺具体帧率提升数值。
+
+实机复验
+退出游戏，使用本次本地生成的 optimizer JAR 替换旧 optimizer，勿重复安装。
+在相同场景和同一把武器下分别开启/关闭“地形动画”，确认物品动态贴图继续播放，
+普通地形动态贴图随开关停启。再测试攻击、切换武器和资源重载。
+重点检查按住攻击时双截棍持续旋转，以及松开攻击后恢复静止模型。
+
+制品：build/libs/ice-rlcraft-optimizer-1.20.1.jar
+SHA-256：4d2a1e386ab68a68ef5cdb05481752a3fb88df9cddae8a9c3b32a70e01a6dfc4

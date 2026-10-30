@@ -1,13 +1,13 @@
 # ICE RLCraft Optimizer + ICE Performance Recorder
 
-> **最新预发布 / Latest pre-release:** [v1.20.1 — 透明面排序与兼容性修复](https://github.com/5Mr-Liu/iceoptimizer/releases/tag/v1.20.1)
+> **最新预发布 / Latest pre-release:** [v1.20.2 — 双截棍动画与世界切换修复](https://github.com/5Mr-Liu/iceoptimizer/releases/tag/v1.20.2)
 > **当前稳定版 / Current stable release:** [v1.0.13](https://github.com/5Mr-Liu/iceoptimizer/releases/tag/v1.0.13)
 
-当前源码为 **ICE 1.20.1 透明面排序修复体验版**，以完整的 1.20 修订 10 为基础，修复透明面排序遗漏区块坐标偏移的问题。保留修订 10 的核显缓冲区修复、此前光影切换和区块任务修复；优化默认开启，F6 关闭/恢复当前已启用优化。**1.20.1 是模组版本，Minecraft 版本仍为 1.12.2。** 冰面场景仍待用户实测，见 [1.20.1 说明](docs/ICE-1.20.1-RELEASE-NOTES.txt)。历史 `v1.20` 附件仍对应修订 7。
+当前源码为 **ICE 1.20.2 双截棍动画与世界切换修复体验版**。关闭 OptiFine“地形动画”后，双截棍旋转及其他物品贴图动画继续更新；同时修复客户端世界切换时区块任务与网格的清理顺序。保留 1.20.1 的透明排序、光影和核显兼容修复。**1.20.2 是模组版本，Minecraft 版本仍为 1.12.2。** 游戏内效果和 FPS 尚待实测，见 [1.20.2 说明](docs/ICE-1.20.2-RELEASE-NOTES.txt)。历史 `v1.20` 附件仍对应修订 7。
 
-Current source: ICE 1.20.1, based on the complete 1.20 revision 10 source. Translucent sorting now converts the camera into the vertex buffer's coordinate space. GPU storage and shader-switch fixes are retained. Optimizations remain enabled by default; F6 pauses/resumes enabled optimizations. Minecraft remains 1.12.2. This pre-release is for user playtesting; historical v1.20 assets remain revision 7.
+Current source: ICE 1.20.2. Nunchaku spinning and other item texture animations continue with OptiFine Terrain Animated disabled. Client world changes now drain old chunk tasks and rebuild terrain before rendering. The 1.20.1 sorting, GPU and shader fixes are retained. Minecraft remains 1.12.2. This pre-release still needs in-game validation; historical v1.20 assets remain revision 7.
 
-变更与验证记录：[1.20.1 发布说明](docs/ICE-1.20.1-RELEASE-NOTES.txt)、[修订 8 光影工作记录](docs/ICE-1.20-SHADER-COMPATIBILITY.txt)、[修订 9 切换检查](docs/ICE-1.20-PJORmwt-SWITCH-AUDIT.txt)、[修订 10 GPU 存储兼容性](docs/ICE-1.20-GPU-STORAGE-COMPATIBILITY.txt)。不将历史结果作为当前制品的性能或稳定性保证。
+变更与验证记录：[1.20.2 发布说明](docs/ICE-1.20.2-RELEASE-NOTES.txt)、[双截棍动画修复](docs/ICE-1.20.1-OPTIFINE-ITEM-ANIMATIONS.txt)、[世界生命周期修复](docs/ICE-1.20.1-MULTIPLAYER-WORLD-LIFECYCLE.txt)、[1.20.1 发布说明](docs/ICE-1.20.1-RELEASE-NOTES.txt)。不将历史结果作为当前制品的性能或稳定性保证。
 
 > [!IMPORTANT]
 > **兼容范围 / Compatibility scope:** 从 1.0.5 起，ICE 仅支持 RLCraft Dregora，不再支持原版 RLCraft。原版 RLCraft 用户请继续使用 1.0.4 或更早版本；由原版 RLCraft 模组组合引起的启动或注入冲突不在 1.0.5 及后续版本的支持范围内。<br>
@@ -31,11 +31,11 @@ Optimizer and Profiler can be installed independently, each with one JAR. Starti
 
 1. 完全退出 Minecraft，并备份实例。<br>Exit Minecraft completely and back up the instance.
 2. 从 `mods` 删除所有旧版 ICE Optimizer/Profiler JAR，禁止混装。<br>Remove every older ICE Optimizer/Profiler JAR from `mods`; never mix versions.
-3. 仅优化：将 `ice-rlcraft-optimizer-1.20.1.jar` 放入 `mods`；升级时先移出旧 optimizer 和旧 Core，避免重复安装。<br>Optimizer only: put `ice-rlcraft-optimizer-1.20.1.jar` in `mods`; remove the previous optimizer and old Core from mods when upgrading.
+3. 仅优化：将 `ice-rlcraft-optimizer-1.20.2.jar` 放入 `mods`；升级时先移出旧 optimizer 和旧 Core，避免重复安装。<br>Optimizer only: put `ice-rlcraft-optimizer-1.20.2.jar` in `mods`; remove the previous optimizer and old Core from mods when upgrading.
 4. 本次 Release 仅包含 Optimizer，不包含新构建的 Profiler；分析器可单独管理。<br>This release contains Optimizer only; no newly built Profiler is attached.
 5. 联机时，客户端与服务端必须使用相同版本的 optimizer。<br>For multiplayer, client and server must use the same optimizer version.
 
-下载本次 Release 的 JAR，或解压 `ice-rlcraft-optimizer-1.20.1-playtest.zip` 后取出 JAR。源码和构建证据 ZIP 供开发排查使用。自行构建的安装文件位于 `build/libs`，`build/intermediates` 是内部产物。<br>
+下载本次 Release 的 JAR，或解压 `ice-rlcraft-optimizer-1.20.2-playtest.zip` 后取出 JAR。源码和构建证据 ZIP 供开发排查使用。自行构建的安装文件位于 `build/libs`，`build/intermediates` 是内部产物。<br>
 Download the release JAR or extract the playtest ZIP. The source-and-build ZIP contains development evidence. Local builds place installation files in `build/libs`; `build/intermediates` contains internal artifacts.
 
 自有地形要求 **OpenGL 4.3**，保留整合包已有的 RenderLib。使用该路径时移出 Nothirium，关闭 OptiFine Smart Animations、Fast Render 和 Render Regions。修订 8 为 OptiFine G5 光影保留完整扩展顶点和原光影程序；修订 7 仍要求关闭光影。不支持 OpenGL 4.3 时，在启动前设置 `B:nativeTerrainRenderer=false` 并重启。若安装 Nothirium，ICE 会采用兼容方案而不启用自有地形；同一个 JAR 不绑定某台电脑，但兼容性与性能仍需要在目标机器确认。
@@ -48,7 +48,10 @@ Download the release JAR or extract the playtest ZIP. The source-and-build ZIP c
 - **性能取证 / Profiling** — 自动捕获卡顿、帧/Tick/JVM 指标、精确探针、根因聚类和离线 HTML 报告。<br>Automatic hitch capture, frame/tick/JVM metrics, precise probes, root-cause clustering, and offline HTML reports.
 - **内容保留 / Content preservation** — 不通过删除内容、降低画质、跳过 Tick 或异步修改世界取得提升。<br>No content removal, quality reduction, skipped ticks or asynchronous world mutation is used to obtain gains.
 
-## 1.20.1 状态 / 1.20.1 Status
+## 1.20.2 状态 / 1.20.2 Status
+
+- 关闭“地形动画”后保留双截棍旋转；真实 OptiFine G5 判断与 Better Survival 1.5.4 的 23 种旋转资源已有回归覆盖，游戏内与 FPS 尚待验证。
+- 合并客户端世界生命周期修复；已有零 Tick 入服、维度切换和断连回归，不将其作为所有联机透明问题均已解决的保证。
 
 - 透明面排序新增真实 BufferBuilder 对照，覆盖普通/光影布局、区块偏移和 F6 回退；本次冰面画面仍待实测。
 - 合并修订 10 的核显缓冲区分配检查与稳定间接命令存储，继续要求自有地形路径具备 OpenGL 4.3。
@@ -66,6 +69,8 @@ Validation scope is recorded per revision in the work logs. F6 rebuilds terrain 
 
 - `config/ice-optimizer.cfg`
 - `config/ice-profiler.cfg`
+
+1.20.2 新增 OptiFine 兼容：关闭“地形动画”时，仍更新 `items/`、`item/` 路径下的武器及物品贴图动画，地形贴图遵循原设置。这是启动兼容补丁，不随 F6 暂停；尚未进行具体武器的实机验证，范围见 [物品动画修复记录](docs/ICE-1.20.1-OPTIFINE-ITEM-ANIMATIONS.txt)。
 
 默认情况下，ICE 不会联网补全缺少纹理的玩家头颅资料：方块、物品栏/JEI、快捷栏、手持/掉落及佩戴头颅均在进入 `SkinManager`/CustomSkinLoader 前应用同一策略；已有 `textures` 数据照常渲染，不完整资料直接使用默认皮肤。将 `settings.allowIncompletePlayerSkullProfileLookup=true` 可恢复资料解析，再由 `settings.skullProfileAsync` 选择有界异步或原版同步模式；更改后需要重启客户端。<br>
 By default, ICE does not resolve incomplete player-skull profiles online: placed, inventory/JEI, hotbar, held/dropped, and worn heads all apply the same policy before entering `SkinManager`/CustomSkinLoader; existing `textures` data still renders, while incomplete profiles use the default skin. Set `settings.allowIncompletePlayerSkullProfileLookup=true` to permit resolution, then use `settings.skullProfileAsync` to choose bounded asynchronous or vanilla synchronous lookup; restart the client after changing it.
@@ -117,13 +122,14 @@ Java 8 is required.
 .\gradlew.bat clean build optimizerBundleZip --no-daemon
 ```
 
-1.20.1 的 `build optimizerBundleZip verifyArtifactStartup` 构建通过：常规测试 1310 项，其中 1207 通过、103 项可选跳过、零失败；另有 10 项最终制品启动检查全部通过。透明排序与真实 Minecraft 实现的 30 组结果逐字节一致。本次未进行游戏内、GPU 或 FPS 实测。<br>
-The 1.20.1 build passed 1207 regular tests with 103 optional skips and no failures, plus all 10 final-artifact startup checks. Thirty translucent-sort comparisons matched the real Minecraft implementation byte for byte. In-game visuals, GPU behavior and FPS have not been tested for this artifact.
+1.20.2 的 `build optimizerBundleZip verifyArtifactStartup` 构建通过：常规测试 1320 项，其中 1184 通过、136 项可选跳过、零失败；另有 10 项最终制品启动检查全部通过。另以真实 OptiFine G5 / Better Survival 1.5.4 完成 6 项定向回归，覆盖 32 种开关组合和 23 种双截棍旋转资源。本次未进行游戏内、GPU 或 FPS 实测。<br>
+The 1.20.2 build passed 1184 regular tests with 136 optional skips and no failures, plus all 10 final-artifact startup checks. Six additional targeted checks use the actual OptiFine G5 and Better Survival 1.5.4 files, covering 32 option combinations and 23 nunchaku spinning resources. In-game visuals, GPU behavior and FPS have not been tested for this artifact.
 
 项目目录、发布产物与历史归档的组织方式见 [目录说明](docs/PROJECT-LAYOUT.txt)。历史实验结论和被否定的方案保留在 `docs/`，继续开发前应先阅读对应工作记录。
 
 ## 文档 / Documentation
 
+- [1.20.2 发布说明 / Release notes](docs/ICE-1.20.2-RELEASE-NOTES.txt)
 - [1.20.1 发布说明 / Release notes](docs/ICE-1.20.1-RELEASE-NOTES.txt)
 - [透明面排序修复 / Translucent sort fix](docs/ICE-1.20-TRANSPARENT-SORT-FIX.txt)
 - [项目目录与归档 / Project layout](docs/PROJECT-LAYOUT.txt)

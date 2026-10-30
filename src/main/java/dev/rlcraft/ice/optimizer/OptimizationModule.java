@@ -136,7 +136,8 @@ public enum OptimizationModule {
     NBT_CONSTANT_KEYS("nbt-constant-keys", "NBT 常量键生命周期缓存", true),
     SOUND_FILTERS("sound-filters", "SoundFilters 房间搜索与参数复用"),
     VANILLA_AUTOSAVE_SLICES("vanilla-autosave-slices", "普通自动保存分散调度", true),
-    NOTHIRIUM_FOG_COMPATIBILITY("nothirium-fog-compatibility", "Nothirium 原版雾效兼容");
+    NOTHIRIUM_FOG_COMPATIBILITY("nothirium-fog-compatibility", "Nothirium 原版雾效兼容"),
+    OPTIFINE_ITEM_ANIMATIONS("optifine-item-animations", "OptiFine 关闭地形动画时保留物品动画");
 
     private static final Map<String, OptimizationModule> MODULES_BY_ID;
     private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;

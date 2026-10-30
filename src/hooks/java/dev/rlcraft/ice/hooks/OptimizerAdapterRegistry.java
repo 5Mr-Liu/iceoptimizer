@@ -11,6 +11,7 @@ final class OptimizerAdapterRegistry {
     static {
         Map<String, OptimizerBytecodeAdapter> adapters = new HashMap<String, OptimizerBytecodeAdapter>();
         adapters.put("nothirium-fog-compatibility", new NothiriumFogAdapter());
+        adapters.put("optifine-item-animations", new OptifineItemAnimationAdapter());
         adapters.put("foamfix-pbo-upload", new FoamFixTextureUploadAdapter());
         adapters.put("vanilla-texture-parameters", new VanillaTextureUploadAdapter());
         adapters.put("optifine-dynamic-lights", new OptifineDynamicLightsAdapter(

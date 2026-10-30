@@ -77,6 +77,7 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.START) return;
+        observeWorld();
         toggleOptimizationsIfPressed();
         ClientOptimizerRuntime.INSTANCE.beginClientTick();
         if (!dev.rlcraft.ice.early.EarlyRendererOwnership.hasDedicatedTerrainRenderer() && ++shaderPollTicks >= 20) {
@@ -90,10 +91,13 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
                     "§c[ICE] Optimizer 启动补丁未注册 / inactive；字节码优化当前没有生效。"));
             }
         }
+    }
+
+    private void observeWorld() {
         Object world = minecraft.world;
         if (world != lastWorld) {
-            lastWorld = world;
             ClientOptimizerRuntime.INSTANCE.worldChanged();
+            lastWorld = world;
         }
     }
 
@@ -113,6 +117,10 @@ public final class ClientOptimizerController implements IResourceManagerReloadLi
     @SubscribeEvent
     public void onRenderTick(TickEvent.RenderTickEvent event) {
         if (event.phase == TickEvent.Phase.START) {
+            // Network tasks can replace the world in a frame with zero client
+            // ticks. Retire the old world before rendering/uploading the new
+            // one, rather than deleting its fresh meshes on the next tick.
+            observeWorld();
             if (!dev.rlcraft.ice.early.EarlyRendererOwnership.hasDedicatedTerrainRenderer())
                 renderLifecycle.beforeFrame(minecraft, ClientOptimizerRuntime.INSTANCE);
             ClientOptimizerRuntime.INSTANCE.beginFrame();
