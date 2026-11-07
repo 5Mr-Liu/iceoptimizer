@@ -57,6 +57,9 @@ class NativeTerrainPauseLifecycle {
             chunk.setCompiledChunk(CompiledChunk.DUMMY);
             for (int layer = 0; layer < 4; layer++) {
                 VertexBuffer buffer = chunk.getVertexBufferByLayer(layer);
+                // RenderChunk leaves these slots null when constructed with
+                // VBOs disabled. Still invalidate and dirty the chunk below.
+                if (buffer == null) continue;
                 ChunkVertexBufferAccessor access = (ChunkVertexBufferAccessor) buffer;
                 if (access.ice$capacityBytes() != 0) buffer.bufferData(EMPTY);
                 access.ice$setVertexCount(0);

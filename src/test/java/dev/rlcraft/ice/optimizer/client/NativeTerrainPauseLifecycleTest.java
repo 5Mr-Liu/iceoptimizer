@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
+import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.client.renderer.chunk.ChunkCompileTaskGenerator;
 import net.minecraft.client.renderer.chunk.CompiledChunk;
 import net.minecraft.client.renderer.chunk.RenderChunk;
@@ -19,6 +20,49 @@ import sun.misc.Unsafe;
 import static org.junit.Assert.*;
 
 public class NativeTerrainPauseLifecycleTest {
+    @Test public void rebuildHandlesRealChunksConstructedWithoutVbos() {
+        boolean supported = OpenGlHelper.vboSupported;
+        try {
+            // The real constructor leaves every layer null in display-list mode.
+            // No GL context is needed when VBO support is disabled.
+            OpenGlHelper.vboSupported = false;
+            RenderChunk first = new RenderChunk(null, null, 0);
+            RenderChunk second = new RenderChunk(null, null, 1);
+            first.setCompiledChunk(new CompiledChunk());
+            second.setCompiledChunk(new CompiledChunk());
+            first.setNeedsUpdate(true);
+            second.clearNeedsUpdate();
+            NativeTerrainPauseLifecycle.rebuildMeshes(new Object[] {first, null, second});
+            for (RenderChunk chunk : new RenderChunk[] {first, second}) {
+                assertSame(CompiledChunk.DUMMY, chunk.getCompiledChunk());
+                assertTrue(chunk.needsUpdate());
+                assertFalse(chunk.needsImmediateUpdate());
+                for (int layer = 0; layer < 4; layer++) assertNull(chunk.getVertexBufferByLayer(layer));
+            }
+        } finally {
+            OpenGlHelper.vboSupported = supported;
+        }
+    }
+
+    @Test public void missingLayersDoNotPreventRetiringExistingVbos() throws Exception {
+        Field field = Unsafe.class.getDeclaredField("theUnsafe");
+        field.setAccessible(true);
+        Unsafe unsafe = (Unsafe) field.get(null);
+        ReusableChunk chunk = (ReusableChunk) unsafe.allocateInstance(ReusableChunk.class);
+        chunk.buffers = new TestBuffer[4];
+        TestBuffer buffer = (TestBuffer) unsafe.allocateInstance(TestBuffer.class);
+        buffer.capacity = 112;
+        buffer.count = 4;
+        chunk.buffers[2] = buffer;
+        NativeTerrainPauseLifecycle.rebuildMeshes(new Object[] {chunk});
+        assertSame(CompiledChunk.DUMMY, chunk.compiled);
+        assertTrue(chunk.needsUpdate());
+        assertFalse(chunk.needsImmediateUpdate());
+        assertEquals(0, buffer.count);
+        assertEquals(0, buffer.capacity);
+        assertEquals(1, buffer.uploads);
+    }
+
     @Test public void shaderBoundaryDrainsCompilingTaskBeforeModelsCanChange() throws Exception {
         Field field = Unsafe.class.getDeclaredField("theUnsafe");
         field.setAccessible(true);

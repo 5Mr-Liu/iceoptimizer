@@ -5,7 +5,7 @@ import dev.rlcraft.ice.optimizer.bridge.OptimizerBridge;
 import net.minecraft.nbt.NBTBase;
 import net.minecraft.nbt.NBTTagCompound;
 
-/** Replaces only ItemStack's compound comparisons; item/count/damage/caps stay original. */
+/** Compound comparison only; item checks and Capability serialization retain their original order. */
 public final class EquipmentNbtBridge {
     private static final int MODULE = OptimizationModule.VANILLA_EQUIPMENT_NBT.ordinal();
     private EquipmentNbtBridge() { }

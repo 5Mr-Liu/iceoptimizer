@@ -210,6 +210,9 @@ public final class ModernTerrainAdapterTest {
             ModernTerrainAdapter.RENDER_LAYER, ModernTerrainAdapter.RENDER_LAYER_DESC,
             null, null);
         method.visitCode();
+        method.visitInsn(Opcodes.ACONST_NULL);
+        method.visitIntInsn(Opcodes.BIPUSH,7);
+        method.visitMethodInsn(Opcodes.INVOKEVIRTUAL,"net/minecraft/client/renderer/vertex/VertexBuffer","func_177358_a","(I)V",false);
         method.visitInsn(Opcodes.RETURN);
         method.visitMaxs(0, 0);
         method.visitEnd();

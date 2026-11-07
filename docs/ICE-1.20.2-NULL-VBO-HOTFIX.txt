@@ -1,0 +1,35 @@
+ICE 1.20.2 空 VBO 崩溃修复（本地 hotfix 1，尚未发布）
+日期：2026-10-30
+
+报告与根因
+----------
+用户崩溃报告的顶层异常为 NativeTerrainPauseLifecycle.rebuildMeshes 第 61 行空指针，
+调用来自 worldChanged -> observeWorld -> onRenderTick，即刚进入世界时的地形失效。
+报告模组版本为 1.20.1，且已有本地世界生命周期修复；1.20.2 也包含同一缺陷。
+报告环境为 Android/aarch64 + gl4es 1.1.5，OpenGL 版本报告为 2.1。
+
+核对实际 Minecraft 1.12.2 RenderChunk 构造方法：仅当 OpenGlHelper.useVbo()
+返回 true 时才分配四层 VertexBuffer，否则数组中各元素为 null。
+ICE 的 rebuildMeshes 在读取 layer VBO 后直接访问 ice$capacityBytes()，没有处理 null。
+该缺陷可以在没有 Android 或 GL 上下文的真实 RenderChunk 上稳定复现；
+报告未提供 VBO 设置，不能仅凭 OpenGL 版本断言用户手动关闭了 VBO。
+双截棍贴图补丁不在本次异常调用链中。
+
+修复与验证
+----------
+空 VBO 层只跳过缓冲区操作；区块仍置为 CompiledChunk.DUMMY 并标记后台重建。
+已有缓冲区的容量与顶点数清空逻辑保持，防止新世界继续使用旧几何。
+新增两个回归：真实 RenderChunk 在 VBO 禁用时全部层为 null；混合空/非空层。
+旧代码运行两项均出现相同空指针，原有 3 项回归通过。
+修复后完整 build / optimizerBundleZip / verifyArtifactStartup 通过；
+常规 1322 项中 1186 通过、136 项可选跳过，零失败；制品启动检查 10 项全部通过。
+NativeTerrainPauseLifecycleTest 共 5 项全部通过，包含新增的两种空 VBO 情况。
+结果和本地 JAR 保存在 build/null-vbo-hotfix/，未修改已发布 GitHub Release。
+启动构建标识：optifine-item-animations-null-vbo-hotfix1-20261030。
+内部版本与联机版本仍为 1.20.2；本地文件名附加 null-vbo-hotfix1 以便区分。
+
+后续兼容实现
+------------
+本文件记录仅包含空 VBO 修复的早期 hotfix。后续已加入独立的 OpenGL 2.1
+兼容后端，保留原有 4.3 后端；不需要关闭地形优化。启用方式与验证范围见
+docs/OPENGL-21-COMPATIBILITY.md。Android/gl4es 实机性能仍需验证。

@@ -20,6 +20,109 @@ import sun.misc.Unsafe;
 import static org.junit.Assert.*;
 
 public class NativeTerrainUploadTest {
+    @Test public void arenaReplacementReusesTheOldRangeBeforeRequestingGrowth() throws Exception {
+        assertTrue(allocate(NativeTerrainGl43.class).retireBeforeUpload());
+        exerciseReplacement(true, false);
+    }
+
+    @Test public void fixedPagesRetainOldMeshUntilReplacementIsComplete() throws Exception {
+        assertFalse(allocate(NativeTerrainGl21.class).retireBeforeUpload());
+        exerciseReplacement(false, false);
+    }
+
+    @Test public void failedArenaReplacementCannotLeaveFreedGeometryDrawable() throws Exception {
+        exerciseReplacement(true, true);
+    }
+
+    @Test public void failedFixedPageReplacementKeepsThePreviouslyPublishedMesh() throws Exception {
+        exerciseReplacement(false, true);
+    }
+
+    private static void exerciseReplacement(final boolean retireFirst, final boolean failUpload) throws Exception {
+        final int count = 65532;
+        final NativeTerrainRenderer owner = allocate(NativeTerrainRenderer.class);
+        final TestChunk chunk = allocate(TestChunk.class);
+        final TestBuffer vbo = allocate(TestBuffer.class);
+        final NativeTerrainAllocator vertices = new NativeTerrainAllocator(), indices = new NativeTerrainAllocator();
+        NativeTerrainAllocation oldAllocation = new NativeTerrainAllocation(vertices.allocate(count), indices.allocate(count), count);
+        NativeTerrainRenderer.Section section = new NativeTerrainRenderer.Section(chunk);
+        final NativeTerrainRenderer.Mesh old = new NativeTerrainRenderer.Mesh(section, 3, oldAllocation, count,
+            TerrainVertexSpace.capture(freshBuilder(count), chunk), null);
+        section.put(old);
+        chunk.section = section;
+        chunk.clearNeedsUpdate();
+        vbo.count = count;
+        final IdentityHashMap<VertexBuffer, NativeTerrainRenderer.Mesh> meshes = new IdentityHashMap<>();
+        meshes.put(vbo, old);
+        field("meshes").set(owner, meshes);
+        field("stride").setInt(owner, 28);
+        field("backend").set(owner, new NativeTerrainBackend(28) {
+            @Override boolean retireBeforeUpload() { return retireFirst; }
+            NativeTerrainAllocation upload(java.nio.ByteBuffer source, int size) {
+                assertEquals(count * 28, source.remaining());
+                if (retireFirst) { assertTrue(meshes.isEmpty()); assertEquals(0, vbo.count); }
+                else assertSame(old, meshes.get(vbo));
+                if (failUpload) throw new IllegalStateException("simulated upload failure");
+                NativeTerrainAllocator.Range vertex = vertices.allocate(size), index = indices.allocate(size);
+                assertEquals(retireFirst ? 0 : count, vertex.first);
+                assertEquals(retireFirst ? 0 : count, index.first);
+                return new NativeTerrainAllocation(vertex, index, size);
+            }
+            void free(NativeTerrainAllocation mesh) { vertices.free(mesh.vertices); indices.free(mesh.indices); }
+            void uploadIndices(java.nio.ByteBuffer source, int[] copies, int size) { throw new AssertionError(); }
+            long geometryCapacityBytes() { return 0; }
+            void prepare(int[] words, int bytes) { throw new AssertionError(); }
+            void submit(int[] words, int base, int start, int size) { throw new AssertionError(); }
+            void delete() { }
+        });
+        field("framePrepared").setBoolean(owner, true);
+        field("drawQueueDirty").setBoolean(owner, false);
+        field("instance").set(null, owner);
+        BufferBuilder builder = freshBuilder(count);
+        try {
+            upload(new Compiled(), chunk, builder, vbo);
+            if (failUpload) fail("upload must propagate the failure");
+            assertEquals(count, vbo.count);
+            assertNotSame(old, meshes.get(vbo));
+            assertSame(meshes.get(vbo), ((NativeTerrainRenderer.Section) chunk.section).layers[3]);
+            assertFalse(field("framePrepared").getBoolean(owner));
+            assertTrue(field("drawQueueDirty").getBoolean(owner));
+        } catch (IllegalStateException failure) {
+            assertTrue(failUpload);
+            assertEquals("simulated upload failure", failure.getMessage());
+            assertTrue(chunk.needsUpdate());
+            if (retireFirst) {
+                assertTrue(meshes.isEmpty()); assertNull(chunk.section); assertEquals(0, vbo.count);
+                assertFalse(field("framePrepared").getBoolean(owner));
+                assertTrue(field("drawQueueDirty").getBoolean(owner));
+                assertEquals(0, vertices.allocate(count).first);
+            } else {
+                assertSame(old, meshes.get(vbo)); assertSame(section, chunk.section); assertEquals(count, vbo.count);
+            }
+        }
+        assertEquals(0, builder.getVertexCount());
+    }
+
+    private static BufferBuilder freshBuilder(int count) {
+        BufferBuilder builder = new BufferBuilder(count * 7);
+        builder.begin(7, DefaultVertexFormats.BLOCK);
+        builder.addVertexData(new int[count * 7]);
+        builder.finishDrawing();
+        return builder;
+    }
+
+    @Test public void pausedNativeUploadRetainsLayerForMaterialCapture() throws Exception {
+        dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false,true);
+        dev.rlcraft.ice.optimizer.OptimizerRegistry.setRuntimePaused(true);
+        try {
+            TerrainUploadContext.begin(BlockRenderLayer.TRANSLUCENT,allocate(TestChunk.class),new CompiledChunk());
+            assertEquals(BlockRenderLayer.TRANSLUCENT,TerrainUploadContext.take().getLayer());
+            assertNull(TerrainUploadContext.take());
+        } finally {
+            dev.rlcraft.ice.optimizer.OptimizerRegistry.setRuntimePaused(false);
+            dev.rlcraft.ice.early.EarlyRendererOwnership.initialize(false,false);
+        }
+    }
     @After public void clearOwner() throws Exception { field("instance").set(null, null); }
 
     @Test public void emptyResortCanLeaveThePreviousUploadBytesInARecycledBuilder() throws Exception {
@@ -100,11 +203,18 @@ public class NativeTerrainUploadTest {
         IdentityHashMap<VertexBuffer, NativeTerrainRenderer.Mesh> meshes = new IdentityHashMap<>();
         meshes.put(vbo, mesh);
         NativeTerrainAllocator vertices = new NativeTerrainAllocator(), indices = new NativeTerrainAllocator();
-        vertices.allocate(mesh.range.first + mesh.range.count);
-        indices.allocate(mesh.indexRange.first + mesh.indexRange.count);
+        vertices.allocate(mesh.allocation.vertices.first + mesh.allocation.vertices.count);
+        indices.allocate(mesh.allocation.indices.first + mesh.allocation.indices.count);
         field("meshes").set(owner, meshes);
-        field("ranges").set(owner, vertices);
-        field("indexRanges").set(owner, indices);
+        field("backend").set(owner, new NativeTerrainBackend(28) {
+            NativeTerrainAllocation upload(java.nio.ByteBuffer source, int count) { throw new AssertionError(); }
+            void free(NativeTerrainAllocation mesh) { vertices.free(mesh.vertices); indices.free(mesh.indices); }
+            void uploadIndices(java.nio.ByteBuffer source, int[] copies, int count) { throw new AssertionError(); }
+            long geometryCapacityBytes() { return 0; }
+            void submit(int[] words, int base, int start, int count) { throw new AssertionError(); }
+            void prepare(int[] words, int bytes) { throw new AssertionError(); }
+            void delete() { }
+        });
         field("framePrepared").setBoolean(owner, true);
         field("instance").set(null, owner);
         upload(new CompiledChunk(), chunk, recycledBuilder(), vbo);
@@ -114,8 +224,8 @@ public class NativeTerrainUploadTest {
         assertEquals(0, vbo.count);
         assertFalse(field("framePrepared").getBoolean(owner));
         assertTrue(field("drawQueueDirty").getBoolean(owner));
-        assertEquals(mesh.range.first, vertices.allocate(4).first);
-        assertEquals(mesh.indexRange.first, indices.allocate(4).first);
+        assertEquals(mesh.allocation.vertices.first, vertices.allocate(4).first);
+        assertEquals(mesh.allocation.indices.first, indices.allocate(4).first);
     }
 
     private static BufferBuilder recycledBuilder() {
@@ -155,6 +265,7 @@ public class NativeTerrainUploadTest {
         public Object ice$nativeSection() { return section; }
         public void ice$nativeSection(Object value) { section = value; }
         @Override public BlockPos getPosition() { return BlockPos.ORIGIN; }
+        @Override public CompiledChunk getCompiledChunk() { return CompiledChunk.DUMMY; }
     }
     private static class TestBuffer extends VertexBuffer implements ChunkVertexBufferAccessor {
         int count;

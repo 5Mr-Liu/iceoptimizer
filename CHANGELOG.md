@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.20.3 - 2026-11-07
+
+- 将用户已实机确认效果的 `slim-20261107` 候选发布为 1.20.3，保留其运行逻辑；统一模组、元数据和联机版本，启动标识为 `release-1.20.3-20261107`。Minecraft 仍为 1.12.2，沿用 1.20 系列预发布渠道。
+- GL43 网格替换恢复旧显存区间复用，减少同尺寸区块重建触发的不必要扩容和复制；补齐失败后绘制失效及重建处理，GL21 固定页保留延迟释放。
+- 撤下 Capability NBT 序列化结果比较、Trinkets 标量缓存和差量同步的生产接入；旧配置 true 也不会重新启用这两项 Trinkets 功能。保留原装备 NBT、已知 Capability 状态比较、QualityTools 属性复用、Lycanites 单次解析和 Recurrent 清理优化。
+- 相对远程 v1.20.2，纳入自动 OpenGL 4.3/2.1 后端选择、固定缓冲页、OptiFine G5 多重纹理及透明排序/F6 配套、顺序索引和命令部分上传，以及空 VBO 和资源代次处理。
+- 保留既有物品动画、世界切换、光影兼容修复。实机反馈来自用户测试精简候选，不作为所有硬件的 FPS 保证；其他设备尚缺启动日志的 `TerrainVisibilityAccessor` 注入失败不在已确认修复范围。
+- 发布范围和验证记录见 `docs/ICE-1.20.3-RELEASE-NOTES.md`。以下未发布候选记录用于保留开发历史，不代表所有实验功能在 1.20.3 中启用。
+
+## 1.20.2 slim playtest - 2026-11-07 (local, unreleased)
+
+- GL43 网格替换恢复先释放旧区间再申请新区间，避免同尺寸重建因新旧网格并存而触发存储扩容；提前失效绘制队列，上传失败时不保留已释放的几何并标记重建。GL21 固定页继续完整上传后发布，避免提前释放最后一个网格导致页反复销毁。
+- 撤下新增的 Capability NBT 结果比较、Trinkets 标量缓存和差量同步启动接入；不注册差量网络通道。旧配置即使仍保存 true 也不启用这两项 Trinkets 功能，保留原装备 NBT 与已知 Capability 状态优化。
+- 保留空 VBO、世界生命周期、物品动画、资源代次修复及既有渲染兼容。构建标识 `slim-20261107`，实机卡顿改善待用户对照验证；不宣称修复尚未取得启动日志的接口注入失败。
+
+## 1.20.2 NBT state and sync - 2026-11-06 (local, unreleased)
+
+- Trinkets 原 writer 读取实时状态，复用未变的标量标签；每次仍独立生成可变子树，覆盖计时器、元素和饰品状态。
+- Bountiful Baubles 飞轮能量与 Spartan Weaponry 箭袋能力采用等价的运行态比较；未知 provider、嵌套能力及 NormalASM 延迟能力数据保留原序列化路径。复制继续执行原初始化/反序列化，复用不可变叶子编码。
+- Trinkets 远程物品同步使用按连接管理的有界字节差量；通过 Forge 原有通道注册识别对端支持情况，恢复原消息后交回原处理器，每次回调均保留。本地内存连接和小包沿用原协议。
+- 连同之前的装备读取与 NBT 补丁构成 `nbt-complete-20261106` 候选；实现、兼容边界和验证见 `docs/NBT-COMPLETE-20261106.md`。
+
+## 1.20.2 equipment NBT reads - 2026-11-06 (local, unreleased)
+
+- Lycanites 装备在一次主手属性或说明计算中复用部件解析；显式局部视图随调用释放，保留原属性逻辑及 feature 回调顺序。
+- 新增 `lycanitesEquipmentRead` 独立开关；子类及非主手属性保留原调用。没有跨帧缓存、逐部件扫描或新增同步协议。
+- 构建标识 `nbt-equipment-20261106`；实现范围和验证见 `docs/NBT-EQUIPMENT-20261106.md`。
+
+## 1.20.2 NBT processing - 2026-11-06 (local, unreleased)
+
+- Capability 序列化结果在双方使用 NormalTagMap 时接入直接遍历比较，保留 provider 序列化次数、顺序和动态变化；其他容器使用原比较。
+- QualityTools 在小候选集合中直接保留已有品质属性，减少重复 UUID/AttributeModifier 构造；保留原属性协调、饰品槽位和嵌套 NBT 修改语义。
+- Recurrent Complex 世界加载清理省去马上会被丢弃的结构记录与区块坐标标签构建，保留自定义记录和原读回/索引重建流程。
+- 性能测量未支持的通用 NBT 深复制改动已撤出；实际范围、验证和限制见 `docs/NBT-OPTIMIZATION-20261106.md`。构建标识为 `nbt-20261106`，尚无整局 FPS 实测。
+
+## 1.20.2 OptiFine G5 multi-texture compatibility - 2026-10-31 (local, unreleased)
+
+- 修复 AF/AA 开启多重纹理后 ICE 地形 VBO 入口拒绝启动的问题；保留全局 OptiFine 判断，只在 ICE 地形入口确认 G5 材质结构后接管。
+- 上传前保存四边形材质范围，使用 OptiFine 已上传的独立纹理及单纹理 UV；4.3 合并相邻同纹理间接绘制，2.1 保持固定缓冲页与原透明顺序。
+- 透明四边形排序同步置换 quadSprites，防止顶点与材质错位；F6 暂停路径也保存并按材质绘制普通 VBO。
+- F6 区域绘制判断与 OptiFine ViewFrustum 的区域分配条件一致；重载后通过代次检查丢弃旧上传任务，避免继续引用旧纹理编号。
+- 保留自动 OpenGL 选择、空 VBO 清理修复、双截棍动画修复。构建标识为 optifine-multitexture-20261031。
+
+## 1.20.2 automatic OpenGL selection and fixed pages - 2026-10-30 (local, unreleased)
+
+- 保留原有 OpenGL 4.3 后端，增加 OpenGL 2.1/gl4es 兼容实现；共用区块构建、网格缓存、可见性和上传调度。
+- 根据实际上下文在地形初始化前固定选择 4.3 或 2.1 后端，低于 2.1 明确报错；旧 `nativeTerrainOpenGl21` 配置不再读取，没有逐帧能力检测或运行中切换。
+- 2.1 使用共享固定容量顶点/索引页，空洞合并、空页释放；新增页不读回或迁移旧网格，大网格分段保持透明顺序，全部上传完成后发布。
+- VBO 接管限定到 ICE 地形构造、上传、绘制入口，保留全局 useVbo、天空/星星状态和 OptiFine 多重纹理/区域渲染保护条件；保留下面的空 VBO 修复。
+- 详见 `docs/OPENGL-21-COMPATIBILITY.md`；桌面离屏验证不等同于 Android/gl4es 实机或 FPS 验证。
+
+## 1.20.2 null VBO hotfix 1 - 2026-10-30 (local, unreleased)
+
+- 修复世界切换/F6/光影切换清理网格时，无条件访问不存在的区块 VBO 导致的空指针。非 VBO 模式跳过空缓冲区，仍失效编译状态并标记重建；已有 VBO 照常清空。
+- 新增真实 RenderChunk 在 VBO 禁用时的回归，以及部分层为空的回归；旧代码均可复现空指针。
+- 此空 VBO 补丁本身不改变 OpenGL 要求；后续新增的兼容实现及启用方式见上方条目。
+
 ## 1.20.2 nunchaku animation and world lifecycle fixes - 2026-10-30
 
 - 发布新的体验用预发布，合并下述物品动画与联机世界生命周期修复，保留 1.20.1 的透明排序、光影和 GPU 兼容处理。

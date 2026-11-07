@@ -7,6 +7,20 @@ import org.junit.Test;
 
 public final class OptimizerSideSelectionTest {
     @Test
+    public void legacyTrueOptionsCannotReactivateRemovedSlimIntegrations() {
+        OptimizerConfig.Settings settings = new OptimizerConfig.Settings();
+        settings.trinketsStateNbt = true;
+        settings.trinketsSyncDelta = true;
+        for (OptimizerRuntimeSide side : OptimizerRuntimeSide.values()) {
+            java.util.EnumSet<OptimizationModule> modules = OptimizerModuleSelection.capture(settings, side);
+            assertFalse(modules.contains(OptimizationModule.TRINKETS_STATE_NBT));
+            assertFalse(modules.contains(OptimizationModule.TRINKETS_SYNC_DELTA));
+            assertTrue(modules.contains(OptimizationModule.VANILLA_EQUIPMENT_NBT));
+            assertTrue(modules.contains(OptimizationModule.CAPABILITY_STATE_NBT));
+        }
+    }
+
+    @Test
     public void dedicatedServerEnablesOnlyReviewedCommonHotPaths() {
         ServerOptimizerConfig server = ServerOptimizerConfig.capture();
         assertTrue(server.enabled(OptimizationModule.CORE_RUNTIME));

@@ -29,6 +29,33 @@ final class NativeTerrainShaderPack {
 
     private NativeTerrainShaderPack() { }
 
+    static void enableArrays21() {
+        GL11.glEnableClientState(GL11.GL_VERTEX_ARRAY);
+        GL11.glEnableClientState(GL11.GL_COLOR_ARRAY);
+        GL11.glEnableClientState(GL11.GL_NORMAL_ARRAY);
+        OpenGlHelper.setClientActiveTexture(OpenGlHelper.lightmapTexUnit);
+        GL11.glEnableClientState(GL11.GL_TEXTURE_COORD_ARRAY);
+        OpenGlHelper.setClientActiveTexture(OpenGlHelper.defaultTexUnit);
+        GL11.glEnableClientState(GL11.GL_TEXTURE_COORD_ARRAY);
+        GL20.glEnableVertexAttribArray(MID_UV);
+        GL20.glEnableVertexAttribArray(TANGENT);
+        GL20.glEnableVertexAttribArray(ENTITY);
+    }
+
+    /** G5's 56-byte layout, rebased instead of using DrawElementsBaseVertex. */
+    static void setupArrays21(long base) {
+        GL11.glVertexPointer(3, GL11.GL_FLOAT, 56, base);
+        GL11.glColorPointer(4, GL11.GL_UNSIGNED_BYTE, 56, base + 12);
+        GL11.glNormalPointer(GL11.GL_BYTE, 56, base + 28);
+        OpenGlHelper.setClientActiveTexture(OpenGlHelper.lightmapTexUnit);
+        GL11.glTexCoordPointer(2, GL11.GL_SHORT, 56, base + 24);
+        OpenGlHelper.setClientActiveTexture(OpenGlHelper.defaultTexUnit);
+        GL11.glTexCoordPointer(2, GL11.GL_FLOAT, 56, base + 16);
+        GL20.glVertexAttribPointer(MID_UV, 2, GL11.GL_FLOAT, false, 56, base + 32);
+        GL20.glVertexAttribPointer(TANGENT, 4, GL11.GL_SHORT, false, 56, base + 40);
+        GL20.glVertexAttribPointer(ENTITY, 3, GL11.GL_SHORT, false, 56, base + 48);
+    }
+
     static void setupArrays() {
         int clientTexture = GL11.glGetInteger(GL13.GL_CLIENT_ACTIVE_TEXTURE);
         try {

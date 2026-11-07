@@ -1,44 +1,46 @@
-ICE 1.20.2 双截棍动画与世界切换修复体验包
-日期：2026-10-30
+ICE 1.20.3 地形重建卡顿修复与精简优化
+日期：2026-11-07
 
-适用：Minecraft 1.12.2 / Forge 14.23.5.2860 / RLCraft Dregora。
-1.20.2 是 ICE 模组版本，不是 Minecraft 游戏版本。
+适用：Minecraft 1.12.2 / Forge 14.23.5.2860 / Java 8 / RLCraft Dregora。
+1.20.3 是 ICE 模组版本，不是 Minecraft 游戏版本。
 
 安装
 ----
 1. 完全退出客户端和服务端。
-2. 把 mods 目录里旧的 ice-rlcraft-optimizer JAR 移出并保留备份，
-   包括旧 1.20 和旧 Main/Core 拆分包。
-3. 只放入本包的 ice-rlcraft-optimizer-1.20.2.jar，再启动游戏。
+2. 把 mods 目录里所有旧 ICE Optimizer JAR 移出并保留备份，
+   包括 local-test/slim 候选以及旧 Main/Core 拆分包。
+3. 只放入 ice-rlcraft-optimizer-1.20.3.jar，再启动游戏。
    不要把 ZIP 放入 mods，不要同时安装多个 ICE Optimizer 版本。
-4. 联机客户端和服务端都应升级到相同的 ICE 1.20.2。
-   保留现有 config/ice-optimizer.cfg，无需删除配置或存档。
+4. 联机客户端和服务端都升级到 1.20.3。
+   可以保留 config/ice-optimizer.cfg，无需删除配置或存档。
+5. 启动日志标识应为 release-1.20.3-20261107。
 
 本次修改
 --------
-关闭 OptiFine“地形动画”后，双截棍旋转及其他物品贴图动画继续更新。
-普通地形贴图仍遵循原选项，水、岩浆、火和传送门保持各自开关的行为。
-该兼容补丁在启动时安装，不随 F6 暂停。
-世界切换时先取消并排空旧区块任务，再清理网格并重建，避免进入新世界后
-错误清除刚上传的地形。保留此前透明排序、光影和核显缓冲区兼容修复。
+发布用户已实机确认效果的精简候选，运行逻辑保持一致。
+GL43 网格替换恢复旧显存区间复用，减少同尺寸区块重建触发的扩容和复制。
+撤下新增 Capability NBT 结果比较、Trinkets 标量缓存和差量同步接入。
+旧 Trinkets 相关配置即使保存 true 也不会重新启用这两项功能。
+保留原装备 NBT、已知 Capability 状态、QualityTools、Lycanites、
+Recurrent 清理优化，以及空 VBO、世界切换、物品动画和资源代次修复。
+相对远程 1.20.2，纳入 OpenGL 2.1、多重纹理、索引和命令上传优化。
 
-启用与对比
+启用与兼容
 ----------
-优化默认开启。已有配置中显式关闭的项目仍保持关闭。
-F6 暂停/恢复当前已启用的优化；切换会重建网格，等区块加载稳定后再比较。
-双截棍：关闭“地形动画”，按住攻击观察持续旋转，松开攻击确认恢复静止。
-世界切换：检查加入服务器、退出重连、维度切换后的区块是否持续正常显示。
-本次没有进行游戏实测或新的 FPS 测量；自动验证范围见 BUILD-INFO.txt。
+优化默认开启。已有配置中显式关闭的保留项目仍保持关闭。
+F6 暂停/恢复可切换的优化；切换会重建网格，等加载稳定后再比较。
+物品动画等启动补丁不随 F6 暂停。
+支持 OpenGL 4.3 时使用 GL43，否则自动使用 OpenGL 2.1 兼容后端。
+低于 2.1 会明确报错；旧 nativeTerrainOpenGl21 配置不再参与选择。
+保留整合包已有 RenderLib。使用 ICE 自有地形时移出 Nothirium，
+关闭 OptiFine Smart Animations、Fast Render 和 Render Regions。
+安装 Nothirium 时遵循现有外部渲染器所有权规则。
+光影包自身的硬件要求仍适用，不同显卡、驱动及 Android/gl4es 需实测。
 
-兼容设置沿用修订 10
-------------------
-自有地形渲染需要 OpenGL 4.3，核显和独显使用同一 JAR。
-保留整合包已有 RenderLib；安装 Nothirium 时会采用相应兼容路径。
-自有地形的现有使用要求：OptiFine Smart Animations、Fast Render、
-Render Regions 关闭；“地形动画”可按需求关闭。无需降低画质或视距。
-此前光影实测组合为 OptiFine G5 / Complementary v4.6 - RLCraft Edit v1.0；
-不同光影、显卡和驱动仍需实际测试。
+用户已确认精简候选效果；本次打包没有新增游戏内 FPS 基准测量。
+其他设备的 TerrainVisibilityAccessor 注入失败仍需完整启动日志定位，
+不宣称本版已修复。完整构建与自动验证结果见 Release 的 BUILD-INFO.txt。
 
-本包只含优化器，不含左上角分析器、测试夹具、agent 或第三方模组。
-如果需要回退，退出客户端和服务端，两端一同移出 1.20.2，恢复原 JAR 和对应配置备份。
+本包只含优化器，不含分析器、测试夹具、agent 或第三方模组。
+回退时退出客户端和服务端，两端一起移出 1.20.3，恢复旧 JAR 和配置备份。
 出现异常时保留 latest.log、崩溃报告及截图，并注明 F6 状态和光影包。

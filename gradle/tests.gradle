@@ -8,6 +8,8 @@ def optionalTestInputs = [
     xaeroWorldMapJar: 'ice.xaero.worldmap.jar', renderLibJar: 'ice.renderlib.jar',
     srpJar: 'ice.srp.jar', srpMixinsJar: 'ice.srp.mixins.jar',
     lycanitesJar: 'ice.lycanites.jar', moBendsJar: 'ice.mobends.jar',
+    trinketsJar: 'ice.trinkets.jar', bountifulBaublesJar: 'ice.bountifulbaubles.jar',
+    spartanWeaponryJar: 'ice.spartanweaponry.jar',
     iceAndFireJar: 'ice.iceandfire.jar', fbpJar: 'ice.fbp.jar',
     minecraftSrgJar: 'ice.minecraft.srg.jar', minecraftClientJar: 'ice.minecraft.client.jar',
     notchSrg: 'ice.notch.srg', llibraryJar: 'ice.llibrary.jar',

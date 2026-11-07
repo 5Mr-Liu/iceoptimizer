@@ -13,6 +13,17 @@ import java.util.Random;
 import org.junit.Test;
 
 public final class ChunkPrimitiveSortBridgeTest {
+    @Test public void spritePermutationMatchesGeometryAcrossMergeRadixAndResorts() {
+        for(int size:new int[]{7,512,1024}) {
+            Fixture f=new Fixture(size,7); f.sprites=new Object[size];
+            for(int i=0;i<size;i++){f.putQuad(i,(i*37)%size,0,0,i);f.sprites[i]=Integer.valueOf(i);}
+            for(int camera:new int[]{0,1000,-12}) {
+                ChunkPrimitiveSortBridge.sortForTest(f,camera,0,0);
+                for(int i=0;i<size;i++)assertEquals(f.ints.get(i*28+3),((Integer)f.sprites[i]).intValue());
+            }
+        }
+    }
+
     @Test
     public void primitiveSortMatchesVanillaStableObjectSortBitForBit() {
         Random random = new Random(0x1CEB00FEL);
@@ -161,6 +172,8 @@ public final class ChunkPrimitiveSortBridgeTest {
     }
 
     private static final class Fixture implements ChunkBufferAccessor {
+        private Object[] sprites;
+        @Override public Object[] ice$sortSprites(){return sprites;}
         private final int quads;
         private final int stride;
         private final IntBuffer ints;

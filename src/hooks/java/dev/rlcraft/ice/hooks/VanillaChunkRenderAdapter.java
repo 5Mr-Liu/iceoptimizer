@@ -170,6 +170,24 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
     private static void wrapDispatcherUpload(ClassNode node, MethodNode original) {
         if (EarlyRendererOwnership.hasNativeTerrainRenderer()) {
             MethodNode incoming = NativeTerrainPauseAdapter.copy(original);
+            String materialBridge = "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainPausedMaterials";
+            String materialDesc = "Ldev/rlcraft/ice/optimizer/render/terrain/NativeTerrainMaterials;";
+            InsnList capture = new InsnList();
+            capture.add(new VarInsnNode(Opcodes.ALOAD, 1));
+            capture.add(new MethodInsnNode(Opcodes.INVOKESTATIC, materialBridge, "capture",
+                "(Lnet/minecraft/client/renderer/BufferBuilder;)" + materialDesc, false));
+            int materialLocal = incoming.maxLocals++;
+            capture.add(new VarInsnNode(Opcodes.ASTORE, materialLocal));
+            incoming.instructions.insert(capture);
+            for (AbstractInsnNode insn : incoming.instructions.toArray()) if (insn.getOpcode() == Opcodes.RETURN) {
+                InsnList publish = new InsnList();
+                publish.add(new VarInsnNode(Opcodes.ALOAD, 2));
+                publish.add(new VarInsnNode(Opcodes.ALOAD, materialLocal));
+                publish.add(new MethodInsnNode(Opcodes.INVOKESTATIC, materialBridge, "publish",
+                    "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;" + materialDesc + ")V", false));
+                incoming.instructions.insertBefore(insn, publish);
+            }
+
             original.instructions.clear();
             original.tryCatchBlocks.clear();
             if (original.localVariables != null) original.localVariables.clear();
@@ -238,6 +256,10 @@ final class VanillaChunkRenderAdapter implements OptimizerBytecodeAdapter {
             throw new IllegalStateException("BufferBuilder 透明排序调用图变化");
         }
         node.interfaces.add(BUFFER_ACCESS);
+        for (FieldNode field : node.fields) if (field.name.equals("quadSprites")
+                && field.desc.equals("[Lnet/minecraft/client/renderer/texture/TextureAtlasSprite;"))
+            addReferenceAccessor(node, "ice$sortSprites", "()[Ljava/lang/Object;", field.name, field.desc);
+
         int access = sort.access;
         String signature = sort.signature;
         String[] exceptions = exceptions(sort);

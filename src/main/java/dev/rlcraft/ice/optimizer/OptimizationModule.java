@@ -137,7 +137,12 @@ public enum OptimizationModule {
     SOUND_FILTERS("sound-filters", "SoundFilters 房间搜索与参数复用"),
     VANILLA_AUTOSAVE_SLICES("vanilla-autosave-slices", "普通自动保存分散调度", true),
     NOTHIRIUM_FOG_COMPATIBILITY("nothirium-fog-compatibility", "Nothirium 原版雾效兼容"),
-    OPTIFINE_ITEM_ANIMATIONS("optifine-item-animations", "OptiFine 关闭地形动画时保留物品动画");
+    OPTIFINE_ITEM_ANIMATIONS("optifine-item-animations", "OptiFine 关闭地形动画时保留物品动画"),
+    RECURRENT_CLEANUP_NBT("recurrent-cleanup-nbt", "Recurrent 清理跳过废弃 NBT 构建", true),
+    LYCANITES_EQUIPMENT_READ("lycanites-equipment-read", "Lycanites 装备部件单次解析", true),
+    TRINKETS_STATE_NBT("trinkets-state-nbt", "Trinkets 状态编码复用", true),
+    CAPABILITY_STATE_NBT("capability-state-nbt", "已知能力直接状态比较与复制编码", true),
+    TRINKETS_SYNC_DELTA("trinkets-sync-delta", "Trinkets 有序状态差量同步", true);
 
     private static final Map<String, OptimizationModule> MODULES_BY_ID;
     private static final Map<String, OptimizationModule> MODULES_BY_ENUM_NAME;

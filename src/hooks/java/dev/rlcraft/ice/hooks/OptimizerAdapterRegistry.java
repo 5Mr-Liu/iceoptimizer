@@ -12,6 +12,7 @@ final class OptimizerAdapterRegistry {
         Map<String, OptimizerBytecodeAdapter> adapters = new HashMap<String, OptimizerBytecodeAdapter>();
         adapters.put("nothirium-fog-compatibility", new NothiriumFogAdapter());
         adapters.put("optifine-item-animations", new OptifineItemAnimationAdapter());
+        adapters.put("native-terrain-vbo-selection", new NativeTerrainVboSelectionAdapter());
         adapters.put("foamfix-pbo-upload", new FoamFixTextureUploadAdapter());
         adapters.put("vanilla-texture-parameters", new VanillaTextureUploadAdapter());
         adapters.put("optifine-dynamic-lights", new OptifineDynamicLightsAdapter(
@@ -113,6 +114,13 @@ final class OptimizerAdapterRegistry {
         adapters.put("entity-nearest-query", new RltNearestEntityAdapter());
         adapters.put("minecraft-equipment-nbt", new EquipmentNbtAdapter());
         adapters.put("minecraft-nbt-map-access", new NbtCompoundAdapter());
+        adapters.put("qualitytools-modifier-nbt", new QualityToolsModifierAdapter());
+        adapters.put("recurrent-cleanup-nbt", new RecurrentCleanupAdapter());
+        adapters.put("lycanites-equipment-read", new LycanitesEquipmentReadAdapter());
+        adapters.put("capability-state-provider", new CapabilityStateProviderAdapter());
+        adapters.put("capability-state-stack", new CapabilityStateStackAdapter());
+        adapters.put("capability-state-inventory", new CapabilityStateInventoryAdapter());
+        adapters.put("capability-state-dispatcher", new CapabilityStateDispatcherAdapter());
         adapters.put("potioncore-entity-nbt", new PotionCoreNbtAdapter());
         adapters.put("qualitytools-horse-inventory", new HorseArmorAccessAdapter());
         adapters.put("srp-light-candidate-index", new SrpLightCandidateIndexAdapter());

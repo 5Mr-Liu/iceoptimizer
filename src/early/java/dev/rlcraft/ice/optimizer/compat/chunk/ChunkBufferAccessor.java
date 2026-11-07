@@ -5,6 +5,7 @@ import java.nio.IntBuffer;
 
 /** Early-source ABI implemented by BufferBuilder; included in the single optimizer JAR. */
 public interface ChunkBufferAccessor {
+    default Object[] ice$sortSprites() { return null; }
     FloatBuffer ice$sortFloatBuffer();
     IntBuffer ice$sortIntBuffer();
     int ice$sortVertexCount();

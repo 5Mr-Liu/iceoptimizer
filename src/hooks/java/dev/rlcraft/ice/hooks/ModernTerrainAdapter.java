@@ -198,6 +198,28 @@ final class ModernTerrainAdapter implements OptimizerBytecodeAdapter {
         MethodNode original = requireMethod(node, RENDER_LAYER, RENDER_LAYER_DESC);
         if (EarlyRendererOwnership.hasNativeTerrainRenderer()) {
             MethodNode incoming = NativeTerrainPauseAdapter.copy(original);
+            int draws = 0, regionChecks = 0;
+            for (AbstractInsnNode insn : incoming.instructions.toArray()) if (insn instanceof MethodInsnNode) {
+                MethodInsnNode call = (MethodInsnNode) insn;
+                if (call.owner.equals("Config") && call.name.equals("isRenderRegions") && call.desc.equals("()Z")) {
+                    // Match ViewFrustum: regions exist only when BOTH original guards pass.
+                    // AF/AA disables Config.isVbo, even though ICE owns per-chunk VBOs.
+                    InsnList guard=new InsnList();
+                    guard.add(new MethodInsnNode(Opcodes.INVOKESTATIC,"Config","isVbo","()Z",false));
+                    guard.add(new InsnNode(Opcodes.IAND));
+                    incoming.instructions.insert(call,guard);
+                    regionChecks++;
+                }
+                if (call.owner.equals("net/minecraft/client/renderer/vertex/VertexBuffer")
+                        && call.name.equals("func_177358_a") && call.desc.equals("(I)V")) {
+                    call.setOpcode(Opcodes.INVOKESTATIC);
+                    call.owner = "dev/rlcraft/ice/optimizer/render/terrain/NativeTerrainPausedMaterials";
+                    call.name = "draw"; call.desc = "(Lnet/minecraft/client/renderer/vertex/VertexBuffer;I)V";
+                    draws++;
+                }
+            }
+            if (regionChecks > 1 || draws != 1 + regionChecks)
+                throw new IllegalStateException("Unexpected paused terrain VBO draw/region structure");
             original.instructions.clear();
             original.tryCatchBlocks.clear();
             if (original.localVariables != null) original.localVariables.clear();

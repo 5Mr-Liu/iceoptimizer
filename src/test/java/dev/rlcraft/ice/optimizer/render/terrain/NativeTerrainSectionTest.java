@@ -35,7 +35,7 @@ public class NativeTerrainSectionTest {
                 .getDeclaredConstructor(int.class, int.class, int.class, boolean.class);
             constructor.setAccessible(true);
             NativeTerrainAllocator allocator = new NativeTerrainAllocator();
-            return new NativeTerrainRenderer.Mesh(section, layer, allocator.allocate(4), allocator.allocate(4),
+            return new NativeTerrainRenderer.Mesh(section, layer, new NativeTerrainAllocation(allocator.allocate(4), allocator.allocate(4), 4),
                 4, constructor.newInstance(0, 0, 0, false), null);
         } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
     }

@@ -66,7 +66,8 @@ public final class VanillaChunkRenderAdapterTest {
                 for (TargetSpec target : targets) {
                     OptimizerBytecodeAdapter adapter = OptimizerAdapterRegistry.find(target.adapterId);
                     assertTrue(adapter instanceof VanillaChunkRenderAdapter
-                        || adapter instanceof ModernTerrainAdapter);
+                        || adapter instanceof ModernTerrainAdapter
+                        || adapter instanceof NativeTerrainVboSelectionAdapter);
                     transformed = adapter.transform(sample.className, transformed, target);
                 }
                 assertFalse(Arrays.equals(original, transformed));
@@ -84,10 +85,11 @@ public final class VanillaChunkRenderAdapterTest {
     public void dispatcherCatalogKeepsPolicyAndUploadAsIndependentCapabilities() {
         List<TargetSpec> targets = OptimizerTargetCatalog.findAll(
             "net.minecraft.client.renderer.chunk.ChunkRenderDispatcher");
-        assertEquals(3, targets.size());
+        assertEquals(4, targets.size());
         assertEquals("vanilla-chunk-dispatch-policy", targets.get(0).adapterId);
         assertEquals("vanilla-chunk-vbo-dispatch", targets.get(1).adapterId);
         assertEquals("modern-terrain-upload-context", targets.get(2).adapterId);
+        assertEquals("native-terrain-vbo-selection", targets.get(3).adapterId);
     }
 
     @Test

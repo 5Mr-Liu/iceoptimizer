@@ -4,6 +4,10 @@ package dev.rlcraft.ice.optimizer.render.terrain;
 public final class NativeTerrainShader {
     private NativeTerrainShader() { }
 
+    public static String vertex21() {
+        return vertex().replace("attribute vec4 iceOffset;", "uniform vec4 iceOffset;");
+    }
+
     public static String vertex() {
         return "#version 120\n"
             + "attribute vec3 icePosition;\nattribute vec4 iceColor;\n"

@@ -67,6 +67,8 @@ final class OptimizerBootstrapPolicy {
     }
 
     static boolean shouldInstall(TargetSpec target) {
+        if (target.adapterId.equals("native-terrain-vbo-selection"))
+            return EarlyRendererOwnership.hasNativeTerrainRenderer();
         if (EarlyRendererOwnership.hasNativeTerrainRenderer()
             && (target.adapterId.equals("modern-terrain-upload-context")
                 || target.adapterId.equals("modern-terrain-container-access")

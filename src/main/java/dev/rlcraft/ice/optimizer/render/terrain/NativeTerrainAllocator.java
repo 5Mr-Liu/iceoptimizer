@@ -16,6 +16,14 @@ final class NativeTerrainAllocator {
     });
     private int end;
 
+    int available(int limit) {
+        return Math.max(limit - end, bySize.isEmpty() ? 0 : bySize.last().count);
+    }
+
+    Range tryAllocate(int count, int limit) {
+        return count > available(limit) ? null : allocate(count);
+    }
+
     Range allocate(int count) {
         Range hole = bySize.ceiling(new Range(0, count));
         if (hole == null) {

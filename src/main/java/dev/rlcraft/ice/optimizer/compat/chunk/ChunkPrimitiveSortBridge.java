@@ -141,15 +141,24 @@ public final class ChunkPrimitiveSortBridge {
                 scratch.counts, quads);
         }
 
+        Object[] sprites = accessor.ice$sortSprites();
+        if (sprites != null && sprites.length < quads) throw new IllegalStateException("Incomplete quad sprites");
         scratch.ensureRaw(requiredInts);
         ints.position(0);
         ints.limit(requiredInts);
         ints.get(scratch.raw, 0, requiredInts);
+        Object[] savedSprites = null;
+        if (sprites != null) {
+            if (scratch.sprites.length < quads) scratch.sprites = new Object[grownLength(scratch.sprites.length, quads)];
+            savedSprites = scratch.sprites;
+            System.arraycopy(sprites, 0, savedSprites, 0, quads);
+        }
         try {
             for (int destination = 0; destination < quads; destination++) {
                 int source = scratch.order[destination];
                 ints.position(destination * quadStride);
                 ints.put(scratch.raw, source * quadStride, quadStride);
+                if (sprites != null) sprites[destination] = savedSprites[source];
             }
         } catch (Throwable error) {
             Throwable failure = error;
@@ -157,12 +166,15 @@ public final class ChunkPrimitiveSortBridge {
                 ints.position(0);
                 ints.limit(requiredInts);
                 ints.put(scratch.raw, 0, requiredInts);
+                if (sprites != null) System.arraycopy(savedSprites, 0, sprites, 0, quads);
                 ints.limit(ints.capacity());
                 ints.position(requiredInts);
             } catch (Throwable restoreFailure) {
                 failure = appendFailure(failure, restoreFailure);
             }
             rethrow(failure);
+        } finally {
+            if (savedSprites != null) Arrays.fill(savedSprites, 0, quads, null);
         }
         ints.limit(ints.capacity());
         ints.position(requiredInts);
@@ -296,6 +308,7 @@ public final class ChunkPrimitiveSortBridge {
         private int[] merge = new int[0];
         private final int[] counts = new int[4 * 256];
         private int[] raw = new int[0];
+        private Object[] sprites = new Object[0];
 
         private void ensureQuads(int required) {
             if (distanceKeys.length >= required) return;

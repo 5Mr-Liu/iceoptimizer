@@ -18,12 +18,16 @@ public final class NativeTerrainUploadTask {
     /** Called on the worker, before the original upload queue is locked. */
     public static ListenableFutureTask<Object> create(final Runnable upload, Object result,
             BlockRenderLayer layer, BufferBuilder builder, RenderChunk chunk, CompiledChunk compiled) {
-        if (OptimizerRegistry.isRuntimePaused()) return ListenableFutureTask.create(upload, result);
-        final Prepared prepared = prepare(layer, builder, chunk, compiled);
+        final long taskGeneration = NativeTerrainRenderer.generation();
+        final Prepared prepared = OptimizerRegistry.isRuntimePaused() ? null : prepare(layer, builder, chunk, compiled);
         // Keep the SAME future in PendingUpload and the worker's cancellation
         // callback. Cancelling it prevents both publication and builder access.
         return ListenableFutureTask.create(new Runnable() {
             @Override public void run() {
+                if (taskGeneration != NativeTerrainRenderer.generation()) {
+                    chunk.setNeedsUpdate(false);
+                    return;
+                }
                 CURRENT.set(prepared);
                 try { upload.run(); }
                 finally { CURRENT.remove(); }
@@ -40,6 +44,7 @@ public final class NativeTerrainUploadTask {
     /** Also used by direct uploads when the dispatcher has no worker threads. */
     static Prepared prepare(BlockRenderLayer layer, BufferBuilder builder,
                             RenderChunk chunk, CompiledChunk compiled) {
+        long generation = NativeTerrainRenderer.generation();
         // Empty transparency resorts can leave a pooled builder untouched.
         // Inspect neither its old layout nor its old vertex coordinates.
         int count = compiled.isLayerEmpty(layer) ? 0 : builder.getVertexCount();
@@ -58,16 +63,23 @@ public final class NativeTerrainUploadTask {
         // Static CPU face planes cannot reject geometry in those programs.
         NativeTerrainFaceIndex faces = stride == 56 || layer == BlockRenderLayer.TRANSLUCENT ? null
             : new NativeTerrainFaceIndex(source, space.scale, space.translation);
-        return new Prepared(count, stride, space, faces);
+        return new Prepared(count, stride, space, faces, NativeTerrainMaterials.capture(builder, count, layer), generation);
     }
 
     /** No world, chunk or pooled vertex-buffer references survive in this value. */
     static final class Prepared {
+        final NativeTerrainMaterials materials;
+        final long generation;
         final int count;
         final int stride;
         final TerrainVertexSpace space;
         final NativeTerrainFaceIndex faces;
         Prepared(int count, int stride, TerrainVertexSpace space, NativeTerrainFaceIndex faces) {
+            this(count,stride,space,faces,null,NativeTerrainRenderer.generation());
+        }
+        Prepared(int count, int stride, TerrainVertexSpace space, NativeTerrainFaceIndex faces,
+                 NativeTerrainMaterials materials, long generation) {
+            this.materials=materials; this.generation=generation;
             this.count = count;
             this.stride = stride;
             this.space = space;

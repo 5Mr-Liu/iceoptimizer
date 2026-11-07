@@ -43,6 +43,7 @@ final class OptimizerModuleSelection {
             case FISHING_BIOME_QUERY: return source.fishingBiomeQuery;
             case SRP_ARCHITECT_QUERY: return source.srpArchitectQuery;
             case NBT_CONSTANT_KEYS: return source.nbtConstantKeys;
+            case RECURRENT_CLEANUP_NBT: return source.recurrentCleanupNbt;
             case SOUND_FILTERS: return source.soundFilters;
             case VANILLA_AUTOSAVE_SLICES: return source.vanillaAutosaveSlices;
             case VANILLA_CHUNK_DISPATCH: return source.vanillaChunkDispatch;
@@ -58,6 +59,12 @@ final class OptimizerModuleSelection {
             case LYCANITES_OBJ_RENDER: return source.lycanitesObjRender;
             case LYCANITES_MODEL_ANIMATION: return source.lycanitesModelAnimation;
             case LYCANITES_EFFECT_CACHE: return source.lycanitesEffectCache;
+            case LYCANITES_EQUIPMENT_READ: return source.lycanitesEquipmentRead;
+            // These integrations are absent from the slim startup catalog.
+            // Old saved true values must not advertise or reactivate them.
+            case TRINKETS_STATE_NBT: return false;
+            case CAPABILITY_STATE_NBT: return source.capabilityStateNbt;
+            case TRINKETS_SYNC_DELTA: return false;
             case MOBENDS_MODEL_RENDER: return source.moBendsModelRender;
             case MOBENDS_QUATERNION_CACHE: return source.moBendsQuaternionCache;
             case MOBENDS_ENTITY_ANIMATION: return source.moBendsEntityAnimation;

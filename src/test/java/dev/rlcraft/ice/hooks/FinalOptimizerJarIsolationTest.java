@@ -27,6 +27,36 @@ import org.objectweb.asm.tree.FieldNode;
 /** Exercises the final installation JAR while every late runtime class is hidden. */
 public class FinalOptimizerJarIsolationTest {
     @Test
+    public void slimJarDoesNotInstallRemovedNbtHooksOrRegisterDeltaTransport() throws Exception {
+        String path = System.getProperty("ice.optimizer.finalJar");
+        Assume.assumeNotNull(path);
+        try (JarFile jar = new JarFile(path)) {
+            java.util.Properties catalog = new java.util.Properties();
+            try (java.io.InputStream input = jar.getInputStream(jar.getJarEntry("optimizer-targets.properties"))) {
+                catalog.load(input);
+            }
+            Set<String> adapters = new HashSet<String>();
+            int count = Integer.parseInt(catalog.getProperty("target.count"));
+            for (int i = 0; i < count; i++) {
+                assertNotNull(catalog.getProperty("target." + i + ".class"));
+                adapters.add(catalog.getProperty("target." + i + ".adapter"));
+            }
+            assertFalse(adapters.contains("forge-capability-nbt"));
+            assertFalse(adapters.contains("trinkets-state-nbt"));
+            assertFalse(adapters.contains("trinkets-sync-delta"));
+            assertTrue(adapters.contains("minecraft-equipment-nbt"));
+            assertTrue(adapters.contains("capability-state-dispatcher"));
+            ClassNode mod = new ClassNode();
+            new ClassReader(jar.getInputStream(jar.getJarEntry("dev/rlcraft/ice/IceMod.class"))).accept(mod, 0);
+            for (org.objectweb.asm.tree.MethodNode method : mod.methods)
+                for (org.objectweb.asm.tree.AbstractInsnNode instruction : method.instructions.toArray())
+                    if (instruction instanceof org.objectweb.asm.tree.MethodInsnNode)
+                        assertFalse(((org.objectweb.asm.tree.MethodInsnNode) instruction).owner
+                            .equals("dev/rlcraft/ice/optimizer/compat/trinkets/TrinketsSyncBridge"));
+        }
+    }
+
+    @Test
     public void profilerSingleJarRetainsExceptionFallbackWhenOptimizerIsAbsent() throws Exception {
         String path = System.getProperty("ice.profiler.finalJar");
         Assume.assumeNotNull(path);

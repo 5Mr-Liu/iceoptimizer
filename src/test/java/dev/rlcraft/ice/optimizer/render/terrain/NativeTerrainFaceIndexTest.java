@@ -6,6 +6,44 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class NativeTerrainFaceIndexTest {
+    @Test public void blockCopiesMatchScalarIndicesForEveryMaskAndPartialMaterialRange() {
+        int quads = 17000;
+        ByteBuffer raw = ByteBuffer.allocate(quads * 112).order(ByteOrder.nativeOrder());
+        int[] classes = new int[quads];
+        for (int q = 0; q < quads; q++) {
+            quad(raw, q / 96 % 2 == 0, q % 7);
+            if (q % 173 == 0) raw.putFloat(q * 112 + 2 * 28 + 8, 30);
+            classes[q] = TerrainQuadClassifier.classify(raw, q * 112, 28);
+        }
+        raw.flip();
+        NativeTerrainFaceIndex faces = new NativeTerrainFaceIndex(raw);
+        for (ByteOrder order : new ByteOrder[] {ByteOrder.LITTLE_ENDIAN, ByteOrder.BIG_ENDIAN}) {
+            ByteBuffer actual = ByteBuffer.allocateDirect(131080).order(order);
+            ByteBuffer expected = ByteBuffer.allocate(131080).order(order);
+            for (int mask = 0; mask < 128; mask++) {
+                for (int[] range : new int[][] {{0,65532,0},{12,1200,0},{65532,2468,65532},{65580,512,65532}}) {
+                    actual.clear(); expected.clear(); actual.putInt(0x12345678); expected.putInt(0x12345678);
+                    int before = actual.position();
+                    int count = faces.writeShortIndices(actual, mask, range[0], range[1], range[2]);
+                    for (int q = range[0]/4; q < (range[0]+range[1])/4; q++)
+                        if ((mask & (1 << classes[q])) != 0)
+                            for (int v = 0; v < 4; v++) expected.putShort((short)(q*4+v-range[2]));
+                    assertEquals((actual.position()-before)/2,count);
+                    actual.flip(); expected.flip();
+                    assertEquals("mask="+mask+" first="+range[0]+" order="+order,expected,actual);
+                }
+            }
+        }
+    }
+
+    @Test public void sequentialCopiesPreserveUnsignedRangeAndByteOrder() {
+        for (ByteOrder order : new ByteOrder[] {ByteOrder.LITTLE_ENDIAN, ByteOrder.BIG_ENDIAN}) {
+            ByteBuffer actual = ByteBuffer.allocateDirect(131072).order(order);
+            NativeTerrainFaceIndex.writeSequentialShortIndices(actual,65532);
+            actual.flip();
+            for (int i=0;i<65532;i++) assertEquals(i,actual.getShort() & 65535);
+        }
+    }
     @Test public void indexFilteringNeverReordersQuadsOrChangesProvokingVertex() {
         ByteBuffer raw=ByteBuffer.allocate(3*112).order(ByteOrder.nativeOrder());
         quad(raw,false,0); quad(raw,true,0); quad(raw,false,10); raw.flip();

@@ -119,6 +119,8 @@ public final class OptimizerConfig {
         public boolean fishingBiomeQuery = true;
         public boolean srpArchitectQuery = true;
         public boolean nbtConstantKeys = true;
+        @Config.Comment("Skip NBT records immediately discarded by RLTweaker's Recurrent Complex world-load cleanup.")
+        public boolean recurrentCleanupNbt = true;
         public boolean soundFilters = true;
         public boolean vanillaAutosaveSlices = true;
 
@@ -185,6 +187,18 @@ public final class OptimizerConfig {
 
         @Config.Comment("Resolve Lycanites' constant potion-effect names once instead of repeating registry normalization for every living entity tick.")
         public boolean lycanitesEffectCache = true;
+
+        @Config.Comment("Decode Lycanites equipment parts once per attribute or tooltip calculation.")
+        public boolean lycanitesEquipmentRead = true;
+
+        @Config.Comment("Legacy option retained for existing configs; Trinkets scalar caching is not installed in this slim build.")
+        public boolean trinketsStateNbt = false;
+
+        @Config.Comment("Compare supported item capabilities directly and reuse immutable encodings in their copy snapshots.")
+        public boolean capabilityStateNbt = true;
+
+        @Config.Comment("Legacy option retained for existing configs; this slim build uses the original Trinkets network protocol.")
+        public boolean trinketsSyncDelta = false;
 
         @Config.Comment("Cache Mo' Bends model parent topology and use indexed child traversal without changing transform or draw order.")
         public boolean moBendsModelRender = true;
@@ -314,7 +328,8 @@ public final class OptimizerConfig {
             "Use ICE's own resident terrain renderer without an external rendering mod.",
             "Enabled by default, including the first launch and older configs without this setting.",
             "Owns terrain storage and submission directly, without legacy VBO copies or runtime sampling.",
-            "Requires OpenGL 4.3 and a restart. OptiFine G5 shader packs use their original programs with ICE-owned indexed geometry."
+            "Selects OpenGL 4.3 or OpenGL 2.1 once after context creation; old nativeTerrainOpenGl21 settings are ignored.",
+            "Requires restart. OptiFine G5 shader packs keep their original programs and hardware requirements."
         })
         @Config.RequiresMcRestart
         public boolean nativeTerrainRenderer = true;

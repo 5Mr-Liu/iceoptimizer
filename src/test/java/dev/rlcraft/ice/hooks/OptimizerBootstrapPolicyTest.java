@@ -16,6 +16,26 @@ import org.junit.rules.TemporaryFolder;
 public class OptimizerBootstrapPolicyTest {
     @Rule public final TemporaryFolder temporary = new TemporaryFolder();
 
+    @Test public void legacyCompatibilityOptionIsIgnoredAndCannotEnableDisabledRenderer() throws Exception {
+        File directory = temporary.newFolder();
+        File file = new File(directory, "config/ice-optimizer.cfg");
+        assertTrue(file.getParentFile().mkdir());
+        TargetSpec vbo = null;
+        for (TargetSpec entry : OptimizerTargetCatalog.findAll("net.minecraft.client.renderer.OpenGlHelper"))
+            if (entry.adapterId.equals("native-terrain-vbo-selection")) vbo = entry;
+        org.junit.Assert.assertNotNull(vbo);
+        try {
+            for (String setting : new String[] {"", "B:nativeTerrainOpenGl21=false",
+                    "B:nativeTerrainOpenGl21=true", "B:nativeTerrainOpenGl21=true\nB:enabled=false",
+                    "B:nativeTerrainOpenGl21=true\nB:nativeTerrainRenderer=false"}) {
+                Files.write(file.toPath(), config(setting).getBytes(StandardCharsets.UTF_8));
+                OptimizerBootstrapPolicy.initialize(Collections.<String, Object>singletonMap("mcLocation", directory));
+                boolean selected = !setting.contains("enabled=false") && !setting.contains("nativeTerrainRenderer=false");
+                org.junit.Assert.assertEquals(selected, OptimizerBootstrapPolicy.shouldInstall(vbo));
+            }
+        } finally { OptimizerBootstrapPolicy.initialize(null); }
+    }
+
     @Test public void onlyExplicitScopedFalseDisablesRenderer() throws Exception {
         assertFalse(read(config("B:modernRenderer=false")));
         assertFalse(read("\uFEFF\"general\" {\n \"settings\" {\n B:modernRenderer = false\n}\n}\n"));
